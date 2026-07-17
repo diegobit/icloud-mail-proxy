@@ -1,0 +1,26 @@
+{
+  "name": "icloud-mail-proxy",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "agents": "^0.17.4",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "postal-mime": "^2.7.5",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "wrangler": "^4",
+    "typescript": "^5",
+    "vitest": "^3",
+    "@cloudflare/workers-types": "^4"
+  },
+  "overrides": {
+    "@cloudflare/workers-types": "^4"
+  }
+}
