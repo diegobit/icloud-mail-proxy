@@ -27,6 +27,7 @@ const searchSchema = z
     subject: z.string().optional(),
     text: z.string().optional(),
     limit: z.number().int().positive().optional(),
+    unseen: z.boolean().optional(),
   })
   .strict();
 

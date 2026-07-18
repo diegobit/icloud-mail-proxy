@@ -22,6 +22,9 @@ export interface MessageSummary {
   to: Address[];
   subject: string | null;
   size: number;
+  seen: boolean;
+  flagged: boolean;
+  answered: boolean;
 }
 
 export interface AttachmentInfo {
@@ -51,6 +54,7 @@ export interface SearchParams {
   subject?: string;
   text?: string;
   limit?: number;
+  unseen?: boolean;
 }
 
 export interface SearchResult {

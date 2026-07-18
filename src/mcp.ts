@@ -55,11 +55,12 @@ function buildServer(env: Env): McpServer {
     "search_mail",
     {
       description:
-        "Search a mailbox for recent messages and return summaries (from/to/subject/date/size " +
-        "plus the ids needed by get_mail_message). Newest first. `mailbox` must be one of the " +
-        "allowed mailboxes from list_mailboxes. `after`/`before` are YYYY-MM-DD date bounds; a " +
-        "server-side maximum look-back window always applies. `from`/`subject`/`text` are " +
-        "ASCII-only IMAP substring filters. `limit` is capped server-side.",
+        "Search a mailbox for recent messages and return summaries (from/to/subject/date/size, " +
+        "seen/flagged/answered flag state, plus the ids needed by get_mail_message). Newest " +
+        "first. `mailbox` must be one of the allowed mailboxes from list_mailboxes. " +
+        "`after`/`before` are YYYY-MM-DD date bounds; a server-side maximum look-back window " +
+        "always applies. `from`/`subject`/`text` are ASCII-only IMAP substring filters. " +
+        "`unseen: true` restricts results to unread messages. `limit` is capped server-side.",
       inputSchema: {
         mailbox: z.string().min(1).describe("Mailbox name, exactly as returned by list_mailboxes"),
         after: z.string().optional().describe("Only messages on/after this date (YYYY-MM-DD)"),
@@ -68,6 +69,7 @@ function buildServer(env: Env): McpServer {
         subject: z.string().optional().describe("Substring match on the Subject header (ASCII only)"),
         text: z.string().optional().describe("Substring match on the full message text (ASCII only)"),
         limit: z.number().int().positive().optional().describe("Max results (capped server-side)"),
+        unseen: z.boolean().optional().describe("If true, only return unread (unseen) messages"),
       },
     },
     async (args) =>
@@ -80,6 +82,7 @@ function buildServer(env: Env): McpServer {
           subject: args.subject,
           text: args.text,
           limit: args.limit,
+          unseen: args.unseen,
         }),
       ),
   );

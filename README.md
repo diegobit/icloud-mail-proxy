@@ -152,16 +152,22 @@ curl -X POST -H "Authorization: Bearer $API_TOKEN" \
       "from": [{ "name": "Billing", "address": "billing@example.com" }],
       "to": [{ "name": null, "address": "you@icloud.com" }],
       "subject": "Your invoice",
-      "size": 18422
+      "size": 18422,
+      "seen": true,
+      "flagged": false,
+      "answered": false
     }
   ]
 }
 ```
 
-`mailbox`, `after`/`before` (`YYYY-MM-DD`), `from`, `subject`, `text`, and
-`limit` are the only accepted fields (unknown keys are rejected). `from` /
-`subject` / `text` are ASCII-only IMAP substring filters — non-ASCII search
-terms are rejected with `invalid_criteria`. A message's identity is the
+`mailbox`, `after`/`before` (`YYYY-MM-DD`), `from`, `subject`, `text`,
+`limit`, and `unseen` are the only accepted fields (unknown keys are
+rejected). `from` / `subject` / `text` are ASCII-only IMAP substring filters —
+non-ASCII search terms are rejected with `invalid_criteria`. `unseen: true`
+restricts results to unread messages; each summary also carries `seen` /
+`flagged` / `answered` booleans reflecting the message's IMAP flags at search
+time. A message's identity is the
 composite `(mailbox, uidValidity, uid)`; `uid` alone is only meaningful
 together with the `uidValidity` it was returned with.
 

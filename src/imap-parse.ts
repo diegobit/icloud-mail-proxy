@@ -15,6 +15,7 @@ export interface Envelope {
   uid: number;
   size: number;
   internalDate: string | null;
+  flags: string[];
   headerBytes: Uint8Array;
 }
 
@@ -33,6 +34,8 @@ export interface FetchItem {
   uid: number | null;
   size: number | null;
   internalDate: string | null;
+  /** Flags from `FLAGS (...)`, or null when FLAGS was not in the response. */
+  flags: string[] | null;
   sections: { name: string; bytes: Uint8Array }[];
 }
 
@@ -228,6 +231,13 @@ export function parseFetchSections(tokens: ImapToken[]): FetchItem[] {
     const uidM = g.text.match(/\bUID (\d+)/);
     const sizeM = g.text.match(/\bRFC822\.SIZE (\d+)/);
     const dateM = g.text.match(/\bINTERNALDATE "([^"]*)"/);
+    // FLAGS is a nested parenthesized list inside the FETCH list; flags are
+    // atoms (never contain parens or quotes) so a non-greedy scan to the first
+    // ")" is exact. `FLAGS ()` yields [].
+    const flagsM = g.text.match(/\bFLAGS \(([^)]*)\)/);
+    const flags = flagsM
+      ? flagsM[1].split(/\s+/).filter((f) => f.length > 0)
+      : null;
     const sections: { name: string; bytes: Uint8Array }[] = [];
     const re = /BODY\[([^\]]*)\]\s*LIT(\d+)/g;
     let m: RegExpExecArray | null;
@@ -240,6 +250,7 @@ export function parseFetchSections(tokens: ImapToken[]): FetchItem[] {
       uid: uidM ? Number(uidM[1]) : null,
       size: sizeM ? Number(sizeM[1]) : null,
       internalDate: dateM ? dateM[1] : null,
+      flags,
       sections,
     };
   });

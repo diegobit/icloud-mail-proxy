@@ -149,6 +149,8 @@ export async function searchMail(env: Env, params: SearchParams): Promise<Search
 
   const criteriaParts: string[] = [`SINCE ${toImapDate(effectiveAfter)}`];
   if (beforeDate) criteriaParts.push(`BEFORE ${toImapDate(beforeDate)}`);
+  // UNSEEN is a fixed IMAP keyword, never built from user input.
+  if (params.unseen === true) criteriaParts.push("UNSEEN");
   try {
     if (params.from) criteriaParts.push(`FROM ${quoteImapString(params.from)}`);
     if (params.subject) criteriaParts.push(`SUBJECT ${quoteImapString(params.subject)}`);
@@ -177,6 +179,7 @@ export async function searchMail(env: Env, params: SearchParams): Promise<Search
     const messages: MessageSummary[] = [];
     for (const env0 of envelopes) {
       const parsed = await parseEmail(ensureHeaderTerminator(env0.headerBytes));
+      const flags = env0.flags.map((f) => f.toLowerCase());
       messages.push({
         mailbox: params.mailbox,
         uidValidity: examined.uidValidity,
@@ -186,6 +189,9 @@ export async function searchMail(env: Env, params: SearchParams): Promise<Search
         to: mapAddresses(parsed.to),
         subject: parsed.subject ?? null,
         size: env0.size,
+        seen: flags.includes("\\seen"),
+        flagged: flags.includes("\\flagged"),
+        answered: flags.includes("\\answered"),
       });
     }
     messages.sort((a, b) => b.uid - a.uid);
