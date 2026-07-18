@@ -6,6 +6,50 @@ mailboxes, search, fetch a message) over HTTP or MCP without running anything
 locally, keeping the Apple credentials on the Worker rather than on whatever
 machine the agent runs on.
 
+## Quick start — deploy with your own iCloud account
+
+```bash
+git clone <this repo> && cd icloud-mail-proxy
+npm install
+```
+
+1. **Apple app-specific password**: at [appleid.apple.com](https://appleid.apple.com)
+   → Sign-In and Security → App-Specific Passwords, create one named e.g.
+   `cf-mail-proxy` (don't reuse it anywhere else).
+2. **Pick your hostname**: edit the `routes` entry in `wrangler.jsonc` to a
+   hostname on a zone your Cloudflare account owns, e.g.
+   `mail-api.yourdomain.com`. No domain on Cloudflare? Delete the `routes`
+   block entirely and the Worker deploys to
+   `icloud-mail-proxy.<your-subdomain>.workers.dev` instead.
+3. **Authenticate and set secrets**:
+
+   ```bash
+   npx wrangler login
+   npx wrangler secret put ICLOUD_USER            # full iCloud address, e.g. you@icloud.com
+   npx wrangler secret put ICLOUD_APP_PASSWORD    # the password from step 1
+   openssl rand -base64 32                        # generate the API bearer token, keep it
+   npx wrangler secret put API_TOKEN              # paste the generated token
+   ```
+
+4. **Deploy and verify** (DNS record and TLS cert are created automatically):
+
+   ```bash
+   npx wrangler deploy
+   curl -H "Authorization: Bearer $API_TOKEN" https://<your-hostname>/v1/mailboxes
+   ```
+
+5. **Connect your agent** (Claude Code shown; any MCP client with
+   Streamable HTTP + headers works):
+
+   ```bash
+   claude mcp add --transport http icloud-mail https://<your-hostname>/mcp \
+     --header "Authorization: Bearer $API_TOKEN"
+   ```
+
+Optional: adjust `ALLOWED_MAILBOXES` and the size/result/look-back caps in
+`wrangler.jsonc` `vars`. Full runbook, rotation and incident response:
+[DEPLOY.md](DEPLOY.md).
+
 ## Architecture
 
 ```
