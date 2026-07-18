@@ -17,6 +17,39 @@ This file covers running the service after that.
   the Worker or its secrets may be compromised — this password grants more
   than read-only IMAP access (see `README.md`).
 
+## CI / automated deploys
+
+Two complementary pieces, neither of which needs a Cloudflare API token in
+GitHub:
+
+**Checks (GitHub Actions).** `.github/workflows/ci.yml` runs on every push
+to `main` and `dev`, and on pull requests: `npm ci`, `npm run typecheck`,
+`npm test`, then a `wrangler deploy --dry-run` (bundles the Worker without
+needing any credentials). Checks only — it never deploys.
+
+**Deploys (Cloudflare Workers Builds).** Deploys use Cloudflare's built-in
+git integration, the same mechanism as a Pages project. One-time setup in
+the Cloudflare dashboard:
+
+1. Workers & Pages → **icloud-mail-proxy** → Settings → **Build** →
+   Connect a repository (authorize GitHub if not already) → pick
+   `diegobit/icloud-mail-proxy`.
+2. Production branch: `main`.
+3. Build command: `npm ci && npm run typecheck && npm test` — this gates
+   the deploy on the same checks CI runs, entirely on Cloudflare's side.
+4. Deploy command: `npx wrangler deploy`.
+
+After that, every push to `main` builds and deploys automatically (the
+dashboard's Deployments tab shows build logs); pushes to other branches can
+optionally get non-production preview builds if enabled. Connecting the
+integration does not deploy retroactively — trigger the first build with a
+push to `main` or the "Retry build"/"Deploy" button in the dashboard.
+
+This doesn't replace manual deploys — `npx wrangler deploy` still works from
+your own machine — and automated deploys never touch Worker secrets
+(`ICLOUD_USER`, `ICLOUD_APP_PASSWORD`, `API_TOKEN`): only `wrangler secret
+put` changes those.
+
 ## Diagnostics
 
 `npx wrangler tail` streams live request metadata (method, path, status,

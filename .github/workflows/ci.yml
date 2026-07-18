@@ -1,0 +1,25 @@
+name: CI
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - name: Dry-run deploy (bundles without auth)
+        run: npx wrangler deploy --dry-run
+
+# Deploys are NOT done here. Cloudflare Workers Builds (the dashboard git
+# integration) builds and deploys main on push, gated on the same checks via
+# its build command — see DEPLOY.md "CI / automated deploys".

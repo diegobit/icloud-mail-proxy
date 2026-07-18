@@ -97,6 +97,10 @@ Optional: adjust `ALLOWED_MAILBOXES` and the size/result/look-back caps in
 `wrangler.jsonc` `vars`. Operations (token rotation, incident response,
 diagnostics, rollback): [DEPLOY.md](DEPLOY.md).
 
+GitHub Actions runs checks on every push/PR; deploys of `main` are automatic
+via Cloudflare Workers Builds once the repo is connected in the dashboard —
+see [DEPLOY.md](DEPLOY.md#ci--automated-deploys).
+
 ## Architecture
 
 ```
