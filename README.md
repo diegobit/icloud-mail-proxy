@@ -190,9 +190,14 @@ curl -H "Authorization: Bearer $API_TOKEN" \
   "untrustedEmailContent": { "text": "Thanks for your payment...", "textSource": "text" },
   "attachments": [
     { "index": 0, "filename": "invoice.pdf", "mimeType": "application/pdf", "size": 20480 }
-  ]
+  ],
+  "truncated": false
 }
 ```
+
+Messages larger than `MAX_MESSAGE_BYTES` are not refused: only their first
+`MAX_MESSAGE_BYTES` bytes are fetched and parsed, and the response sets
+`"truncated": true`. Body text and attachment metadata may then be incomplete.
 
 `untrustedEmailContent.textSource` records where the body text came from:
 `"text"` (the message's own plain-text part), `"html"` (derived from the HTML
@@ -249,8 +254,9 @@ claude mcp add --transport http icloud-mail https://icloud-mail.diegobit.com/mcp
 - **Hard caps everywhere.** Only mailboxes in `ALLOWED_MAILBOXES` can be
   read; `MAX_RESULTS` caps how many summaries a search returns;
   `MAX_SEARCH_DAYS` caps how far back a search can look (an explicit `after`
-  can only narrow this window, never widen it); `MAX_MESSAGE_BYTES` caps the
-  size of a message that will be fetched. Attachments are only ever
+  can only narrow this window, never widen it); `MAX_MESSAGE_BYTES` caps how
+  many bytes of a message are ever fetched (larger messages are returned
+  truncated, flagged with `truncated: true`, never in full). Attachments are only ever
   described (filename, MIME type, size) — attachment content is never
   fetched or returned.
 

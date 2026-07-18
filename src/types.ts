@@ -44,6 +44,9 @@ export interface MessageDetail {
   messageId: string | null;
   untrustedEmailContent: { text: string | null; textSource: "text" | "html" | null };
   attachments: AttachmentInfo[];
+  // True when the message exceeded MAX_MESSAGE_BYTES and only its first bytes
+  // were fetched; body/attachments may be incomplete.
+  truncated: boolean;
 }
 
 export interface SearchParams {

@@ -246,16 +246,34 @@ export async function getMessage(
       }
       throw e;
     }
-    if (size > maxBytes) {
-      throw new ApiError(
-        413,
-        "message_too_large",
-        `message is ${size} bytes, over the ${maxBytes}-byte limit`,
-      );
-    }
+    // Oversized messages are fetched partially (first maxBytes bytes) and
+    // flagged, rather than refused with a 413.
+    const truncated = size > maxBytes;
+    const raw = truncated
+      ? await session.fetchRawPartial(uid, maxBytes)
+      : await session.fetchRaw(uid, maxBytes);
 
-    const raw = await session.fetchRaw(uid, maxBytes);
-    const parsed = await parseEmail(raw);
+    let parsed: PMEmail;
+    try {
+      parsed = await parseEmail(raw);
+    } catch (e) {
+      // postal-mime tolerates truncated input, but a cut mid-structure can
+      // still make it throw. For a truncated fetch, degrade to a minimal,
+      // clearly-flagged detail instead of surfacing a 500.
+      if (!truncated) throw e;
+      return {
+        id: { mailbox, uidValidity, uid },
+        date: null,
+        from: [],
+        to: [],
+        cc: [],
+        subject: null,
+        messageId: null,
+        untrustedEmailContent: { text: null, textSource: null },
+        attachments: [],
+        truncated: true,
+      };
+    }
 
     const attachments: AttachmentInfo[] = parsed.attachments.map((att, index) => ({
       index,
@@ -284,6 +302,7 @@ export async function getMessage(
       messageId: parsed.messageId ?? null,
       untrustedEmailContent: { text, textSource },
       attachments,
+      truncated,
     };
   } finally {
     await session.logout();

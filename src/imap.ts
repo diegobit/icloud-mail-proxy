@@ -35,6 +35,10 @@ const PORT = 993;
 const DEFAULT_TIMEOUT_MS = 30000;
 const LOGOUT_TIMEOUT_MS = 3000;
 
+// A ranged fetch returns at most maxBytes octets, so the announced literal
+// should never exceed maxBytes; this slack only guards against server quirks.
+const PARTIAL_FETCH_SLACK = 256;
+
 // Distinct rejection value so a timed-out read can be told apart from a genuine
 // stream error in the Promise.race below.
 const TIMEOUT = Symbol("imap-read-timeout");
@@ -201,6 +205,51 @@ export class ImapSession {
         if (n > maxBytes) {
           await this.destroy();
           throw new ImapError("LIMIT", `message body ${n} bytes exceeds limit ${maxBytes}`);
+        }
+      }
+    }
+    if (body === null) throw new ImapError("PARSE", "FETCH returned no body");
+    return body;
+  }
+
+  /**
+   * UID FETCH n (BODY.PEEK[]<0.maxBytes>) -> the first `maxBytes` bytes of the
+   * raw RFC822 message. The ranged section spec makes the server return at most
+   * maxBytes octets, so an oversized message can be fetched partially instead of
+   * refused. The response's section header carries an origin octet (e.g.
+   * `BODY[]<0>`), which the literal-capture loop ignores just like fetchRaw. As
+   * a backstop, if the announced literal exceeds maxBytes (plus a little slack)
+   * the socket is closed and ImapError "LIMIT" is thrown before buffering.
+   */
+  async fetchRawPartial(uid: number, maxBytes: number): Promise<Uint8Array> {
+    assertUid(uid);
+    if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0) {
+      throw new ImapError("PARSE", `invalid maxBytes: ${maxBytes}`);
+    }
+    const tag = this.nextTag();
+    await this.write(`${tag} UID FETCH ${uid} (BODY.PEEK[]<0.${maxBytes}>)\r\n`);
+    let body: Uint8Array | null = null;
+    for (;;) {
+      const tok = await this.nextToken();
+      if (tok.kind === "literal") {
+        body = tok.bytes;
+        continue;
+      }
+      const text = tok.text;
+      if (text.startsWith(`${tag} `)) {
+        this.checkTagged(text, "UID FETCH");
+        break;
+      }
+      if (text.startsWith("* BYE")) {
+        await this.destroy();
+        throw new ImapError("BYE", text);
+      }
+      const marker = text.match(/\{(\d+)\}$/);
+      if (marker) {
+        const n = Number(marker[1]);
+        if (n > maxBytes + PARTIAL_FETCH_SLACK) {
+          await this.destroy();
+          throw new ImapError("LIMIT", `partial body ${n} bytes exceeds limit ${maxBytes}`);
         }
       }
     }
