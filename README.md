@@ -187,12 +187,17 @@ curl -H "Authorization: Bearer $API_TOKEN" \
   "cc": [],
   "subject": "Your invoice",
   "messageId": "<abc123@example.com>",
-  "untrustedEmailContent": { "text": "Thanks for your payment..." },
+  "untrustedEmailContent": { "text": "Thanks for your payment...", "textSource": "text" },
   "attachments": [
     { "index": 0, "filename": "invoice.pdf", "mimeType": "application/pdf", "size": 20480 }
   ]
 }
 ```
+
+`untrustedEmailContent.textSource` records where the body text came from:
+`"text"` (the message's own plain-text part), `"html"` (derived from the HTML
+part when there is no plain-text part), or `null` (no body text). Raw HTML is
+never returned.
 
 If the mailbox's `UIDVALIDITY` has changed since the `uid` was obtained (the
 mailbox was reset or reorganized server-side), this returns `409` with code

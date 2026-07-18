@@ -42,7 +42,7 @@ export interface MessageDetail {
   cc: Address[];
   subject: string | null;
   messageId: string | null;
-  untrustedEmailContent: { text: string | null };
+  untrustedEmailContent: { text: string | null; textSource: "text" | "html" | null };
   attachments: AttachmentInfo[];
 }
 

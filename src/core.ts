@@ -9,6 +9,7 @@
 import PostalMime from "postal-mime";
 import type { Address as PMAddress, Email as PMEmail } from "postal-mime";
 import { ImapSession } from "./imap";
+import { htmlToText } from "./html-text";
 import { quoteImapString, toImapDate } from "./imap-parse";
 import type {
   Address,
@@ -263,6 +264,16 @@ export async function getMessage(
       size: attachmentByteLength(att.content),
     }));
 
+    // Body text is untrusted third-party content; raw HTML is never surfaced.
+    // Prefer the message's own plain-text part; otherwise derive text from the
+    // HTML part so HTML-only messages are not returned empty.
+    let text: string | null = parsed.text ?? null;
+    let textSource: "text" | "html" | null = text !== null ? "text" : null;
+    if (text === null && parsed.html) {
+      text = htmlToText(parsed.html);
+      textSource = "html";
+    }
+
     return {
       id: { mailbox, uidValidity, uid },
       date: parsed.date ?? null,
@@ -271,8 +282,7 @@ export async function getMessage(
       cc: mapAddresses(parsed.cc),
       subject: parsed.subject ?? null,
       messageId: parsed.messageId ?? null,
-      // Body text is untrusted third-party content; HTML is never surfaced.
-      untrustedEmailContent: { text: parsed.text ?? null },
+      untrustedEmailContent: { text, textSource },
       attachments,
     };
   } finally {
