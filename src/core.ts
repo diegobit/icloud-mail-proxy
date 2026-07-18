@@ -64,6 +64,19 @@ async function withRetryOnce<T>(fn: () => Promise<T>): Promise<T> {
   }
 }
 
+/**
+ * Verify end-to-end IMAP connectivity: open a session (LOGIN) and log out
+ * immediately (LOGOUT) — no EXAMINE, no data is touched. Errors propagate
+ * uncaught (no retry) so a health check reports the connection's real,
+ * current state rather than masking a transient failure.
+ */
+export async function healthCheck(env: Env): Promise<{ ok: true; imapLatencyMs: number }> {
+  const start = Date.now();
+  const session = await ImapSession.open(env.ICLOUD_USER, env.ICLOUD_APP_PASSWORD);
+  await session.logout();
+  return { ok: true, imapLatencyMs: Date.now() - start };
+}
+
 /** Parse ALLOWED_MAILBOXES ("A,B,C") into a trimmed, non-empty list. */
 export function listMailboxes(env: Env): string[] {
   return env.ALLOWED_MAILBOXES.split(",")

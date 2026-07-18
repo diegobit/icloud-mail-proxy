@@ -115,6 +115,30 @@ can mark a message as read, and no SMTP code anywhere in the project.
 Every request (REST and MCP) requires `Authorization: Bearer $API_TOKEN`.
 Responses are sent with `Cache-Control: private, no-store`.
 
+### Health
+
+```
+curl -H "Authorization: Bearer $API_TOKEN" https://icloud-mail.diegobit.com/healthz
+```
+
+```json
+{ "ok": true, "imapLatencyMs": 412 }
+```
+
+Performs a real IMAP `LOGIN` followed immediately by `LOGOUT` — no `EXAMINE`,
+nothing else — so a `200` means the Apple credentials and network path are
+actually working end-to-end right now, not just that the Worker is up.
+Status contract:
+
+- `200` — `{ "ok": true, "imapLatencyMs": <number> }`
+- `503` — `{ "ok": false, "error": { "code", "message" } }` when the IMAP
+  server rejected the login or the connection failed
+- `401` — missing/invalid bearer token (same auth gate as every other route)
+
+Because each call opens a fresh IMAP connection, it's fine for typical
+uptime-monitor cadences (e.g. every 1–5 minutes) but shouldn't be hammered
+much faster than that.
+
 ### `GET /v1/mailboxes`
 
 ```

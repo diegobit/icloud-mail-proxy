@@ -3,7 +3,7 @@
 // IMAP work happens.
 
 import { z } from "zod";
-import { ApiError, getAttachment, getMessage, listMailboxes, searchMail } from "./core";
+import { ApiError, getAttachment, getMessage, healthCheck, listMailboxes, searchMail } from "./core";
 import { ImapError } from "./imap";
 import type { Env, SearchParams } from "./types";
 
@@ -145,11 +145,35 @@ async function handleGetAttachment(
   });
 }
 
+/**
+ * GET /healthz: prove the Worker can actually reach and authenticate to
+ * imap.mail.me.com right now (LOGIN + LOGOUT, no EXAMINE, nothing else). An
+ * ImapError here is a known "the mail server is having trouble" state, so it
+ * gets its own 503 body instead of the generic 502/504 mapError would give;
+ * anything else (ApiError, unexpected errors) still goes through mapError.
+ */
+async function handleHealthz(env: Env): Promise<Response> {
+  try {
+    const result = await healthCheck(env);
+    return json(result);
+  } catch (e) {
+    if (e instanceof ImapError) {
+      return json({ ok: false, error: { code: e.code, message: e.message } }, 503);
+    }
+    throw e;
+  }
+}
+
 export async function handleRest(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
   const segments = url.pathname.split("/").filter((s) => s.length > 0);
 
   try {
+    // GET /healthz
+    if (request.method === "GET" && segments.length === 1 && segments[0] === "healthz") {
+      return await handleHealthz(env);
+    }
+
     // GET /v1/mailboxes
     if (
       request.method === "GET" &&
