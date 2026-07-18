@@ -155,7 +155,8 @@ curl -X POST -H "Authorization: Bearer $API_TOKEN" \
       "size": 18422,
       "seen": true,
       "flagged": false,
-      "answered": false
+      "answered": false,
+      "hasAttachments": true
     }
   ]
 }
@@ -167,7 +168,9 @@ rejected). `from` / `subject` / `text` are ASCII-only IMAP substring filters —
 non-ASCII search terms are rejected with `invalid_criteria`. `unseen: true`
 restricts results to unread messages; each summary also carries `seen` /
 `flagged` / `answered` booleans reflecting the message's IMAP flags at search
-time. A message's identity is the
+time, and a `hasAttachments` boolean derived from the message's
+`BODYSTRUCTURE` (false when there are none or the structure can't be parsed).
+A message's identity is the
 composite `(mailbox, uidValidity, uid)`; `uid` alone is only meaningful
 together with the `uidValidity` it was returned with.
 

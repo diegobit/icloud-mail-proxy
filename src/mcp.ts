@@ -56,7 +56,8 @@ function buildServer(env: Env): McpServer {
     {
       description:
         "Search a mailbox for recent messages and return summaries (from/to/subject/date/size, " +
-        "seen/flagged/answered flag state, plus the ids needed by get_mail_message). Newest " +
+        "seen/flagged/answered flag state, a hasAttachments boolean, plus the ids needed by " +
+        "get_mail_message). Newest " +
         "first. `mailbox` must be one of the allowed mailboxes from list_mailboxes. " +
         "`after`/`before` are YYYY-MM-DD date bounds; a server-side maximum look-back window " +
         "always applies. `from`/`subject`/`text` are ASCII-only IMAP substring filters. " +

@@ -10,7 +10,13 @@ import PostalMime from "postal-mime";
 import type { Address as PMAddress, Email as PMEmail } from "postal-mime";
 import { ImapError, ImapSession } from "./imap";
 import { htmlToText } from "./html-text";
-import { quoteImapString, toImapDate } from "./imap-parse";
+import {
+  listAttachments,
+  parseBodyStructure,
+  parseImapList,
+  quoteImapString,
+  toImapDate,
+} from "./imap-parse";
 import type {
   Address,
   AttachmentInfo,
@@ -142,6 +148,23 @@ function attachmentByteLength(content: ArrayBuffer | Uint8Array | string): numbe
   return null;
 }
 
+/**
+ * Decide whether a message has attachments from its raw BODYSTRUCTURE text.
+ * Parsing is best-effort: any malformed or missing structure yields false
+ * rather than failing the whole search.
+ */
+function hasAttachmentsFromBodyStructure(bodyStructure: string | null): boolean {
+  if (!bodyStructure) return false;
+  try {
+    const nodes = parseImapList(bodyStructure);
+    const first = nodes[0];
+    if (!Array.isArray(first)) return false;
+    return listAttachments(parseBodyStructure(first)).length > 0;
+  } catch {
+    return false;
+  }
+}
+
 export async function searchMail(env: Env, params: SearchParams): Promise<SearchResult> {
   assertMailboxAllowed(env, params.mailbox);
 
@@ -211,6 +234,7 @@ export async function searchMail(env: Env, params: SearchParams): Promise<Search
           seen: flags.includes("\\seen"),
           flagged: flags.includes("\\flagged"),
           answered: flags.includes("\\answered"),
+          hasAttachments: hasAttachmentsFromBodyStructure(env0.bodyStructure),
         });
       }
       messages.sort((a, b) => b.uid - a.uid);

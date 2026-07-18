@@ -17,6 +17,8 @@ export interface Envelope {
   internalDate: string | null;
   flags: string[];
   headerBytes: Uint8Array;
+  /** Raw BODYSTRUCTURE text span, or null when absent; parsed lazily by core. */
+  bodyStructure: string | null;
 }
 
 /**
@@ -37,6 +39,8 @@ export interface FetchItem {
   /** Flags from `FLAGS (...)`, or null when FLAGS was not in the response. */
   flags: string[] | null;
   sections: { name: string; bytes: Uint8Array }[];
+  /** Raw text of the BODYSTRUCTURE value (balanced `(...)`), or null. */
+  bodyStructure: string | null;
 }
 
 /**
@@ -252,8 +256,45 @@ export function parseFetchSections(tokens: ImapToken[]): FetchItem[] {
       internalDate: dateM ? dateM[1] : null,
       flags,
       sections,
+      bodyStructure: captureBodyStructure(g.text),
     };
   });
+}
+
+/**
+ * Capture the balanced parenthesized list that follows the `BODYSTRUCTURE `
+ * token in a reconstructed FETCH response's text. Parens inside quoted strings
+ * (with `\` escapes) are ignored so a filename like `"foo(bar).pdf"` cannot
+ * unbalance the scan. Returns null when there is no BODYSTRUCTURE item.
+ */
+function captureBodyStructure(text: string): string | null {
+  const key = "BODYSTRUCTURE ";
+  const at = text.indexOf(key);
+  if (at < 0) return null;
+  let i = at + key.length;
+  while (i < text.length && text[i] !== "(") i++;
+  if (i >= text.length) return null;
+  const start = i;
+  let depth = 0;
+  let inQuote = false;
+  for (; i < text.length; i++) {
+    const c = text[i];
+    if (inQuote) {
+      if (c === "\\") {
+        i++;
+        continue;
+      }
+      if (c === '"') inQuote = false;
+      continue;
+    }
+    if (c === '"') inQuote = true;
+    else if (c === "(") depth++;
+    else if (c === ")") {
+      depth--;
+      if (depth === 0) return text.slice(start, i + 1);
+    }
+  }
+  return null;
 }
 
 /** Decode bytes as latin1 (byte value == codepoint); safe for protocol lines. */
@@ -316,4 +357,296 @@ export class ImapTokenizer {
     }
     return { kind: "line", text };
   }
+}
+
+// ---- BODYSTRUCTURE parsing -------------------------------------------------
+
+/**
+ * A node in an IMAP parenthesized list: a string (quoted string or atom), null
+ * (the `NIL` atom), or a nested list. Number-ish atoms are kept as strings.
+ */
+export type ImapListNode = string | null | ImapListNode[];
+
+/**
+ * Parse the top-level nodes of an IMAP parenthesized-list text. Handles quoted
+ * strings (with `\` escapes), bare atoms (`NIL` → null), and nested parens.
+ * Literals never appear in the fetch items we parse; any leftover literal
+ * sentinel is treated as opaque atom characters.
+ */
+export function parseImapList(text: string): ImapListNode[] {
+  let pos = 0;
+
+  function skipWs(): void {
+    while (pos < text.length && (text[pos] === " " || text[pos] === "\t")) pos++;
+  }
+
+  function parseQuoted(): string {
+    pos++; // opening quote
+    let out = "";
+    while (pos < text.length) {
+      const c = text[pos];
+      if (c === "\\") {
+        pos++;
+        if (pos < text.length) {
+          out += text[pos];
+          pos++;
+        }
+        continue;
+      }
+      if (c === '"') {
+        pos++;
+        break;
+      }
+      out += c;
+      pos++;
+    }
+    return out;
+  }
+
+  function parseAtom(): string | null {
+    const start = pos;
+    while (pos < text.length) {
+      const c = text[pos];
+      if (c === " " || c === "\t" || c === "(" || c === ")" || c === '"') break;
+      pos++;
+    }
+    const atom = text.slice(start, pos);
+    return atom.toUpperCase() === "NIL" ? null : atom;
+  }
+
+  function parseNodes(): ImapListNode[] {
+    const nodes: ImapListNode[] = [];
+    for (;;) {
+      skipWs();
+      if (pos >= text.length) break;
+      const c = text[pos];
+      if (c === ")") break;
+      if (c === "(") {
+        pos++; // opening paren
+        const inner = parseNodes();
+        if (text[pos] === ")") pos++; // closing paren
+        nodes.push(inner);
+      } else if (c === '"') {
+        nodes.push(parseQuoted());
+      } else {
+        nodes.push(parseAtom());
+      }
+    }
+    return nodes;
+  }
+
+  return parseNodes();
+}
+
+/** A non-multipart body part. */
+export interface BodyPartLeaf {
+  type: string;
+  subtype: string;
+  params: Record<string, string>;
+  id: string | null;
+  description: string | null;
+  encoding: string | null;
+  size: number | null;
+  disposition: string | null;
+  dispositionParams: Record<string, string>;
+  partNumber: string;
+}
+
+/** A multipart body part (its children carry the leaves). */
+export interface BodyPartMultipart {
+  multipart: true;
+  subtype: string;
+  children: BodyPart[];
+  partNumber: string;
+}
+
+export type BodyPart = BodyPartLeaf | BodyPartMultipart;
+
+function asString(node: ImapListNode | undefined): string {
+  return typeof node === "string" ? node : "";
+}
+
+function asStringOrNull(node: ImapListNode | undefined): string | null {
+  return typeof node === "string" ? node : null;
+}
+
+function asNumber(node: ImapListNode | undefined): number | null {
+  if (typeof node !== "string") return null;
+  const n = Number(node);
+  return Number.isSafeInteger(n) ? n : null;
+}
+
+/** Parse a `("KEY" "VAL" ...)` parameter list into a map with lowercased keys. */
+function parseParamList(node: ImapListNode | undefined): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (!Array.isArray(node)) return out;
+  for (let i = 0; i + 1 < node.length; i += 2) {
+    const key = node[i];
+    const val = node[i + 1];
+    if (typeof key === "string" && typeof val === "string") {
+      out[key.toLowerCase()] = val;
+    }
+  }
+  return out;
+}
+
+/**
+ * Parse the body-part list of a BODYSTRUCTURE value into a tree. Part numbers
+ * follow RFC 3501: the children of a multipart are numbered 1..n, appended to
+ * the parent's number with dots; a non-multipart top-level message is part "1".
+ * message/rfc822 is treated as a leaf (no recursion into the embedded body).
+ */
+export function parseBodyStructure(nodes: ImapListNode[]): BodyPart {
+  const rootMultipart = nodes.length > 0 && Array.isArray(nodes[0]);
+  return buildBodyPart(nodes, rootMultipart ? "" : "1");
+}
+
+function buildBodyPart(list: ImapListNode[], partNumber: string): BodyPart {
+  // A multipart's list begins with one or more nested body-part lists, then
+  // the media subtype string; a leaf's list begins with the type string.
+  if (list.length > 0 && Array.isArray(list[0])) {
+    const children: BodyPart[] = [];
+    let i = 0;
+    while (i < list.length && Array.isArray(list[i])) {
+      const n = children.length + 1;
+      const childNumber = partNumber === "" ? String(n) : `${partNumber}.${n}`;
+      children.push(buildBodyPart(list[i] as ImapListNode[], childNumber));
+      i++;
+    }
+    return { multipart: true, subtype: asString(list[i]), children, partNumber };
+  }
+
+  const type = asString(list[0]);
+  const subtype = asString(list[1]);
+  // The first seven fields (type..size) are common to every non-multipart part.
+  // The extension data that carries the disposition sits after any type-specific
+  // fields: TEXT adds a line count; MESSAGE/RFC822 adds envelope+body+lines.
+  const t = type.toLowerCase();
+  const sub = subtype.toLowerCase();
+  let extStart = 7;
+  if (t === "text") extStart = 8;
+  else if (t === "message" && sub === "rfc822") extStart = 10;
+
+  // Extension data order is md5, disposition, language, location.
+  let disposition: string | null = null;
+  let dispositionParams: Record<string, string> = {};
+  const dispNode = list[extStart + 1];
+  if (Array.isArray(dispNode)) {
+    disposition = asStringOrNull(dispNode[0]);
+    dispositionParams = parseParamList(dispNode[1]);
+  }
+
+  return {
+    type,
+    subtype,
+    params: parseParamList(list[2]),
+    id: asStringOrNull(list[3]),
+    description: asStringOrNull(list[4]),
+    encoding: asStringOrNull(list[5]),
+    size: asNumber(list[6]),
+    disposition,
+    dispositionParams,
+    partNumber,
+  };
+}
+
+/** One attachment part as enumerated by listAttachments. */
+export interface AttachmentPart {
+  partNumber: string;
+  filename: string | null;
+  mimeType: string;
+  size: number | null;
+}
+
+/**
+ * Enumerate the attachment parts of a body-structure tree. A leaf counts as an
+ * attachment if its disposition is "attachment" (case-insensitive), or it has a
+ * filename (disposition `filename` or content-type `name`) and is not a plain
+ * text/plain|text/html body part.
+ */
+export function listAttachments(root: BodyPart): AttachmentPart[] {
+  const out: AttachmentPart[] = [];
+  const walk = (part: BodyPart): void => {
+    if ("multipart" in part) {
+      for (const child of part.children) walk(child);
+      return;
+    }
+    const filename = attachmentFilename(part);
+    if (isAttachmentLeaf(part, filename)) {
+      out.push({
+        partNumber: part.partNumber,
+        filename,
+        mimeType: `${part.type.toLowerCase()}/${part.subtype.toLowerCase()}`,
+        size: part.size,
+      });
+    }
+  };
+  walk(root);
+  return out;
+}
+
+function attachmentFilename(part: BodyPartLeaf): string | null {
+  const raw = part.dispositionParams.filename ?? part.params.name ?? null;
+  return raw === null ? null : decodeRfc2047(raw);
+}
+
+function isAttachmentLeaf(part: BodyPartLeaf, filename: string | null): boolean {
+  if (part.disposition && part.disposition.toLowerCase() === "attachment") {
+    return true;
+  }
+  if (filename === null) return false;
+  const t = part.type.toLowerCase();
+  const sub = part.subtype.toLowerCase();
+  // A text/plain|text/html part with a filename is still treated as the body.
+  if (t === "text" && (sub === "plain" || sub === "html")) return false;
+  return true;
+}
+
+const utf8Decoder = new TextDecoder("utf-8");
+
+/**
+ * Decode the common RFC 2047 encoded-word forms `=?utf-8?B?...?=` and
+ * `=?utf-8?Q?...?=` (charset utf-8/us-ascii only, case-insensitive). Any word
+ * with another charset, or that fails to decode, is left untouched.
+ */
+export function decodeRfc2047(input: string): string {
+  return input.replace(
+    /=\?([^?]+)\?([BbQq])\?([^?]*)\?=/g,
+    (whole, charset: string, enc: string, data: string) => {
+      const cs = charset.toLowerCase();
+      if (cs !== "utf-8" && cs !== "us-ascii") return whole;
+      try {
+        const bytes =
+          enc.toUpperCase() === "B" ? base64ToBytes(data) : qDecodeToBytes(data);
+        return utf8Decoder.decode(bytes);
+      } catch {
+        return whole;
+      }
+    },
+  );
+}
+
+function base64ToBytes(b64: string): Uint8Array {
+  const bin = atob(b64.replace(/\s+/g, ""));
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+
+function qDecodeToBytes(s: string): Uint8Array {
+  const bytes: number[] = [];
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (c === "_") {
+      bytes.push(0x20);
+    } else if (c === "=") {
+      const hex = s.slice(i + 1, i + 3);
+      if (!/^[0-9A-Fa-f]{2}$/.test(hex)) throw new ImapParseError("bad Q-encoding");
+      bytes.push(parseInt(hex, 16));
+      i += 2;
+    } else {
+      bytes.push(c.charCodeAt(0));
+    }
+  }
+  return new Uint8Array(bytes);
 }

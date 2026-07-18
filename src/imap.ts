@@ -143,7 +143,7 @@ export class ImapSession {
     if (uids.length === 0) return [];
     const set = this.uidSet(uids);
     const untagged = await this.command(
-      `UID FETCH ${set} (UID FLAGS RFC822.SIZE INTERNALDATE ` +
+      `UID FETCH ${set} (UID FLAGS RFC822.SIZE INTERNALDATE BODYSTRUCTURE ` +
         `BODY.PEEK[HEADER.FIELDS (DATE FROM TO CC SUBJECT MESSAGE-ID)])`,
       "UID FETCH",
     );
@@ -158,6 +158,7 @@ export class ImapSession {
         internalDate: it.internalDate,
         flags: it.flags ?? [],
         headerBytes: it.sections[0]?.bytes ?? new Uint8Array(0),
+        bodyStructure: it.bodyStructure,
       };
     });
   }

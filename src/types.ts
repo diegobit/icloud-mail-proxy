@@ -25,6 +25,9 @@ export interface MessageSummary {
   seen: boolean;
   flagged: boolean;
   answered: boolean;
+  // True when the message's BODYSTRUCTURE reports at least one attachment part;
+  // false when there are none or the structure could not be parsed.
+  hasAttachments: boolean;
 }
 
 export interface AttachmentInfo {
