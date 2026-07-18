@@ -6,6 +6,25 @@ mailboxes, search, fetch a message) over HTTP or MCP without running anything
 locally, keeping the Apple credentials on the Worker rather than on whatever
 machine the agent runs on.
 
+## Lazy start — let your agent deploy it for you
+
+Clone the repo, open your coding agent (Claude Code, opencode, Codex, …) in
+it, and paste:
+
+```text
+Read README.md and DEPLOY.md, then deploy this iCloud mail proxy for me with
+my own Apple account and Cloudflare zone. Do everything you can yourself:
+ask me which hostname to use and edit wrangler.jsonc accordingly, run
+npm install, generate the API_TOKEN, deploy, and verify the live endpoints.
+Leave to me only the steps that need my credentials — creating the Apple
+app-specific password, running `npx wrangler login`, and entering the
+ICLOUD_USER / ICLOUD_APP_PASSWORD secrets — and tell me exactly when and
+how to do each one. Never ask me to paste credentials into the chat.
+When it works, give me the MCP config for the agent client I tell you.
+```
+
+The manual version of the same steps follows.
+
 ## Quick start — deploy with your own iCloud account
 
 ```bash
@@ -38,12 +57,40 @@ npm install
    curl -H "Authorization: Bearer $API_TOKEN" https://<your-hostname>/v1/mailboxes
    ```
 
-5. **Connect your agent** (Claude Code shown; any MCP client with
-   Streamable HTTP + headers works):
+5. **Connect your agent** — any MCP client with Streamable HTTP + headers
+   works. In the examples below, `ICLOUD_MAIL_TOKEN` is an environment
+   variable holding the token from step 3.
+
+   **Claude Code**:
 
    ```bash
    claude mcp add --transport http icloud-mail https://<your-hostname>/mcp \
-     --header "Authorization: Bearer $API_TOKEN"
+     --header "Authorization: Bearer $ICLOUD_MAIL_TOKEN"
+   ```
+
+   **opencode** — add to `~/.config/opencode/opencode.json` (or a project
+   `opencode.json`):
+
+   ```json
+   {
+     "mcp": {
+       "icloud-mail": {
+         "type": "remote",
+         "url": "https://<your-hostname>/mcp",
+         "enabled": true,
+         "oauth": false,
+         "headers": { "Authorization": "Bearer {env:ICLOUD_MAIL_TOKEN}" }
+       }
+     }
+   }
+   ```
+
+   **Codex CLI** — add to `~/.codex/config.toml`:
+
+   ```toml
+   [mcp_servers.icloud_mail]
+   url = "https://<your-hostname>/mcp"
+   bearer_token_env_var = "ICLOUD_MAIL_TOKEN"
    ```
 
 Optional: adjust `ALLOWED_MAILBOXES` and the size/result/look-back caps in
