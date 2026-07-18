@@ -28,6 +28,7 @@ const searchSchema = z
     text: z.string().optional(),
     limit: z.number().int().positive().optional(),
     unseen: z.boolean().optional(),
+    beforeUid: z.number().int().positive().optional(),
   })
   .strict();
 

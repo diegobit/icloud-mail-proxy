@@ -61,11 +61,17 @@ export interface SearchParams {
   text?: string;
   limit?: number;
   unseen?: boolean;
+  beforeUid?: number; // cursor: only return matches with uid < beforeUid
 }
 
 export interface SearchResult {
   mailbox: string;
   uidValidity: number;
-  total: number;      // total UIDs matched before limit
+  // Total UIDs matched by the date-window/criteria, before the limit and the
+  // beforeUid cursor are applied; stable across pages of the same search.
+  total: number;
   messages: MessageSummary[];
+  // Cursor for the next (older) page: pass as beforeUid to continue, or null
+  // when this page reached the oldest match in the window.
+  nextBeforeUid: number | null;
 }

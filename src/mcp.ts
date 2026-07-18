@@ -61,7 +61,9 @@ function buildServer(env: Env): McpServer {
         "first. `mailbox` must be one of the allowed mailboxes from list_mailboxes. " +
         "`after`/`before` are YYYY-MM-DD date bounds; a server-side maximum look-back window " +
         "always applies. `from`/`subject`/`text` are ASCII-only IMAP substring filters. " +
-        "`unseen: true` restricts results to unread messages. `limit` is capped server-side.",
+        "`unseen: true` restricts results to unread messages. `limit` is capped server-side. " +
+        "To page through older results, pass the `nextBeforeUid` from the previous response " +
+        "as `beforeUid`; a null `nextBeforeUid` means there are no older matches.",
       inputSchema: {
         mailbox: z.string().min(1).describe("Mailbox name, exactly as returned by list_mailboxes"),
         after: z.string().optional().describe("Only messages on/after this date (YYYY-MM-DD)"),
@@ -71,6 +73,12 @@ function buildServer(env: Env): McpServer {
         text: z.string().optional().describe("Substring match on the full message text (ASCII only)"),
         limit: z.number().int().positive().optional().describe("Max results (capped server-side)"),
         unseen: z.boolean().optional().describe("If true, only return unread (unseen) messages"),
+        beforeUid: z
+          .number()
+          .int()
+          .positive()
+          .optional()
+          .describe("Pass nextBeforeUid from the previous page to get older results"),
       },
     },
     async (args) =>
@@ -84,6 +92,7 @@ function buildServer(env: Env): McpServer {
           text: args.text,
           limit: args.limit,
           unseen: args.unseen,
+          beforeUid: args.beforeUid,
         }),
       ),
   );

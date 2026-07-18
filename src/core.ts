@@ -10,6 +10,7 @@ import PostalMime from "postal-mime";
 import type { Address as PMAddress, Email as PMEmail } from "postal-mime";
 import { ImapError, ImapSession } from "./imap";
 import { htmlToText } from "./html-text";
+import { selectPage } from "./paging";
 import {
   listAttachments,
   parseBodyStructure,
@@ -177,6 +178,13 @@ export async function searchMail(env: Env, params: SearchParams): Promise<Search
   }
   if (limit > maxResults) limit = maxResults;
 
+  if (
+    params.beforeUid !== undefined &&
+    (!Number.isSafeInteger(params.beforeUid) || params.beforeUid <= 0)
+  ) {
+    throw new ApiError(400, "invalid_before_uid", "beforeUid must be a positive integer");
+  }
+
   // Date window. The default lower bound (today - MAX_SEARCH_DAYS) always
   // applies; an explicit `after` can only narrow it, never widen it.
   const today = todayUtc();
@@ -213,9 +221,9 @@ export async function searchMail(env: Env, params: SearchParams): Promise<Search
       const matched = await session.uidSearch(criteria);
       const total = matched.length;
 
-      // Highest UIDs are the newest messages; take the last `limit` of them.
-      const sortedAsc = [...matched].sort((a, b) => a - b);
-      const selected = sortedAsc.slice(-limit);
+      // Highest UIDs are the newest messages; take the newest `limit` matches
+      // older than the beforeUid cursor (when supplied).
+      const { page: selected, nextBeforeUid } = selectPage(matched, limit, params.beforeUid);
 
       const envelopes = await session.fetchEnvelopes(selected);
       const messages: MessageSummary[] = [];
@@ -244,6 +252,7 @@ export async function searchMail(env: Env, params: SearchParams): Promise<Search
         uidValidity: examined.uidValidity,
         total,
         messages,
+        nextBeforeUid,
       };
     } finally {
       await session.logout();

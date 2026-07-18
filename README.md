@@ -158,7 +158,8 @@ curl -X POST -H "Authorization: Bearer $API_TOKEN" \
       "answered": false,
       "hasAttachments": true
     }
-  ]
+  ],
+  "nextBeforeUid": 4700
 }
 ```
 
@@ -173,6 +174,13 @@ time, and a `hasAttachments` boolean derived from the message's
 A message's identity is the
 composite `(mailbox, uidValidity, uid)`; `uid` alone is only meaningful
 together with the `uidValidity` it was returned with.
+
+Results are newest-first and paged with a `beforeUid` cursor. Each response
+carries `nextBeforeUid`: the lowest `uid` on the page when older matches
+remain, or `null` at the end. To fetch the next (older) page, repeat the
+search with the same filters plus `"beforeUid": <that value>`. `total` counts
+all matches in the date window (before the `beforeUid` cursor is applied), so
+it stays stable across pages rather than shrinking as you page.
 
 ### `GET /v1/messages/:mailbox/:uidValidity/:uid`
 
@@ -287,8 +295,9 @@ npm run typecheck   # tsc --noEmit
 - Only the plain-text body is returned; HTML bodies are never surfaced.
 - Attachments are metadata only (filename, MIME type, size) — content is
   never fetched.
-- No pagination beyond `limit`/`MAX_RESULTS`: `search_mail` returns a single
-  page plus a `total` count, not a cursor for the rest.
+- Pagination is newest-first only: `search_mail` returns one page plus a
+  `nextBeforeUid` cursor for older results, but there is no forward/newer
+  cursor and no random access into the middle of the result set.
 - Each request opens its own IMAP connection to `imap.mail.me.com:993` and
   logs out at the end; there is no persistent/pooled connection across
   requests.
