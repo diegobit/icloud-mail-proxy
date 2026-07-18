@@ -8,7 +8,7 @@
 
 import PostalMime from "postal-mime";
 import type { Address as PMAddress, Email as PMEmail } from "postal-mime";
-import { ImapSession } from "./imap";
+import { ImapError, ImapSession } from "./imap";
 import { htmlToText } from "./html-text";
 import { quoteImapString, toImapDate } from "./imap-parse";
 import type {
@@ -34,6 +34,23 @@ export class ApiError extends Error {
 }
 
 const MS_PER_DAY = 86_400_000;
+
+/**
+ * Run fn; if it fails because the server dropped the connection (ImapError
+ * "BYE"), run it exactly once more with a fresh connection. Any other failure —
+ * including on the retry — propagates, so deterministic errors (ApiError,
+ * NO/BAD/PARSE) and TIMEOUT are never retried.
+ */
+async function withRetryOnce<T>(fn: () => Promise<T>): Promise<T> {
+  try {
+    return await fn();
+  } catch (e) {
+    if (e instanceof ImapError && e.code === "BYE") {
+      return await fn();
+    }
+    throw e;
+  }
+}
 
 /** Parse ALLOWED_MAILBOXES ("A,B,C") into a trimmed, non-empty list. */
 export function listMailboxes(env: Env): string[] {
@@ -166,46 +183,48 @@ export async function searchMail(env: Env, params: SearchParams): Promise<Search
   }
   const criteria = criteriaParts.join(" ");
 
-  const session = await ImapSession.open(env.ICLOUD_USER, env.ICLOUD_APP_PASSWORD);
-  try {
-    const examined = await session.examine(params.mailbox);
-    const matched = await session.uidSearch(criteria);
-    const total = matched.length;
+  return withRetryOnce(async () => {
+    const session = await ImapSession.open(env.ICLOUD_USER, env.ICLOUD_APP_PASSWORD);
+    try {
+      const examined = await session.examine(params.mailbox);
+      const matched = await session.uidSearch(criteria);
+      const total = matched.length;
 
-    // Highest UIDs are the newest messages; take the last `limit` of them.
-    const sortedAsc = [...matched].sort((a, b) => a - b);
-    const selected = sortedAsc.slice(-limit);
+      // Highest UIDs are the newest messages; take the last `limit` of them.
+      const sortedAsc = [...matched].sort((a, b) => a - b);
+      const selected = sortedAsc.slice(-limit);
 
-    const envelopes = await session.fetchEnvelopes(selected);
-    const messages: MessageSummary[] = [];
-    for (const env0 of envelopes) {
-      const parsed = await parseEmail(ensureHeaderTerminator(env0.headerBytes));
-      const flags = env0.flags.map((f) => f.toLowerCase());
-      messages.push({
+      const envelopes = await session.fetchEnvelopes(selected);
+      const messages: MessageSummary[] = [];
+      for (const env0 of envelopes) {
+        const parsed = await parseEmail(ensureHeaderTerminator(env0.headerBytes));
+        const flags = env0.flags.map((f) => f.toLowerCase());
+        messages.push({
+          mailbox: params.mailbox,
+          uidValidity: examined.uidValidity,
+          uid: env0.uid,
+          date: parsed.date ?? env0.internalDate ?? null,
+          from: mapAddresses(parsed.from),
+          to: mapAddresses(parsed.to),
+          subject: parsed.subject ?? null,
+          size: env0.size,
+          seen: flags.includes("\\seen"),
+          flagged: flags.includes("\\flagged"),
+          answered: flags.includes("\\answered"),
+        });
+      }
+      messages.sort((a, b) => b.uid - a.uid);
+
+      return {
         mailbox: params.mailbox,
         uidValidity: examined.uidValidity,
-        uid: env0.uid,
-        date: parsed.date ?? env0.internalDate ?? null,
-        from: mapAddresses(parsed.from),
-        to: mapAddresses(parsed.to),
-        subject: parsed.subject ?? null,
-        size: env0.size,
-        seen: flags.includes("\\seen"),
-        flagged: flags.includes("\\flagged"),
-        answered: flags.includes("\\answered"),
-      });
+        total,
+        messages,
+      };
+    } finally {
+      await session.logout();
     }
-    messages.sort((a, b) => b.uid - a.uid);
-
-    return {
-      mailbox: params.mailbox,
-      uidValidity: examined.uidValidity,
-      total,
-      messages,
-    };
-  } finally {
-    await session.logout();
-  }
+  });
 }
 
 export async function getMessage(
@@ -224,87 +243,89 @@ export async function getMessage(
 
   const maxBytes = intEnv(env.MAX_MESSAGE_BYTES, 3_145_728);
 
-  const session = await ImapSession.open(env.ICLOUD_USER, env.ICLOUD_APP_PASSWORD);
-  try {
-    const examined = await session.examine(mailbox);
-    if (examined.uidValidity !== uidValidity) {
-      throw new ApiError(
-        409,
-        "uidvalidity_mismatch",
-        `UIDVALIDITY changed (now ${examined.uidValidity}); re-run the search to get fresh ids`,
-      );
-    }
-
-    let size: number;
+  return withRetryOnce(async () => {
+    const session = await ImapSession.open(env.ICLOUD_USER, env.ICLOUD_APP_PASSWORD);
     try {
-      size = await session.fetchSize(uid);
-    } catch (e) {
-      // No FETCH data for this UID (or unparseable) => the message is gone.
-      const code = (e as { code?: string }).code;
-      if (code === "PARSE" || code === "NO") {
-        throw new ApiError(404, "message_not_found", `no message with uid ${uid}`);
+      const examined = await session.examine(mailbox);
+      if (examined.uidValidity !== uidValidity) {
+        throw new ApiError(
+          409,
+          "uidvalidity_mismatch",
+          `UIDVALIDITY changed (now ${examined.uidValidity}); re-run the search to get fresh ids`,
+        );
       }
-      throw e;
-    }
-    // Oversized messages are fetched partially (first maxBytes bytes) and
-    // flagged, rather than refused with a 413.
-    const truncated = size > maxBytes;
-    const raw = truncated
-      ? await session.fetchRawPartial(uid, maxBytes)
-      : await session.fetchRaw(uid, maxBytes);
 
-    let parsed: PMEmail;
-    try {
-      parsed = await parseEmail(raw);
-    } catch (e) {
-      // postal-mime tolerates truncated input, but a cut mid-structure can
-      // still make it throw. For a truncated fetch, degrade to a minimal,
-      // clearly-flagged detail instead of surfacing a 500.
-      if (!truncated) throw e;
+      let size: number;
+      try {
+        size = await session.fetchSize(uid);
+      } catch (e) {
+        // No FETCH data for this UID (or unparseable) => the message is gone.
+        const code = (e as { code?: string }).code;
+        if (code === "PARSE" || code === "NO") {
+          throw new ApiError(404, "message_not_found", `no message with uid ${uid}`);
+        }
+        throw e;
+      }
+      // Oversized messages are fetched partially (first maxBytes bytes) and
+      // flagged, rather than refused with a 413.
+      const truncated = size > maxBytes;
+      const raw = truncated
+        ? await session.fetchRawPartial(uid, maxBytes)
+        : await session.fetchRaw(uid, maxBytes);
+
+      let parsed: PMEmail;
+      try {
+        parsed = await parseEmail(raw);
+      } catch (e) {
+        // postal-mime tolerates truncated input, but a cut mid-structure can
+        // still make it throw. For a truncated fetch, degrade to a minimal,
+        // clearly-flagged detail instead of surfacing a 500.
+        if (!truncated) throw e;
+        return {
+          id: { mailbox, uidValidity, uid },
+          date: null,
+          from: [],
+          to: [],
+          cc: [],
+          subject: null,
+          messageId: null,
+          untrustedEmailContent: { text: null, textSource: null },
+          attachments: [],
+          truncated: true,
+        };
+      }
+
+      const attachments: AttachmentInfo[] = parsed.attachments.map((att, index) => ({
+        index,
+        filename: att.filename ?? null,
+        mimeType: att.mimeType ?? null,
+        size: attachmentByteLength(att.content),
+      }));
+
+      // Body text is untrusted third-party content; raw HTML is never surfaced.
+      // Prefer the message's own plain-text part; otherwise derive text from the
+      // HTML part so HTML-only messages are not returned empty.
+      let text: string | null = parsed.text ?? null;
+      let textSource: "text" | "html" | null = text !== null ? "text" : null;
+      if (text === null && parsed.html) {
+        text = htmlToText(parsed.html);
+        textSource = "html";
+      }
+
       return {
         id: { mailbox, uidValidity, uid },
-        date: null,
-        from: [],
-        to: [],
-        cc: [],
-        subject: null,
-        messageId: null,
-        untrustedEmailContent: { text: null, textSource: null },
-        attachments: [],
-        truncated: true,
+        date: parsed.date ?? null,
+        from: mapAddresses(parsed.from),
+        to: mapAddresses(parsed.to),
+        cc: mapAddresses(parsed.cc),
+        subject: parsed.subject ?? null,
+        messageId: parsed.messageId ?? null,
+        untrustedEmailContent: { text, textSource },
+        attachments,
+        truncated,
       };
+    } finally {
+      await session.logout();
     }
-
-    const attachments: AttachmentInfo[] = parsed.attachments.map((att, index) => ({
-      index,
-      filename: att.filename ?? null,
-      mimeType: att.mimeType ?? null,
-      size: attachmentByteLength(att.content),
-    }));
-
-    // Body text is untrusted third-party content; raw HTML is never surfaced.
-    // Prefer the message's own plain-text part; otherwise derive text from the
-    // HTML part so HTML-only messages are not returned empty.
-    let text: string | null = parsed.text ?? null;
-    let textSource: "text" | "html" | null = text !== null ? "text" : null;
-    if (text === null && parsed.html) {
-      text = htmlToText(parsed.html);
-      textSource = "html";
-    }
-
-    return {
-      id: { mailbox, uidValidity, uid },
-      date: parsed.date ?? null,
-      from: mapAddresses(parsed.from),
-      to: mapAddresses(parsed.to),
-      cc: mapAddresses(parsed.cc),
-      subject: parsed.subject ?? null,
-      messageId: parsed.messageId ?? null,
-      untrustedEmailContent: { text, textSource },
-      attachments,
-      truncated,
-    };
-  } finally {
-    await session.logout();
-  }
+  });
 }
