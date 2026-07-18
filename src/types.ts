@@ -6,6 +6,12 @@ export interface Env {
   MAX_RESULTS: string;
   MAX_MESSAGE_BYTES: string;
   MAX_SEARCH_DAYS: string;
+  // Comma-separated MIME prefixes an attachment may have to be downloadable.
+  // A trailing "/" entry is a type-prefix match (e.g. "image/"); an entry
+  // without one matches the full type exactly (e.g. "application/pdf").
+  ALLOWED_ATTACHMENT_TYPES: string;
+  // Cap on the encoded size of a single downloadable attachment, in bytes.
+  MAX_ATTACHMENT_BYTES: string;
 }
 
 export interface Address {

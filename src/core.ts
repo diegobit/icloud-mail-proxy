@@ -9,6 +9,7 @@
 import PostalMime from "postal-mime";
 import type { Address as PMAddress, Email as PMEmail } from "postal-mime";
 import { ImapError, ImapSession } from "./imap";
+import { ImapParseError } from "./imap-parse";
 import { htmlToText } from "./html-text";
 import { selectPage } from "./paging";
 import {
@@ -17,7 +18,11 @@ import {
   parseImapList,
   quoteImapString,
   toImapDate,
+  type AttachmentPart,
+  type BodyPart,
+  type BodyPartLeaf,
 } from "./imap-parse";
+import { decodeTransferEncoding } from "./mime-decode";
 import type {
   Address,
   AttachmentInfo,
@@ -357,6 +362,137 @@ export async function getMessage(
         attachments,
         truncated,
       };
+    } finally {
+      await session.logout();
+    }
+  });
+}
+
+/** Parse ALLOWED_ATTACHMENT_TYPES into a trimmed, lowercased, non-empty list. */
+function listAttachmentTypes(env: Env): string[] {
+  return env.ALLOWED_ATTACHMENT_TYPES.split(",")
+    .map((s) => s.trim().toLowerCase())
+    .filter((s) => s.length > 0);
+}
+
+/**
+ * An attachment MIME type is allowed if it matches any configured entry: an
+ * entry ending in "/" is a type-prefix match ("image/" allows "image/png"), an
+ * entry without one must match the full type exactly.
+ */
+function isAttachmentTypeAllowed(mimeType: string, allowed: string[]): boolean {
+  const t = mimeType.toLowerCase();
+  return allowed.some((entry) => (entry.endsWith("/") ? t.startsWith(entry) : t === entry));
+}
+
+/** Find the non-multipart leaf with the given RFC 3501 part number, or null. */
+function findLeafByPartNumber(root: BodyPart, partNumber: string): BodyPartLeaf | null {
+  let found: BodyPartLeaf | null = null;
+  const walk = (part: BodyPart): void => {
+    if ("multipart" in part) {
+      for (const child of part.children) walk(child);
+      return;
+    }
+    if (part.partNumber === partNumber) found = part;
+  };
+  walk(root);
+  return found;
+}
+
+/**
+ * Fetch and decode a single attachment (by its index in the message's
+ * listAttachments enumeration) subject to the type allowlist and size cap.
+ * Returns the DECODED bytes plus the attachment's filename and MIME type.
+ */
+export async function getAttachment(
+  env: Env,
+  mailbox: string,
+  uidValidity: number,
+  uid: number,
+  index: number,
+): Promise<{ filename: string | null; mimeType: string; bytes: Uint8Array }> {
+  assertMailboxAllowed(env, mailbox);
+  if (!Number.isSafeInteger(uidValidity) || uidValidity <= 0) {
+    throw new ApiError(400, "invalid_uidvalidity", "uidValidity must be a positive integer");
+  }
+  if (!Number.isSafeInteger(uid) || uid <= 0) {
+    throw new ApiError(400, "invalid_uid", "uid must be a positive integer");
+  }
+  if (!Number.isSafeInteger(index) || index < 0) {
+    throw new ApiError(400, "invalid_index", "attachment index must be a non-negative integer");
+  }
+
+  const allowedTypes = listAttachmentTypes(env);
+  const maxBytes = intEnv(env.MAX_ATTACHMENT_BYTES, 2_097_152);
+
+  return withRetryOnce(async () => {
+    const session = await ImapSession.open(env.ICLOUD_USER, env.ICLOUD_APP_PASSWORD);
+    try {
+      const examined = await session.examine(mailbox);
+      if (examined.uidValidity !== uidValidity) {
+        throw new ApiError(
+          409,
+          "uidvalidity_mismatch",
+          `UIDVALIDITY changed (now ${examined.uidValidity}); re-run the search to get fresh ids`,
+        );
+      }
+
+      const bodyStructure = await session.fetchBodyStructure(uid);
+      if (bodyStructure === null) {
+        throw new ApiError(404, "message_not_found", `no message with uid ${uid}`);
+      }
+
+      let root: BodyPart;
+      let attachments: AttachmentPart[];
+      try {
+        const nodes = parseImapList(bodyStructure);
+        const first = nodes[0];
+        if (!Array.isArray(first)) throw new ImapParseError("no body-part list");
+        root = parseBodyStructure(first);
+        attachments = listAttachments(root);
+      } catch {
+        // We cannot enumerate the parts, so we cannot safely serve one. This is
+        // an upstream-shape problem (the server sent a BODYSTRUCTURE we cannot
+        // parse), hence a 502 rather than a client 4xx.
+        throw new ApiError(502, "bodystructure_unparseable", "could not parse the message structure");
+      }
+
+      const attachment = attachments[index];
+      if (!attachment) {
+        throw new ApiError(404, "attachment_not_found", `no attachment at index ${index}`);
+      }
+
+      const mimeType = attachment.mimeType.toLowerCase();
+      if (!isAttachmentTypeAllowed(mimeType, allowedTypes)) {
+        throw new ApiError(
+          415,
+          "attachment_type_not_allowed",
+          `attachment type ${mimeType} is not downloadable; allowed prefixes: ${allowedTypes.join(", ")}`,
+        );
+      }
+      // BODYSTRUCTURE size is the size of the ENCODED form, which is exactly
+      // what fetchPart transfers, so the cap applies to it directly.
+      if (attachment.size !== null && attachment.size > maxBytes) {
+        throw new ApiError(
+          413,
+          "attachment_too_large",
+          `attachment is ${attachment.size} bytes, over the ${maxBytes}-byte limit`,
+        );
+      }
+
+      const leaf = findLeafByPartNumber(root, attachment.partNumber);
+      // maxBytes also backstops the transfer when the declared size is unknown.
+      const raw = await session.fetchPart(uid, attachment.partNumber, maxBytes);
+      let bytes: Uint8Array;
+      try {
+        bytes = decodeTransferEncoding(raw, leaf?.encoding ?? null);
+      } catch (e) {
+        if (e instanceof ImapParseError) {
+          throw new ApiError(502, "attachment_undecodable", "attachment could not be decoded");
+        }
+        throw e;
+      }
+      return { filename: attachment.filename, mimeType: attachment.mimeType, bytes };
     } finally {
       await session.logout();
     }

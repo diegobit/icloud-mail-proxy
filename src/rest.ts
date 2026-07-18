@@ -3,7 +3,7 @@
 // IMAP work happens.
 
 import { z } from "zod";
-import { ApiError, getMessage, listMailboxes, searchMail } from "./core";
+import { ApiError, getAttachment, getMessage, listMailboxes, searchMail } from "./core";
 import { ImapError } from "./imap";
 import type { Env, SearchParams } from "./types";
 
@@ -88,6 +88,63 @@ async function handleGetMessage(
   return json(detail);
 }
 
+/**
+ * Choose a safe Content-Type for a served attachment. The core has already
+ * enforced the type allowlist, so this only guards the HTTP layer: a type
+ * carrying CR/LF (a header-injection attempt from a hostile server) degrades to
+ * octet-stream, and any text/* type is served as text/plain — never text/html —
+ * so mail content can never be served as an executable HTML/XSS gadget. Paired
+ * with X-Content-Type-Options: nosniff on the response.
+ */
+function safeContentType(mimeType: string): string {
+  if (/[\r\n]/.test(mimeType)) return "application/octet-stream";
+  if (mimeType.toLowerCase().startsWith("text/")) return "text/plain";
+  return mimeType;
+}
+
+/**
+ * Sanitize an attachment filename for the Content-Disposition header: strip
+ * CR/LF, quotes, backslashes and other non-printable characters; fall back to
+ * "attachment" when the name is null or reduces to empty.
+ */
+function sanitizeFilename(name: string | null): string {
+  if (name === null) return "attachment";
+  const cleaned = name.replace(/[\r\n"\\]/g, "").replace(/[\x00-\x1f\x7f]/g, "").trim();
+  return cleaned.length > 0 ? cleaned : "attachment";
+}
+
+async function handleGetAttachment(
+  segments: string[],
+  env: Env,
+): Promise<Response> {
+  // /v1/messages/:mailbox/:uidValidity/:uid/attachments/:index
+  const [mailboxEnc, uidValidityStr, uidStr, , indexStr] = segments;
+  let mailbox: string;
+  try {
+    mailbox = decodeURIComponent(mailboxEnc);
+  } catch {
+    return errorBody("invalid_request", "mailbox path segment is not valid", 400);
+  }
+  if (!/^\d+$/.test(uidValidityStr) || !/^\d+$/.test(uidStr) || !/^\d+$/.test(indexStr)) {
+    return errorBody("invalid_request", "uidValidity, uid and index must be integers", 400);
+  }
+  const { filename, mimeType, bytes } = await getAttachment(
+    env,
+    mailbox,
+    Number(uidValidityStr),
+    Number(uidStr),
+    Number(indexStr),
+  );
+  return new Response(bytes, {
+    status: 200,
+    headers: {
+      "Content-Type": safeContentType(mimeType),
+      "Content-Disposition": `attachment; filename="${sanitizeFilename(filename)}"`,
+      "X-Content-Type-Options": "nosniff",
+    },
+  });
+}
+
 export async function handleRest(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
   const segments = url.pathname.split("/").filter((s) => s.length > 0);
@@ -111,6 +168,17 @@ export async function handleRest(request: Request, env: Env): Promise<Response> 
       segments[1] === "search"
     ) {
       return await handleSearch(request, env);
+    }
+
+    // GET /v1/messages/:mailbox/:uidValidity/:uid/attachments/:index
+    if (
+      request.method === "GET" &&
+      segments.length === 7 &&
+      segments[0] === "v1" &&
+      segments[1] === "messages" &&
+      segments[5] === "attachments"
+    ) {
+      return await handleGetAttachment(segments.slice(2), env);
     }
 
     // GET /v1/messages/:mailbox/:uidValidity/:uid

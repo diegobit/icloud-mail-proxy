@@ -258,6 +258,66 @@ export class ImapSession {
     return body;
   }
 
+  /**
+   * UID FETCH n (BODYSTRUCTURE) -> the raw BODYSTRUCTURE text span, or null
+   * when the UID has no FETCH data (e.g. the message no longer exists).
+   */
+  async fetchBodyStructure(uid: number): Promise<string | null> {
+    assertUid(uid);
+    const untagged = await this.command(`UID FETCH ${uid} (BODYSTRUCTURE)`, "UID FETCH");
+    const items = parseFetchSections(untagged);
+    const item = items.find((x) => x.uid === uid) ?? items[0];
+    return item?.bodyStructure ?? null;
+  }
+
+  /**
+   * UID FETCH n (BODY.PEEK[<partNumber>]) -> the raw bytes of a single MIME
+   * part, still in its Content-Transfer-Encoding. The part number is validated
+   * against RFC 3501 dotted-integer syntax before interpolation (a hard
+   * command-injection guard). The response section spec echoes the part number
+   * (`BODY[2] {N}`), which the literal-capture loop ignores like fetchRaw. If
+   * the announced literal exceeds maxBytes (plus a little slack) the socket is
+   * closed and ImapError "LIMIT" is thrown before the payload is buffered.
+   */
+  async fetchPart(uid: number, partNumber: string, maxBytes: number): Promise<Uint8Array> {
+    assertUid(uid);
+    if (!/^\d+(\.\d+)*$/.test(partNumber)) {
+      throw new ImapError("PARSE", `invalid part number: ${partNumber}`);
+    }
+    if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0) {
+      throw new ImapError("PARSE", `invalid maxBytes: ${maxBytes}`);
+    }
+    const tag = this.nextTag();
+    await this.write(`${tag} UID FETCH ${uid} (BODY.PEEK[${partNumber}])\r\n`);
+    let body: Uint8Array | null = null;
+    for (;;) {
+      const tok = await this.nextToken();
+      if (tok.kind === "literal") {
+        body = tok.bytes;
+        continue;
+      }
+      const text = tok.text;
+      if (text.startsWith(`${tag} `)) {
+        this.checkTagged(text, "UID FETCH");
+        break;
+      }
+      if (text.startsWith("* BYE")) {
+        await this.destroy();
+        throw new ImapError("BYE", text);
+      }
+      const marker = text.match(/\{(\d+)\}$/);
+      if (marker) {
+        const n = Number(marker[1]);
+        if (n > maxBytes + PARTIAL_FETCH_SLACK) {
+          await this.destroy();
+          throw new ImapError("LIMIT", `attachment part ${n} bytes exceeds limit ${maxBytes}`);
+        }
+      }
+    }
+    if (body === null) throw new ImapError("PARSE", "FETCH returned no body");
+    return body;
+  }
+
   /** Best-effort LOGOUT then socket close. Never throws. */
   async logout(): Promise<void> {
     try {

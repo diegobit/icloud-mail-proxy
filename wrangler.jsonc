@@ -11,6 +11,8 @@
     "ALLOWED_MAILBOXES": "INBOX,Archive,Sent Messages",
     "MAX_RESULTS": "20",
     "MAX_MESSAGE_BYTES": "3145728",
-    "MAX_SEARCH_DAYS": "90"
+    "MAX_SEARCH_DAYS": "90",
+    "ALLOWED_ATTACHMENT_TYPES": "application/pdf,image/,text/",
+    "MAX_ATTACHMENT_BYTES": "2097152"
   }
 }
