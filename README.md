@@ -94,8 +94,8 @@ npm install
    ```
 
 Optional: adjust `ALLOWED_MAILBOXES` and the size/result/look-back caps in
-`wrangler.jsonc` `vars`. Full runbook, rotation and incident response:
-[DEPLOY.md](DEPLOY.md).
+`wrangler.jsonc` `vars`. Operations (token rotation, incident response,
+diagnostics, rollback): [DEPLOY.md](DEPLOY.md).
 
 ## Architecture
 
