@@ -590,16 +590,31 @@ function attachmentFilename(part: BodyPartLeaf): string | null {
   return raw === null ? null : decodeRfc2047(raw);
 }
 
-function isAttachmentLeaf(part: BodyPartLeaf, filename: string | null): boolean {
-  if (part.disposition && part.disposition.toLowerCase() === "attachment") {
-    return true;
-  }
+/**
+ * The single classification rule for "is this MIME part a real attachment",
+ * shared by the BODYSTRUCTURE path (search's hasAttachments, get_mail_attachment
+ * indexing) and the full-message path (get_mail_message's attachment list) so
+ * the two views always agree: disposition "attachment" counts; otherwise a part
+ * must have a filename and not be a text/plain|text/html body. Unnamed inline
+ * parts (e.g. newsletter images) are not attachments.
+ */
+export function isAttachmentPart(
+  mimeType: string,
+  disposition: string | null,
+  filename: string | null,
+): boolean {
+  if (disposition && disposition.toLowerCase() === "attachment") return true;
   if (filename === null) return false;
-  const t = part.type.toLowerCase();
-  const sub = part.subtype.toLowerCase();
-  // A text/plain|text/html part with a filename is still treated as the body.
-  if (t === "text" && (sub === "plain" || sub === "html")) return false;
-  return true;
+  const t = mimeType.toLowerCase();
+  return t !== "text/plain" && t !== "text/html";
+}
+
+function isAttachmentLeaf(part: BodyPartLeaf, filename: string | null): boolean {
+  return isAttachmentPart(
+    `${part.type}/${part.subtype}`,
+    part.disposition,
+    filename,
+  );
 }
 
 const utf8Decoder = new TextDecoder("utf-8");

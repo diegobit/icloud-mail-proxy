@@ -252,6 +252,9 @@ to get fresh `(uidValidity, uid)` pairs before retrying.
 
 Download one attachment's content. `index` is the 0-based position of the
 attachment in the `attachments` array returned by the message endpoint above.
+Both views (and search's `hasAttachments`) use one classification rule: a part
+with disposition `attachment`, or any named part that isn't the text body,
+counts; unnamed inline parts (e.g. newsletter images) are not attachments.
 
 ```
 curl -H "Authorization: Bearer $API_TOKEN" \

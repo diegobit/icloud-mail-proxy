@@ -13,6 +13,7 @@ import { ImapParseError } from "./imap-parse";
 import { htmlToText } from "./html-text";
 import { selectPage } from "./paging";
 import {
+  isAttachmentPart,
   listAttachments,
   parseBodyStructure,
   parseImapList,
@@ -346,12 +347,19 @@ export async function getMessage(
         };
       }
 
-      const attachments: AttachmentInfo[] = parsed.attachments.map((att, index) => ({
-        index,
-        filename: att.filename ?? null,
-        mimeType: att.mimeType ?? null,
-        size: attachmentByteLength(att.content),
-      }));
+      // Same classification rule as hasAttachments and get_mail_attachment
+      // (isAttachmentPart), so the list and its indices line up with both:
+      // unnamed inline parts (newsletter images) are not listed here.
+      const attachments: AttachmentInfo[] = parsed.attachments
+        .filter((att) =>
+          isAttachmentPart(att.mimeType ?? "", att.disposition ?? null, att.filename ?? null),
+        )
+        .map((att, index) => ({
+          index,
+          filename: att.filename ?? null,
+          mimeType: att.mimeType ?? null,
+          size: attachmentByteLength(att.content),
+        }));
 
       // Body text is untrusted third-party content; raw HTML is never surfaced.
       // Prefer the message's own plain-text part; otherwise derive text from the
