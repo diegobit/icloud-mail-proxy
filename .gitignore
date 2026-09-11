@@ -3,3 +3,5 @@ node_modules/
 .dev.vars
 .DS_Store
 dist/
+# Guided setup: generated wrangler configs and nonsecret resume state.
+.deploy/

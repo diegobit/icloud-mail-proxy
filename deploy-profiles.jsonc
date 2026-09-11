@@ -1,0 +1,18 @@
+// Named deployment targets that are part of the repository, for deployments
+// whose routing has to stay reproducible from a clean clone (Cloudflare
+// Workers Builds, CI dry-runs, a second machine). Each profile overrides
+// wrangler.base.jsonc; everything else — entry point, compatibility date,
+// size/look-back limits — is inherited, so there is only ever one copy.
+//
+// Guided setups do not need a profile: `npm run setup` records the selected
+// account and Worker in .deploy/state.json (gitignored) instead.
+{
+  "production": {
+    "description": "diegobit's deployment behind the icloud-mail.diegobit.com custom domain",
+    "name": "icloud-mail-proxy",
+    // Custom domain only: no workers.dev hostname for this Worker. This is
+    // what wrangler already infers from `routes`, stated explicitly.
+    "workers_dev": false,
+    "routes": [{ "pattern": "icloud-mail.diegobit.com", "custom_domain": true }]
+  }
+}

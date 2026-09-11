@@ -14,11 +14,20 @@ jobs:
         with:
           node-version: 22
           cache: npm
+      # Prompt-adapter tests open a POSIX pty via python3. Not a runtime
+      # dependency of setup or the Worker.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
       - run: npm ci
       - run: npm run typecheck
       - run: npm test
-      - name: Dry-run deploy (bundles without auth)
-        run: npx wrangler deploy --dry-run
+      # Both dry-runs bundle the Worker without credentials: the portable
+      # defaults a fresh clone gets, and the tracked production profile.
+      - name: Dry-run deploy (portable defaults)
+        run: npm run check:bundle
+      - name: Dry-run deploy (production profile)
+        run: npm run deploy:production -- --dry-run
 
 # Deploys are NOT done here. Cloudflare Workers Builds (the dashboard git
 # integration) builds and deploys main on push, gated on the same checks via

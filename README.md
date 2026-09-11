@@ -1,105 +1,182 @@
 # icloud-mail-proxy
 
-A read-only iCloud Mail proxy running as a Cloudflare Worker at
-`https://icloud-mail.diegobit.com`. It lets an agent read a mailbox (list
-mailboxes, search, fetch a message) over HTTP or MCP without running anything
-locally, keeping the Apple credentials on the Worker rather than on whatever
-machine the agent runs on.
+A read-only iCloud Mail proxy running as a Cloudflare Worker. It lets an agent
+read a mailbox (list mailboxes, search, fetch a message) over HTTP or MCP
+without running anything locally, keeping the Apple credentials on the Worker
+rather than on whatever machine the agent runs on.
 
-## Lazy start — let your agent deploy it for you
-
-Clone the repo, open your coding agent (Claude Code, opencode, Codex, …) in
-it, and paste:
-
-```text
-Read README.md and DEPLOY.md, then deploy this iCloud mail proxy for me with
-my own Apple account and Cloudflare zone. Do everything you can yourself:
-ask me which hostname to use and edit wrangler.jsonc accordingly, run
-npm install, generate the API_TOKEN, deploy, and verify the live endpoints.
-Leave to me only the steps that need my credentials — creating the Apple
-app-specific password, running `npx wrangler login`, and entering the
-ICLOUD_USER / ICLOUD_APP_PASSWORD secrets — and tell me exactly when and
-how to do each one. Never ask me to paste credentials into the chat.
-When it works, give me the MCP config for the agent client I tell you.
-```
-
-The manual version of the same steps follows.
+One deployment serves one iCloud account and lives in its owner's Cloudflare
+account. The examples in this README use the author's instance at
+`https://icloud-mail.diegobit.com`; the quick start below deploys your own.
 
 ## Quick start — deploy with your own iCloud account
 
-```bash
-git clone <this repo> && cd icloud-mail-proxy
-npm install
+You need Node 22 or newer, a Cloudflare account (the free plan is enough), and
+an Apple app-specific password.
+
+1. **Create the app-specific password**: at [appleid.apple.com](https://appleid.apple.com)
+   → Sign-In and Security → App-Specific Passwords, create one named e.g.
+   `cf-mail-proxy`, and don't reuse it anywhere else. Your normal Apple
+   password will not work — Apple requires an app-specific password for IMAP.
+2. **Run the guided setup**:
+
+   ```bash
+   git clone <this repo> && cd icloud-mail-proxy
+   npm ci
+   npm run setup
+   ```
+
+Setup asks its way through the whole deployment: it logs you in to Cloudflare
+through `wrangler login` (in your browser), picks the account and the Worker
+name, takes your iCloud address and app-specific password, asks which folders
+the proxy may read, generates the API bearer token, uploads the three secrets,
+deploys to `<worker>.<your-subdomain>.workers.dev`, and verifies the live
+endpoint over both REST and MCP. It prints the client snippets for Claude
+Code, opencode and Codex CLI at the end.
+
+Four things worth knowing before you run it:
+
+- **The API token is shown once.** Setup generates it and offers to print it
+  so you can store it in a password manager. Cloudflare's API cannot return a
+  secret's value. If you lose it, run `npm run setup` again and choose to
+  rotate it — every client then needs the new value. The Apple app-specific
+  password is never printed.
+- **Folder names must match iCloud exactly**, spaces included. The default is
+  `INBOX,Archive,Sent Messages`. Setup checks the first folder with a bounded
+  search (one message, metadata only); verification fails until that folder
+  can be read.
+- **Ctrl-C is safe.** Run `npm run setup` again and it resumes with the same
+  account, Worker and secrets, and only changes credentials or the token if
+  you ask it to. Each run deploys the Worker again, then verifies.
+- **The Apple password never touches the repository.** It goes to Wrangler on
+  stdin, never as a command-line argument, and is not written to disk or
+  printed. The API token is shown only if you ask to see it. `.deploy/`
+  (gitignored) holds the generated wrangler config and a record of the
+  account, Worker and folders you chose — no secrets.
+
+Re-run setup to change folders, replace the Apple password, or rotate the
+token. To deploy new code afterwards, `npm run deploy` reuses the same target.
+
+## Let your agent walk you through it
+
+If you'd rather not read the rest of this file, clone the repo, open your
+coding agent (Claude Code, opencode, Codex, …) in it, and paste:
+
+```text
+Read README.md and DEPLOY.md, then help me deploy this iCloud mail proxy to my
+own Cloudflare account. Do the parts you can: check my Node and wrangler
+versions, run npm ci, and tell me exactly when to create the Apple
+app-specific password. Then tell me to run `npm run setup` myself — it prompts
+for a hidden password, so it needs my terminal, not yours. Afterwards, take
+the endpoint it prints and set up the MCP config for the client I tell you.
+Never ask me to paste credentials into the chat.
 ```
 
-1. **Apple app-specific password**: at [appleid.apple.com](https://appleid.apple.com)
-   → Sign-In and Security → App-Specific Passwords, create one named e.g.
-   `cf-mail-proxy` (don't reuse it anywhere else).
-2. **Pick your hostname**: edit the `routes` entry in `wrangler.jsonc` to a
-   hostname on a zone your Cloudflare account owns, e.g.
-   `mail-api.yourdomain.com`. No domain on Cloudflare? Delete the `routes`
-   block entirely and the Worker deploys to
-   `icloud-mail-proxy.<your-subdomain>.workers.dev` instead.
-3. **Authenticate and set secrets**:
+## Connect your agent
 
-   ```bash
-   npx wrangler login
-   npx wrangler secret put ICLOUD_USER            # full iCloud address, e.g. you@icloud.com
-   npx wrangler secret put ICLOUD_APP_PASSWORD    # the password from step 1
-   openssl rand -base64 32                        # generate the API bearer token, keep it
-   npx wrangler secret put API_TOKEN              # paste the generated token
-   ```
+Any MCP client with Streamable HTTP and custom headers works. Keep the token
+in an environment variable (`ICLOUD_MAIL_TOKEN` below) when the client can
+reference it that way. Replace `<your-worker>` with the hostname setup printed.
 
-4. **Deploy and verify** (DNS record and TLS cert are created automatically):
+**Claude Code** (single-quote the header so your shell does not expand the
+token; if `$ICLOUD_MAIL_TOKEN` is expanded, this CLI may store the secret
+itself rather than an environment-variable reference):
 
-   ```bash
-   npx wrangler deploy
-   curl -H "Authorization: Bearer $API_TOKEN" https://<your-hostname>/v1/mailboxes
-   ```
+```bash
+claude mcp add --transport http icloud-mail https://<your-worker>/mcp \
+  --header 'Authorization: Bearer $ICLOUD_MAIL_TOKEN'
+```
 
-5. **Connect your agent** — any MCP client with Streamable HTTP + headers
-   works. In the examples below, `ICLOUD_MAIL_TOKEN` is an environment
-   variable holding the token from step 3.
+**opencode** — add to `~/.config/opencode/opencode.json` (or a project
+`opencode.json`):
 
-   **Claude Code**:
+```json
+{
+  "mcp": {
+    "icloud-mail": {
+      "type": "remote",
+      "url": "https://<your-worker>/mcp",
+      "enabled": true,
+      "oauth": false,
+      "headers": { "Authorization": "Bearer {env:ICLOUD_MAIL_TOKEN}" }
+    }
+  }
+}
+```
 
-   ```bash
-   claude mcp add --transport http icloud-mail https://<your-hostname>/mcp \
-     --header "Authorization: Bearer $ICLOUD_MAIL_TOKEN"
-   ```
+**Codex CLI** — add to `~/.codex/config.toml`:
 
-   **opencode** — add to `~/.config/opencode/opencode.json` (or a project
-   `opencode.json`):
+```toml
+[mcp_servers.icloud_mail]
+url = "https://<your-worker>/mcp"
+bearer_token_env_var = "ICLOUD_MAIL_TOKEN"
+```
 
-   ```json
+REST works the same way:
+
+```bash
+curl -H "Authorization: Bearer $ICLOUD_MAIL_TOKEN" https://<your-worker>/v1/mailboxes
+```
+
+## Deploying without the guided setup
+
+Setup does nothing you can't do by hand. Use the manual path for a custom
+domain, a second deployment, or a deploy driven by CI.
+
+1. **Describe the target.** Copy the `production` entry in
+   `deploy-profiles.jsonc` and edit it: a Worker name, and either
+   `"workers_dev": true` or a `routes` entry for a hostname on a zone your
+   Cloudflare account owns (the DNS record and TLS certificate are created for
+   you).
+
+   ```jsonc
    {
-     "mcp": {
-       "icloud-mail": {
-         "type": "remote",
-         "url": "https://<your-hostname>/mcp",
-         "enabled": true,
-         "oauth": false,
-         "headers": { "Authorization": "Bearer {env:ICLOUD_MAIL_TOKEN}" }
-       }
+     "mine": {
+       "description": "my deployment",
+       "name": "icloud-mail-proxy",
+       "workers_dev": false,
+       "routes": [{ "pattern": "mail-api.example.com", "custom_domain": true }]
      }
    }
    ```
 
-   **Codex CLI** — add to `~/.codex/config.toml`:
+   A profile states only what differs. The entry point, compatibility date,
+   folder list and the size, result and look-back caps come from
+   `wrangler.base.jsonc`, so there is one copy of them for every target.
 
-   ```toml
-   [mcp_servers.icloud_mail]
-   url = "https://<your-hostname>/mcp"
-   bearer_token_env_var = "ICLOUD_MAIL_TOKEN"
+2. **Upload the secrets.** `wrangler secret bulk` reads JSON on stdin, which
+   keeps the values out of your shell history and out of `ps` output:
+
+   ```bash
+   npx wrangler login
+   openssl rand -base64 32              # the API bearer token — save it now
+   npx wrangler secret bulk --name icloud-mail-proxy
+   # paste one line, then Ctrl-D:
+   # {"ICLOUD_USER":"you@icloud.com","ICLOUD_APP_PASSWORD":"xxxx-xxxx-xxxx-xxxx","API_TOKEN":"…"}
    ```
 
-Optional: adjust `ALLOWED_MAILBOXES` and the size/result/look-back caps in
-`wrangler.jsonc` `vars`. Operations (token rotation, incident response,
-diagnostics, rollback): [DEPLOY.md](DEPLOY.md).
+   For a Worker that doesn't exist yet, Wrangler creates an empty one to hold
+   the secrets. Until real code is deployed there is nothing to reach, and a
+   deployment without `API_TOKEN` answers every request with HTTP 500 rather
+   than serving mail.
 
-GitHub Actions runs checks on every push/PR; deploys of `main` are automatic
-via Cloudflare Workers Builds once the repo is connected in the dashboard —
-see [DEPLOY.md](DEPLOY.md#ci--automated-deploys).
+3. **Deploy and check:**
+
+   ```bash
+   npm run deploy -- --profile mine
+   curl -H "Authorization: Bearer $ICLOUD_MAIL_TOKEN" https://<your-hostname>/healthz
+   ```
+
+There is deliberately no `wrangler.jsonc` at the repository root: a bare
+`wrangler deploy` therefore has no target and fails, instead of publishing to
+whichever Worker happens to be named in a tracked file. Each deploy composes
+`wrangler.base.jsonc` with exactly one selected target into
+`.deploy/wrangler.<target>.jsonc`. `npm run deploy -- --config <path>` uses a
+config you wrote yourself, and `npm run deploy -- --print-config` shows what
+would be deployed without deploying it.
+
+Operations — updates, reruns, token rotation, incident response, diagnostics,
+rollback, automated deploys: [DEPLOY.md](DEPLOY.md).
 
 ## Architecture
 
@@ -269,7 +346,7 @@ attachment's own MIME type, except that any `text/*` attachment is served as
 `text/plain` (never `text/html`) so mail content can never be served back as
 executable HTML.
 
-Downloads are gated by two `wrangler.jsonc` vars:
+Downloads are gated by two `wrangler.base.jsonc` vars:
 
 - `ALLOWED_ATTACHMENT_TYPES` — a comma-separated list of allowed MIME
   prefixes (default `application/pdf,image/,text/`). An entry ending in `/` is
@@ -296,10 +373,11 @@ tools that mirror the REST endpoints: `list_mailboxes`, `search_mail`,
 subject to the same type allowlist and size cap). A fresh `McpServer` is built
 per request; no session state is held between calls.
 
-Connect from Claude Code:
+Connect from Claude Code (single-quote the header so the shell does not expand
+the token; this CLI may store an expanded header value):
 
 ```
-claude mcp add --transport http icloud-mail https://icloud-mail.diegobit.com/mcp --header "Authorization: Bearer $API_TOKEN"
+claude mcp add --transport http icloud-mail https://icloud-mail.diegobit.com/mcp --header 'Authorization: Bearer $API_TOKEN'
 ```
 
 ## Security model
@@ -350,9 +428,14 @@ claude mcp add --transport http icloud-mail https://icloud-mail.diegobit.com/mcp
 
 ```
 cp .dev.vars.example .dev.vars   # fill in ICLOUD_USER, ICLOUD_APP_PASSWORD, API_TOKEN
-npm install
+npm ci
 npm run dev
 ```
+
+`.dev.vars` is for `wrangler dev` only — deployed Workers read their secrets
+from Cloudflare, and nothing in the setup or deploy path reads or writes this
+file. `npm run dev` and the checks below work in a fresh clone, with no
+Cloudflare account and no `npm run setup` state.
 
 ```
 curl -H "Authorization: Bearer $API_TOKEN" http://localhost:8787/v1/mailboxes
@@ -362,6 +445,11 @@ curl -H "Authorization: Bearer $API_TOKEN" http://localhost:8787/v1/mailboxes
 npm test            # vitest run
 npm run typecheck   # tsc --noEmit
 ```
+
+`npm test` includes prompt-adapter tests that drive a real PTY. Those need
+Python 3 and a POSIX pty (macOS or Linux). That is a development and CI
+prerequisite only: `npm run setup` and deploying the Worker stay Node-only
+and do not use Python.
 
 ## Limitations
 
@@ -379,3 +467,10 @@ npm run typecheck   # tsc --noEmit
 - Each request opens its own IMAP connection to `imap.mail.me.com:993` and
   logs out at the end; there is no persistent/pooled connection across
   requests.
+- `ALLOWED_MAILBOXES` names have to match the iCloud folder names exactly.
+  There is no folder discovery, and `GET /v1/mailboxes` reports what the
+  Worker is configured to allow, not what exists in the account — a
+  misspelled folder only shows up when a search against it fails.
+- The guided setup always deploys to `workers.dev`. A custom domain is a
+  manual step (a `routes` entry in a profile, see the README section above),
+  and one deployment serves exactly one iCloud account.

@@ -1,0 +1,28 @@
+// Portable deployment defaults — tracked, and deliberately free of any
+// personal deployment identity: no `account_id`, no `routes`.
+//
+// This file is not deployed directly and there is intentionally no
+// `wrangler.jsonc` at the repo root, so a bare `wrangler deploy` cannot
+// silently publish to someone else's Worker. `npm run setup` and
+// `npm run deploy` compose these defaults with a selected target — a profile
+// from deploy-profiles.jsonc, or the local setup state in .deploy/state.json —
+// into a generated config under .deploy/. Runtime settings below are the
+// single source of truth for every target.
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "icloud-mail-proxy",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-01",
+  "compatibility_flags": ["nodejs_compat"],
+  // Guided deployments are reachable at <name>.<subdomain>.workers.dev.
+  // Targets that serve a custom domain instead set this to false.
+  "workers_dev": true,
+  "vars": {
+    "ALLOWED_MAILBOXES": "INBOX,Archive,Sent Messages",
+    "MAX_RESULTS": "20",
+    "MAX_MESSAGE_BYTES": "3145728",
+    "MAX_SEARCH_DAYS": "90",
+    "ALLOWED_ATTACHMENT_TYPES": "application/pdf,image/,text/",
+    "MAX_ATTACHMENT_BYTES": "2097152"
+  }
+}

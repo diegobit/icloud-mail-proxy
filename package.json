@@ -3,8 +3,12 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "wrangler dev",
-    "deploy": "wrangler deploy",
+    "setup": "node scripts/setup.mjs",
+    "dev": "wrangler dev -c wrangler.base.jsonc",
+    "deploy": "node scripts/deploy.mjs",
+    "deploy:production": "node scripts/deploy.mjs --profile production",
+    "config": "node scripts/deploy.mjs --print-config",
+    "check:bundle": "wrangler deploy --dry-run -c wrangler.base.jsonc",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },
