@@ -132,32 +132,38 @@ fake helpers object.
 
 - `GET /authorize`: `parseAuthRequest(request)`; on `AuthorizationError`
   redirect to `.redirectTo` when the library validated the client and
-  redirect URI, otherwise `errorPage(400)`. `lookupClient(clientId)` (null →
-  400; `CimdFetchError` → 400 with a "client metadata unavailable" message).
-  Render `tokenEntryPage`. Writes nothing.
+  redirect URI, otherwise `errorPage(400)`. A request without an S256 PKCE
+  challenge is redirected back with `invalid_request` before anything else.
+  `lookupClient(clientId)` (null → 400; `CimdFetchError` → 400 with a "client
+  metadata unavailable" message). Render `tokenEntryPage`. Writes nothing.
 - `POST /authorize`: re-parse the auth request from the hidden query (rebuild
-  a GET `Request` for `parseAuthRequest`), then `tokenMatches(form.token,
-  env.API_TOKEN)`. Mismatch → re-render with a generic error, HTTP 401, still
-  no writes. Match → `beginConsent(authRequest)` (first KV write), render
-  `consentPage` with the returned `headers` (its `__Host-oauth-` cookie binds
-  the handle to this browser).
+  a GET `Request` for `parseAuthRequest`), same S256 check, then
+  `tokenMatches(form.token, env.API_TOKEN)`. Mismatch → re-render with a
+  generic error, HTTP 401, still no writes. Match → `beginConsent(authRequest)`
+  (first KV write), render `consentPage` with the returned `headers` (its
+  `__Host-oauth-` cookie binds the handle to this browser) and the epoch
+  computed from the token just verified.
 - `POST /authorize/consent`: `action=deny` → `denyConsent(request, handle)`
-  redirect. `action=approve` → `approveConsent(request, handle, { scope:
-  ["mail:read"] })`, then `completeAuthorization({ request: approved, userId:
-  "owner", scope: ["mail:read"], metadata: { clientName, approvedAt }, props:
-  { epoch: await grantEpoch(env.API_TOKEN), via: "oauth" } })`; 302 to
-  `redirectTo`, merging the consent `headers`. The token is not re-checked
-  here: the handle exists only after a successful check. Default
+  redirect. `action=approve` → the epoch the consent page carried is checked
+  against `env.API_TOKEN` (mismatch → 400 `errorPage`, no grant): a consent
+  transaction left pending across a token rotation cannot mint a fresh grant.
+  Then `approveConsent(request, handle, { scope: ["mail:read"] })`, then
+  `completeAuthorization({ request: approved, userId: "owner", scope:
+  ["mail:read"], metadata: { clientName, approvedAt }, props: { epoch, via:
+  "oauth" } })`; 302 to `redirectTo`, merging the consent `headers`. Default
   `revokeExistingGrants` stays on, so reconnecting a client replaces its
   previous grant.
 - `state` and `iss` pass through the library untouched; nothing here reads
   or rewrites them.
 
 `test/oauth-authorize.test.ts` with a fake `OAUTH_PROVIDER`: wrong or missing
-token never calls `beginConsent`; approve always grants exactly
-`["mail:read"]` whatever scopes the client requested; props carry the current
-epoch; deny calls `denyConsent`; invalid client/redirect without `redirectTo`
-renders 400 instead of redirecting; consent cookies survive into the redirect.
+token never calls `beginConsent`; a request without an S256 challenge is
+redirected back with `invalid_request` before `beginConsent`; approve always
+grants exactly `["mail:read"]` whatever scopes the client requested; props
+carry the epoch from the consent form; an approval whose epoch does not match
+the current token is refused before `approveConsent`; deny calls
+`denyConsent`; invalid client/redirect without `redirectTo` renders 400
+instead of redirecting; consent cookies survive into the redirect.
 
 Completion: unused module, tests green.
 
@@ -173,8 +179,15 @@ branch goes away (the provider's `apiRoute` owns `/mcp`).
   })` and `env.OAUTH_TOKEN_LIMITER` (30/60 s: CIMD client-assertion replay
   markers make the token endpoint a KV write path too); over limit → 429
   JSON, before the provider runs. Rewrite `request` onto `origin` when
-  `PUBLIC_ORIGIN` differs from `new URL(request.url).origin`, then
-  `withNoStore(await providerFor(origin).fetch(effectiveRequest, env, ctx))`.
+  `PUBLIC_ORIGIN` differs from `new URL(request.url).origin`, replacing only
+  protocol, host and port so the pathname stays as parsed; the limiter gates
+  and the unknown-`.well-known` 404 all run on that effective pathname, and
+  the provider is handed a fresh `{ ...env }` wrapper (it memoizes its
+  helpers on `env.OAUTH_PROVIDER`, which would otherwise pin the first
+  origin's resource configuration). Then `withNoStore(await
+  providerFor(origin).fetch(effectiveRequest, dispatchEnv, ctx))`, with
+  unexpected dispatch or limiter failures answered as a controlled no-store
+  500 instead of the runtime error page.
 - `requestOrigin(request, env)`: `env.PUBLIC_ORIGIN` when set (validated:
   https, or http on loopback; no path), else `new URL(request.url).origin`.
 - `providerFor(origin)`: module-level `Map<string, OAuthProvider>`, capped at
@@ -395,8 +408,8 @@ and a claude.ai account with custom connectors.
 
 ### Delivered
 
-All seven code steps and both review rounds are committed on `oauth-mcp`
-(base `dev` @ `e6e38d2`); `npm test` (17 files, 247 tests), `npm run typecheck`
+All seven code steps and all three review rounds are committed on `oauth-mcp`
+(base `dev` @ `e6e38d2`); `npm test` (17 files, 256 tests), `npm run typecheck`
 and both bundle dry-runs are green.
 
 | Step | Commit | What landed |
@@ -411,6 +424,7 @@ and both bundle dry-runs are green.
 | 7 | `30e1586` | README (connectors, two auth paths, security bullet, architecture), DEPLOY (bindings, rotation, KV consistency, CI), `.dev.vars.example`. |
 | Review 1 | `0032b29` | Round-1 review findings, including the `PUBLIC_ORIGIN` request rewriting. |
 | Review 2 | `ad13296` | Round-2 review findings: `/oauth/token` rate limiter (M1), `/authorize` form and error guards (N1), integration coverage (L2, L3), setup 401 retry (L5), doc corrections (L1, L4). |
+| Review 3 | `d625783` | Round-3 review findings (GPT-6-Astra): approval bound to the sign-in epoch (H1), origin-only request rewriting (M1), per-dispatch env wrappers so origins stay isolated (M2), S256 PKCE on every authorization request (M3), controlled 500s when the provider fails (L1), KV-write summary correction (N1). |
 
 The integration test starts the real Worker with `unstable_startWorker`
 against `wrangler.base.jsonc` and covers: discovery metadata, `/.well-known`
@@ -418,11 +432,16 @@ unknown → 404, the anonymous `/mcp` challenge plus 401 JSON on anonymous
 `/healthz` and `/v1/mailboxes`, static bearer initialize and `tools/list`,
 the full dynamic-client flow (register, wrong token → 401 with no consent
 transaction, consent, PKCE exchange, refresh, OAuth token on `/mcp` but
-rejected with 401 JSON on `/v1/*` and `/healthz`), rotation (epoch 401 on
-`/mcp`, `invalid_grant - API token rotated; reconnect` on refresh, then
-`invalid_grant - Grant not found` proving revocation), `PUBLIC_ORIGIN`
-tunnel rewriting and validation, and both rate limits (registration 5 then
-429; token 30 then 429).
+rejected with 401 JSON on `/v1/*` and `/healthz`), the PKCE requirement (no
+challenge or `plain`, for public and confidential clients, refused before the
+consent page), per-origin isolation across `127.0.0.1` and `localhost`,
+rotation (epoch 401 on `/mcp`, `invalid_grant - API token rotated; reconnect`
+on refresh, then `invalid_grant - Grant not found` proving revocation, a
+consent transaction left pending across the rotation whose approval is
+refused, and a fresh reconnect with the new token), `PUBLIC_ORIGIN` tunnel
+rewriting and validation (including double-slash paths that must not reach
+the gated endpoints), and both rate limits (registration 5 then 429; token 30
+then 429).
 
 ### Deviations from the plan
 
@@ -452,14 +471,30 @@ tunnel rewriting and validation, and both rate limits (registration 5 then
   outer `fetch` rewrites the request URL onto `PUBLIC_ORIGIN` before handing
   it to the provider so issuer, metadata URL matching, audience checks and
   `__Host-` consent cookies all use the public origin.
+- Approval is bound to the sign-in epoch with a hidden form field instead of a
+  second KV record: the consent page carries the epoch computed when the token
+  was verified, the consent handler checks it against `API_TOKEN` before
+  `approveConsent`, and only that verified value is stamped into the grant.
+  Tampering or a stale field can therefore only produce a rejection — the
+  epoch is a non-reversible HMAC, and a grant carrying anything but the
+  current epoch fails the `/mcp` check anyway.
+- The `PUBLIC_ORIGIN` rewrite replaces only origin and port on a parsed URL
+  (`withOrigin`): the earlier `new URL(pathname, origin)` form read a
+  `//host/...` pathname as a network-path reference, which changed the host
+  and left `/oauth/register` behind it, past the rate-limit gates.
+- Each dispatch hands the provider a fresh `{ ...env }` wrapper without
+  `OAUTH_PROVIDER`: the library memoizes its helpers on that key, so the
+  shared env pinned the first origin's resource configuration onto every
+  other origin served by the same isolate.
 
 ### Open items resolved
 
 - **Id-less KV in CI dry-runs:** both `check:bundle` and
   `deploy:production --dry-run` accept `OAUTH_KV` without an id.
 - **CIMD and KV writes:** CIMD lookups cache in the Cache API
-  (`workers-oauth-provider:cimd:v1`), not KV; KV writes are grant and
-  client-registration records only.
+  (`workers-oauth-provider:cimd:v1`), not KV; KV writes are grant,
+  client-registration and consent-transaction records, plus the client-assertion
+  replay markers `/oauth/token` creates for CIMD clients.
 - **Library surface:** `ctx.props` on `apiHandler`, `beginConsent` →
   `{ handle, headers }`, `OAuthError(code, { description })` (description
   required), and plain-object handlers all confirmed against 1.2.3.
