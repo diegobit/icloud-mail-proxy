@@ -319,6 +319,8 @@ describe("OAuth on /mcp, end to end", () => {
       expect(bounce.searchParams.get("error")).toBe("invalid_request");
       expect(bounce.searchParams.get("error_description")).toContain("PKCE");
       expect(bounce.searchParams.get("state")).toBe(`state-${authMethod}`);
+      // Error responses carry the issuer advertised in the discovery metadata.
+      expect(bounce.searchParams.get("iss")).toBe(current.base);
 
       // Submitting the correct API token cannot start the consent flow either.
       const submitted = await fetch(`${current.base}/authorize`, {

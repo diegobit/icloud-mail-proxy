@@ -51,13 +51,25 @@ class PkceRequiredError extends Error {
   }
 }
 
-/** Build the OAuth error redirect back to a redirect URI the library validated. */
+/** OAuth response parameters replaced (never duplicated) on an error redirect. */
+const ERROR_RESPONSE_PARAMETERS = ["error", "error_description", "error_uri", "state", "iss"];
+
+/**
+ * Build the OAuth error redirect back to a redirect URI the library
+ * validated. Mirrors the library's `authorizationErrorRedirect` — which
+ * cannot be imported here, because its module loads `cloudflare:workers` and
+ * must stay Node-testable — including the `iss` parameter the discovery
+ * metadata advertises (`authorization_response_iss_parameter_supported`) and
+ * the removal of stale response parameters already on the redirect URI.
+ */
 function redirectToClient(authRequest: AuthRequest, error: string, description: string): string {
   const target = new URL(authRequest.redirectUri);
+  for (const key of ERROR_RESPONSE_PARAMETERS) target.searchParams.delete(key);
   target.searchParams.set("error", error);
-  target.searchParams.set("error_description", description);
+  if (description) target.searchParams.set("error_description", description);
   if (authRequest.state) target.searchParams.set("state", authRequest.state);
-  return target.toString();
+  if (authRequest.issuer) target.searchParams.set("iss", authRequest.issuer);
+  return target.href;
 }
 
 function htmlResponse(html: string, status: number, extraHeaders?: Headers): Response {
@@ -216,13 +228,22 @@ async function handleConsentSubmission(request: Request, env: Env): Promise<Resp
 
   try {
     const approved = await env.OAUTH_PROVIDER.approveConsent(request, handle, { scope: GRANTED_SCOPE });
+    // A stored transaction can predate the PKCE requirement (a consent page
+    // left open across an upgrade), in which case the code it would mint is
+    // exchangeable without a verifier. The transaction is consumed either
+    // way, so the user starts again from the app.
+    if (approved.request.codeChallengeMethod !== "S256" || !approved.request.codeChallenge) {
+      return htmlResponse(errorPage(PKCE_REQUIRED, 400), 400);
+    }
     const consent = await env.OAUTH_PROVIDER.describeConsent(approved.request);
     const { redirectTo } = await env.OAUTH_PROVIDER.completeAuthorization({
       request: approved.request,
       userId: "owner",
       scope: GRANTED_SCOPE,
       metadata: { clientName: consent.clientName, approvedAt: new Date().toISOString() },
-      props: { epoch, via: "oauth" },
+      // `pkce` marks a grant minted under the S256 requirement; the token
+      // exchange refuses grants without it (hasPkcePolicy, review round 4).
+      props: { epoch, pkce: true, via: "oauth" },
     });
     const headers = new Headers(approved.headers);
     headers.set("Location", redirectTo);

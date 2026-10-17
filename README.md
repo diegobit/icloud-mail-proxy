@@ -441,7 +441,8 @@ claude mcp add --transport http icloud-mail https://icloud-mail.diegobit.com/mcp
   make a crafted `/authorize` link approvable without the token. Grants are
   bound to the current `API_TOKEN`, so rotating it revokes every one of them —
   including a consent page left open across the rotation, which cannot be
-  approved afterwards (see [DEPLOY.md](DEPLOY.md)).
+  approved afterwards; grants minted before the PKCE requirement was
+  introduced are refused the same way (see [DEPLOY.md](DEPLOY.md)).
 - **No caching, no content logging.** All responses set
   `Cache-Control: private, no-store`. Unexpected-error logging only ever
   includes an error message, never a request body or message content.

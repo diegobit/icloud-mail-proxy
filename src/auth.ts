@@ -96,3 +96,14 @@ export async function epochMatches(epoch: unknown, apiToken: string): Promise<bo
   if (typeof epoch !== "string" || epoch === "") return false;
   return tokenMatches(epoch, await grantEpoch(apiToken));
 }
+
+/**
+ * Whether a grant was minted by the consent flow that enforces S256 PKCE
+ * (the `pkce` prop it stamps). Checked at every authorization-code exchange
+ * and refresh, so an upgrade cannot be bridged with a code or refresh token
+ * minted under the previous policy: those grants are refused and revoked,
+ * and the client reconnects (plans/oauth-mcp.md, review round 4).
+ */
+export function hasPkcePolicy(props: Record<string, unknown> | undefined): boolean {
+  return props?.pkce === true;
+}

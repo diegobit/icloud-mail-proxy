@@ -11,7 +11,7 @@
 // All responses are marked private/no-store so nothing gets cached.
 
 import OAuthProvider, { GrantType, OAuthError } from "@cloudflare/workers-oauth-provider";
-import { epochMatches, grantEpoch, isAuthorized, json, tokenMatches, withNoStore } from "./auth";
+import { epochMatches, grantEpoch, hasPkcePolicy, isAuthorized, json, tokenMatches, withNoStore } from "./auth";
 import { createMailMcpHandler } from "./mcp";
 import { handleAuthorize } from "./oauth-authorize";
 import { handleRest } from "./rest";
@@ -20,6 +20,7 @@ import type { Env } from "./types";
 /** Props the provider puts on ctx for both grant tokens and the static bearer. */
 interface GrantProps {
   epoch?: unknown;
+  pkce?: unknown;
   via?: unknown;
 }
 
@@ -160,9 +161,14 @@ function providerFor(origin: string): OAuthProvider<Env> {
         ? { props: { epoch: await grantEpoch(env.API_TOKEN), via: "bearer" }, audience: `${origin}/mcp` }
         : null,
     // An invalid_grant thrown here revokes the grant and its tokens, so
-    // rotating API_TOKEN cuts existing OAuth grants (see grantEpoch).
+    // rotating API_TOKEN cuts existing OAuth grants (see grantEpoch) and
+    // grants minted before PKCE was mandatory stay non-exchangeable (see
+    // hasPkcePolicy).
     tokenExchangeCallback: async ({ grantType, props, env }) => {
       if (grantType !== GrantType.AUTHORIZATION_CODE && grantType !== GrantType.REFRESH_TOKEN) return;
+      if (!hasPkcePolicy(props)) {
+        throw new OAuthError("invalid_grant", { description: "Grant predates the PKCE requirement; reconnect" });
+      }
       if (!(await epochMatches(props?.epoch, env.API_TOKEN))) {
         throw new OAuthError("invalid_grant", { description: "API token rotated; reconnect" });
       }

@@ -56,7 +56,7 @@ interface CompleteOptions {
   userId: string;
   scope: string[];
   metadata: { clientName: string; approvedAt: string };
-  props: { epoch: string; via: string };
+  props: { epoch: string; pkce?: boolean; via: string };
 }
 
 function fakeHelpers() {
@@ -169,8 +169,27 @@ describe("GET /authorize", () => {
     expect(target.searchParams.get("error")).toBe("invalid_request");
     expect(target.searchParams.get("error_description")).toContain("PKCE");
     expect(target.searchParams.get("state")).toBe("st-1");
+    expect(target.searchParams.get("iss")).toBe("https://mail.example.com");
     expect(helpers.describeConsent).not.toHaveBeenCalled();
     expect(helpers.beginConsent).not.toHaveBeenCalled();
+  });
+
+  it("replaces stale response parameters on the error redirect", async () => {
+    const helpers = fakeHelpers();
+    helpers.parseAuthRequest.mockResolvedValueOnce({
+      ...AUTH_REQUEST,
+      redirectUri: "https://client.example/cb?error=server_error&state=old&iss=old&keep=1",
+      codeChallenge: undefined,
+      codeChallengeMethod: undefined,
+    });
+    const response = await handleAuthorize(getPromptRequest(), fakeEnv(helpers));
+
+    expect(response.status).toBe(302);
+    const target = new URL(response.headers.get("Location")!);
+    expect(target.searchParams.getAll("error")).toEqual(["invalid_request"]);
+    expect(target.searchParams.getAll("state")).toEqual(["st-1"]);
+    expect(target.searchParams.getAll("iss")).toEqual(["https://mail.example.com"]);
+    expect(target.searchParams.get("keep")).toBe("1");
   });
 
   it("rejects a plain challenge method before describeConsent", async () => {
@@ -304,9 +323,31 @@ describe("POST /authorize/consent", () => {
     expect(authOptions.request).toBe(AUTH_REQUEST);
     expect(authOptions.userId).toBe("owner");
     expect(authOptions.scope).toEqual(["mail:read"]);
-    expect(authOptions.props).toEqual({ epoch: await grantEpoch(TOKEN), via: "oauth" });
+    expect(authOptions.props).toEqual({ epoch: await grantEpoch(TOKEN), pkce: true, via: "oauth" });
     expect(authOptions.metadata.clientName).toBe("Example App");
     expect(Date.parse(authOptions.metadata.approvedAt)).not.toBeNaN();
+  });
+
+  it("refuses to complete a stored consent transaction without an S256 challenge", async () => {
+    const variants = [
+      { codeChallenge: undefined, codeChallengeMethod: undefined },
+      { codeChallengeMethod: "plain" },
+    ];
+    for (const variant of variants) {
+      const helpers = fakeHelpers();
+      helpers.approveConsent.mockResolvedValueOnce({
+        request: { ...AUTH_REQUEST, ...variant },
+        headers: new Headers({ "Set-Cookie": "__Host-oauth-consent=; Max-Age=0" }),
+      });
+      const response = await handleAuthorize(
+        postForm("/authorize/consent", { handle: "handle-1", action: "approve", epoch: await grantEpoch(TOKEN) }, true),
+        fakeEnv(helpers),
+      );
+
+      expect(response.status).toBe(400);
+      expect(await response.text()).toContain("PKCE");
+      expect(helpers.completeAuthorization).not.toHaveBeenCalled();
+    }
   });
 
   it("refuses approval when the API token rotated after sign-in", async () => {

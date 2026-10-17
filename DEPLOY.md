@@ -142,6 +142,12 @@ generate a new token, because that would break every existing client.
   across the rotation is refused at approval time, so it cannot mint a fresh
   grant from the old token. That is also the supported way to revoke a
   connector's access without touching the others beyond one reconnect.
+- **Upgrade across the PKCE requirement:** grants minted by a build that did
+  not require PKCE carry no marker, so their authorization code and refresh
+  token are refused with `invalid_grant` (the grant is revoked) and the
+  connector reconnects once through the sign-in page. A consent page left open
+  across the upgrade is refused at approval. Nothing to do by hand; this is
+  the same path as a rotation.
 - **Replace the Apple app-specific password:** revoke it at appleid.apple.com
   → Sign-In and Security → App-Specific Passwords, create a new one, then run
   `npm run setup` and answer yes to replacing the credentials. Do this

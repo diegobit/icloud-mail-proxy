@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { epochMatches, extractBearer, grantEpoch, isAuthorized, tokenMatches } from "../src/auth";
+import { epochMatches, extractBearer, grantEpoch, hasPkcePolicy, isAuthorized, tokenMatches } from "../src/auth";
 
 const TOKEN = "s3cret-deployment-token-abcdefghijklmnop";
 const OTHER = "another-deployment-token-abcdefghijklmn";
@@ -71,5 +71,15 @@ describe("epochMatches", () => {
     expect(await epochMatches(null, TOKEN)).toBe(false);
     expect(await epochMatches(42, TOKEN)).toBe(false);
     expect(await epochMatches("", TOKEN)).toBe(false);
+  });
+});
+
+describe("hasPkcePolicy", () => {
+  it("accepts only grants marked by the PKCE-enforcing consent flow", () => {
+    expect(hasPkcePolicy({ pkce: true })).toBe(true);
+    expect(hasPkcePolicy({ epoch: "e", via: "oauth" })).toBe(false);
+    expect(hasPkcePolicy({ pkce: "true" })).toBe(false);
+    expect(hasPkcePolicy({ pkce: false })).toBe(false);
+    expect(hasPkcePolicy(undefined)).toBe(false);
   });
 });
