@@ -1,9 +1,8 @@
 # OAuth 2.1 for /mcp
 
 Status: implemented on branch `oauth-mcp` (worktree), steps 1–7 committed with
-tests green; step 8 (live connector acceptance) is owner-run and still pending,
-and the independent review by Claude Opus 5.5 runs after the implementation
-freezes. Design checked against
+tests green and independent review findings addressed; step 8 (live connector
+acceptance) is owner-run and still pending. Design checked against
 `@cloudflare/workers-oauth-provider` 1.2.x docs and `dist/oauth-provider.js`,
 reviewed by Claude Opus 5.5 (Oct 2026).
 
@@ -167,10 +166,12 @@ Completion: unused module, tests green.
 moves into `bearerFetch(request, env)` unchanged except that its `/mcp`
 branch goes away (the provider's `apiRoute` owns `/mcp`).
 
-- Outer `fetch`: missing `API_TOKEN` → 500 `not_configured` for every path,
-  as today. `POST /oauth/register` → `env.OAUTH_REGISTER_LIMITER.limit({ key:
-  CF-Connecting-IP })`; over limit → 429 JSON, before the provider runs. Then
-  `withNoStore(await providerFor(origin).fetch(request, env, ctx))`.
+- Outer `fetch`: missing `API_TOKEN` or invalid `PUBLIC_ORIGIN` → 500
+  `not_configured` for every path. `POST /oauth/register` →
+  `env.OAUTH_REGISTER_LIMITER.limit({ key: CF-Connecting-IP })`; over limit →
+  429 JSON, before the provider runs. Rewrite `request` onto `origin` when
+  `PUBLIC_ORIGIN` differs from `new URL(request.url).origin`, then
+  `withNoStore(await providerFor(origin).fetch(effectiveRequest, env, ctx))`.
 - `requestOrigin(request, env)`: `env.PUBLIC_ORIGIN` when set (validated:
   https, or http on loopback; no path), else `new URL(request.url).origin`.
 - `providerFor(origin)`: module-level `Map<string, OAuthProvider>`, capped at
@@ -224,6 +225,9 @@ tmpdir persist path (no IMAP is touched: `initialize` and `tools/list` only):
 - Rotation: restart on the same persist dir with a new `API_TOKEN`; the old
   access token → 401 `invalid_token`; refresh → `invalid_grant`; a second
   refresh with the same token still fails (grant revoked).
+- `PUBLIC_ORIGIN` tunnel override: metadata, challenges, static bearer and
+  full OAuth flow work when reached on loopback with an HTTPS `PUBLIC_ORIGIN`;
+  an invalid `PUBLIC_ORIGIN` fails closed with 500 `not_configured` JSON.
 - Registration over the limit → 429.
 
 Completion: deployed Worker serves OAuth and bearer side by side; existing
@@ -334,10 +338,11 @@ forced to reconnect. Then one `npm run setup` rerun against a test Worker.
   match exactly what they register (DCR) or publish (CIMD); `state` and `iss`
   are preserved by the library. Only the live run proves both clients; record
   their callback hosts in README if anything needs allowlisting.
-- **`request.url` behind a tunnel.** `wrangler dev` may see `http://` on the
-  tunnel hostname, which the library rejects as a non-loopback issuer;
-  `PUBLIC_ORIGIN` is the escape hatch (`--local-upstream`/`--upstream-protocol`
-  are the alternative if they set `request.url` correctly).
+- **`request.url` behind a tunnel.** `wrangler dev` sees `http://` on the
+  local or tunnel hostname rather than the public `https://` origin, so
+  without an override the provider would advertise `http://` endpoints and
+  fail `__Host-` cookie and audience checks; `PUBLIC_ORIGIN` rewrites the
+  request onto the public HTTPS origin before handing it to the provider.
 - **Multiple origins.** Each hostname (workers.dev, a custom domain, preview
   URLs) is a separate issuer with its own grants — harmless but confusing.
   The production profile already sets `workers_dev: false`; decide whether
@@ -378,9 +383,9 @@ and a claude.ai account with custom connectors.
 
 ### Delivered
 
-All seven code steps are committed on `oauth-mcp` (base `dev` @ `e6e38d2`);
-`npm test` (17 files, 239 tests), `npm run typecheck` and both bundle
-dry-runs are green after each one.
+All seven code steps and the review fixes are committed on `oauth-mcp` (base
+`dev` @ `e6e38d2`); `npm test` (17 files, 241 tests), `npm run typecheck` and
+both bundle dry-runs are green.
 
 | Step | Commit | What landed |
 | --- | --- | --- |
@@ -400,7 +405,8 @@ unknown → 404, the anonymous `/mcp` challenge, static bearer initialize and
 no consent transaction, consent, PKCE exchange, refresh, OAuth token on
 `/v1/*` → 401), rotation (epoch 401 on `/mcp`, `invalid_grant - API token
 rotated; reconnect` on refresh, then `Grant not found` proving revocation),
-and the registration rate limit (5 then 429).
+`PUBLIC_ORIGIN` tunnel rewriting and validation, and the registration rate
+limit (5 then 429).
 
 ### Deviations from the plan
 
@@ -423,7 +429,10 @@ and the registration rate limit (5 then 429).
 - The register limiter keys on `CF-Connecting-IP`, falling back to `"unknown"`
   when the header is absent (local runs), so the limit still applies there.
 - `requestOrigin` validates `PUBLIC_ORIGIN` itself (bare origin, https or http
-  on loopback) before handing it to the provider.
+  on loopback), returning 500 `not_configured` JSON when invalid, and the
+  outer `fetch` rewrites the request URL onto `PUBLIC_ORIGIN` before handing
+  it to the provider so issuer, metadata URL matching, audience checks and
+  `__Host-` consent cookies all use the public origin.
 
 ### Open items resolved
 

@@ -213,7 +213,8 @@ endpoints and the anonymous `/mcp` challenge on each run.
 
 ## API
 
-Every request (REST and MCP) requires `Authorization: Bearer $API_TOKEN`.
+Every `/v1/*` and `/healthz` request requires `Authorization: Bearer $API_TOKEN`
+(`/mcp` also accepts OAuth 2.1 access tokens; see [MCP](#mcp)).
 Responses are sent with `Cache-Control: private, no-store`.
 
 ### Health
@@ -422,10 +423,12 @@ claude mcp add --transport http icloud-mail https://icloud-mail.diegobit.com/mcp
   `cf-mail-proxy` at appleid.apple.com), not one shared with anything else,
   and revoke it immediately at appleid.apple.com → Sign-In and Security →
   App-Specific Passwords if the Worker or its secrets are ever compromised.
-- **Bearer auth on every request.** Both the presented token and
-  `API_TOKEN` are SHA-256 hashed and compared with
-  `crypto.subtle.timingSafeEqual` (`src/auth.ts`), so the comparison does
-  not leak timing information about the secret.
+- **Constant-time bearer verification.** Every REST and `/healthz` request
+  requires `Authorization: Bearer $API_TOKEN`, and `/mcp` accepts either
+  that bearer or an OAuth access token minted after verifying `API_TOKEN`.
+  Both the presented token and `API_TOKEN` are SHA-256 hashed and compared
+  with `crypto.subtle.timingSafeEqual` (`src/auth.ts`), so the comparison
+  does not leak timing information about the secret.
 - **OAuth grants are issued by the Worker itself.** For MCP connectors that
   cannot send a custom header, `/mcp` also accepts OAuth 2.1 access tokens:
   the sign-in and consent pages hand one out only after the owner enters
@@ -488,27 +491,3 @@ npm run typecheck   # tsc --noEmit
 Python 3 and a POSIX pty (macOS or Linux). That is a development and CI
 prerequisite only: `npm run setup` and deploying the Worker stay Node-only
 and do not use Python.
-
-## Limitations
-
-- Search terms (`from`, `subject`, `text`) must be printable ASCII; non-ASCII
-  input is rejected rather than silently mangled.
-- Only the plain-text body is returned; HTML bodies are never surfaced.
-- `search_mail` / `get_mail_message` return attachment metadata only
-  (filename, MIME type, size); attachment content is downloadable via an
-  explicit second call (`GET .../attachments/:index` or the
-  `get_mail_attachment` MCP tool), restricted to `ALLOWED_ATTACHMENT_TYPES`
-  and `MAX_ATTACHMENT_BYTES`.
-- Pagination is newest-first only: `search_mail` returns one page plus a
-  `nextBeforeUid` cursor for older results, but there is no forward/newer
-  cursor and no random access into the middle of the result set.
-- Each request opens its own IMAP connection to `imap.mail.me.com:993` and
-  logs out at the end; there is no persistent/pooled connection across
-  requests.
-- `ALLOWED_MAILBOXES` names have to match the iCloud folder names exactly.
-  There is no folder discovery, and `GET /v1/mailboxes` reports what the
-  Worker is configured to allow, not what exists in the account — a
-  misspelled folder only shows up when a search against it fails.
-- The guided setup always deploys to `workers.dev`. A custom domain is a
-  manual step (a `routes` entry in a profile, see the README section above),
-  and one deployment serves exactly one iCloud account.

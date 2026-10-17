@@ -63,7 +63,11 @@ function fakeHelpers() {
     describeConsent: vi.fn(async (_authRequest: unknown) => FACTS),
     beginConsent: vi.fn(async (_authRequest: unknown) => ({
       handle: "handle-1",
-      headers: new Headers({ "Set-Cookie": "__Host-oauth-consent=xyz; Secure; HttpOnly" }),
+      headers: new Headers({
+        "Set-Cookie": "__Host-oauth-consent=xyz; Secure; HttpOnly",
+        "Content-Security-Policy": "frame-ancestors 'none'",
+        "X-Frame-Options": "DENY",
+      }),
     })),
     approveConsent: vi.fn(async (_request: Request, _handle: string, _options?: { scope?: string[] }) => ({
       request: AUTH_REQUEST,
@@ -195,6 +199,10 @@ describe("POST /authorize", () => {
     expect(helpers.beginConsent).toHaveBeenCalledTimes(1);
     expect(helpers.beginConsent).toHaveBeenCalledWith(AUTH_REQUEST);
     expect(response.headers.get("Set-Cookie")).toContain("__Host-oauth-consent");
+    expect(response.headers.get("X-Frame-Options")).toBe("DENY");
+    expect(response.headers.get("Content-Security-Policy")).toBe(
+      "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'",
+    );
     const body = await response.text();
     expect(body).toContain('name="handle" value="handle-1"');
     expect(body).toContain("Read mail (mail:read)");

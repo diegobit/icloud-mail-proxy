@@ -1,7 +1,8 @@
 // OAuth on /mcp against a real local workerd, started through Wrangler's
 // unstable_startWorker: provider metadata, the browser flow with a dynamic
-// client and PKCE, token use on /mcp versus the REST API, token rotation, and
-// the registration rate limit. iCloud itself is never contacted.
+// client and PKCE, token use on /mcp versus the REST API, token rotation,
+// PUBLIC_ORIGIN rewriting behind a tunnel, and the registration rate limit.
+// iCloud itself is never contacted.
 
 import { createHash, randomBytes } from "node:crypto";
 import fs from "node:fs";
@@ -34,7 +35,7 @@ function freePort() {
 // explicitly. The config still comes from the real wrangler.base.jsonc. The
 // port is fixed by the caller because grants are bound to the origin they
 // were issued for.
-async function startWorker(apiToken, persist, port) {
+async function startWorker(apiToken, persist, port, extraBindings = {}) {
   const worker = await unstable_startWorker({
     config: CONFIG,
     build: { nodejsCompatMode: "v2" },
@@ -43,6 +44,7 @@ async function startWorker(apiToken, persist, port) {
       API_TOKEN: { type: "plain_text", value: apiToken },
       ICLOUD_USER: { type: "plain_text", value: "owner@example.com" },
       ICLOUD_APP_PASSWORD: { type: "plain_text", value: "app-password" },
+      ...extraBindings,
     },
   });
   await worker.ready;
@@ -158,9 +160,11 @@ describe("OAuth on /mcp, end to end", () => {
   }, 30_000);
 
   it("answers unknown well-known paths with 404 JSON", async () => {
-    const res = await fetch(`${current.base}/.well-known/weird`);
-    expect(res.status).toBe(404);
-    expect(await res.json()).toEqual({ error: { code: "not_found", message: "not found" } });
+    for (const suffix of ["weird", "oauth-protected-resource", "oauth-protected-resource/other"]) {
+      const res = await fetch(`${current.base}/.well-known/${suffix}`);
+      expect(res.status).toBe(404);
+      expect(await res.json()).toEqual({ error: { code: "not_found", message: "not found" } });
+    }
   }, 30_000);
 
   it("challenges anonymous /mcp requests with the resource metadata", async () => {
@@ -307,6 +311,100 @@ describe("OAuth on /mcp, end to end", () => {
     expect(again.status).toBe(400);
     expect((await again.json()).error).toBe("invalid_grant");
   }, 120_000);
+});
+
+describe("PUBLIC_ORIGIN tunnel override", () => {
+  const PUBLIC_ORIGIN = "https://tunnel.example.com";
+  let dir;
+  let current;
+
+  beforeAll(async () => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), "icloud-oauth-origin-"));
+    current = await startWorker(TOKEN_A, path.join(dir, "kv"), await freePort(), {
+      PUBLIC_ORIGIN: { type: "plain_text", value: PUBLIC_ORIGIN },
+    });
+  }, 120_000);
+
+  afterAll(async () => {
+    await current?.worker.dispose();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }, 120_000);
+
+  it("advertises PUBLIC_ORIGIN and completes OAuth and bearer requests when reached on loopback", async () => {
+    const resource = await fetch(`${current.base}/.well-known/oauth-protected-resource/mcp`);
+    expect(resource.status).toBe(200);
+    expect(await resource.json()).toEqual({
+      resource: `${PUBLIC_ORIGIN}/mcp`,
+      authorization_servers: [PUBLIC_ORIGIN],
+      scopes_supported: ["mail:read"],
+      bearer_methods_supported: ["header"],
+      resource_name: "icloud-mail-proxy",
+    });
+
+    const authorization = await fetch(`${current.base}/.well-known/oauth-authorization-server`);
+    expect(authorization.status).toBe(200);
+    expect(await authorization.json()).toMatchObject({
+      issuer: PUBLIC_ORIGIN,
+      authorization_endpoint: `${PUBLIC_ORIGIN}/authorize`,
+      token_endpoint: `${PUBLIC_ORIGIN}/oauth/token`,
+      registration_endpoint: `${PUBLIC_ORIGIN}/oauth/register`,
+      client_id_metadata_document_supported: true,
+    });
+
+    const challengeRes = await mcpRequest(current.base, null);
+    expect(challengeRes.status).toBe(401);
+    expect(challengeRes.headers.get("WWW-Authenticate")).toContain(
+      `resource_metadata="${PUBLIC_ORIGIN}/.well-known/oauth-protected-resource/mcp"`,
+    );
+
+    expect((await mcpRequest(current.base, TOKEN_A)).status).toBe(200);
+
+    const clientId = await registerClient(current.base);
+    const { verifier, challenge } = pkce();
+    const query = authorizeQuery(clientId, challenge, "state-tunnel");
+    const posted = await fetch(`${current.base}/authorize`, {
+      method: "POST",
+      headers: FORM,
+      body: new URLSearchParams({ authQuery: query, token: TOKEN_A }),
+    });
+    expect(posted.status).toBe(200);
+    const cookie = posted.headers.get("set-cookie");
+    const handle = hidden(await posted.text(), "handle");
+
+    const approved = await fetch(`${current.base}/authorize/consent`, {
+      method: "POST",
+      headers: { ...FORM, Cookie: cookie.split(";")[0] },
+      body: new URLSearchParams({ handle, action: "approve" }),
+      redirect: "manual",
+    });
+    expect(approved.status).toBe(302);
+    const code = new URL(approved.headers.get("location")).searchParams.get("code");
+
+    const exchanged = await tokenRequest(current.base, {
+      grant_type: "authorization_code",
+      code,
+      redirect_uri: REDIRECT_URI,
+      client_id: clientId,
+      code_verifier: verifier,
+    });
+    expect(exchanged.status).toBe(200);
+    const { access_token: accessToken } = await exchanged.json();
+    expect((await mcpRequest(current.base, accessToken)).status).toBe(200);
+  }, 60_000);
+
+  it("fails closed with 500 not_configured JSON when PUBLIC_ORIGIN is invalid", async () => {
+    await current.worker.dispose();
+    current = await startWorker(TOKEN_A, path.join(dir, "kv"), current.port, {
+      PUBLIC_ORIGIN: { type: "plain_text", value: "http://tunnel.example.com/with-path" },
+    });
+
+    const res = await fetch(`${current.base}/healthz`, {
+      headers: { Authorization: `Bearer ${TOKEN_A}` },
+    });
+    expect(res.status).toBe(500);
+    expect(res.headers.get("Cache-Control")).toBe("private, no-store");
+    expect((await res.json()).error.code).toBe("not_configured");
+  }, 60_000);
 });
 
 describe("registration rate limit", () => {

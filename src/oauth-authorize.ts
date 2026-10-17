@@ -33,7 +33,13 @@ function isCimdFetchError(error: unknown): boolean {
 
 function htmlResponse(html: string, status: number, extraHeaders?: Headers): Response {
   const headers = new Headers(htmlHeaders());
-  extraHeaders?.forEach((value, key) => headers.append(key, value));
+  extraHeaders?.forEach((value, key) => {
+    if (key.toLowerCase() === "set-cookie") {
+      headers.append(key, value);
+    } else if (!headers.has(key)) {
+      headers.set(key, value);
+    }
+  });
   return new Response(html, { status, headers });
 }
 

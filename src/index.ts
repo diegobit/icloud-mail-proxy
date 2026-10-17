@@ -45,7 +45,7 @@ const mcpApiHandler = {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const props = ctx.props as GrantProps | undefined;
     if (!(await epochMatches(props?.epoch, env.API_TOKEN))) {
-      const origin = requestOrigin(request, env);
+      const origin = new URL(request.url).origin;
       return json({ error: { code: "invalid_token", message: "API token rotated; reconnect" } }, 401, {
         "WWW-Authenticate":
           `Bearer realm="OAuth", resource_metadata="${origin}/.well-known/oauth-protected-resource/mcp", ` +
@@ -139,7 +139,16 @@ export default {
       return withNoStore(json({ error: { code: "not_configured", message: "server not configured" } }, 500));
     }
 
-    if (request.method === "POST" && new URL(request.url).pathname === "/oauth/register") {
+    let origin: string;
+    try {
+      origin = requestOrigin(request, env);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "invalid PUBLIC_ORIGIN";
+      return withNoStore(json({ error: { code: "not_configured", message } }, 500));
+    }
+
+    const url = new URL(request.url);
+    if (request.method === "POST" && url.pathname === "/oauth/register") {
       const key = request.headers.get("CF-Connecting-IP") ?? "unknown";
       const { success } = await env.OAUTH_REGISTER_LIMITER.limit({ key });
       if (!success) {
@@ -147,7 +156,24 @@ export default {
       }
     }
 
-    const origin = requestOrigin(request, env);
-    return withNoStore(await providerFor(origin).fetch(request, env, ctx));
+    // The library intercepts all `/.well-known/oauth-protected-resource*` paths
+    // and returns a bare bodyless 404 when the suffix is not `/mcp`. Answer
+    // those here with our standard 404 JSON so every unknown `.well-known`
+    // path behaves uniformly.
+    if (
+      url.pathname.startsWith("/.well-known/oauth-protected-resource") &&
+      url.pathname !== "/.well-known/oauth-protected-resource/mcp"
+    ) {
+      return withNoStore(json({ error: { code: "not_found", message: "not found" } }, 404));
+    }
+
+    // When PUBLIC_ORIGIN overrides the request's origin (e.g. `wrangler dev`
+    // behind a cloudflared tunnel), rewrite the request URL onto that origin
+    // so the provider's issuer, metadata URL matching, audience checks, and
+    // `__Host-` consent cookie checks all see the public origin.
+    const effectiveRequest =
+      url.origin === origin ? request : new Request(new URL(url.pathname + url.search, origin), request);
+
+    return withNoStore(await providerFor(origin).fetch(effectiveRequest, env, ctx));
   },
 } satisfies ExportedHandler<Env>;
