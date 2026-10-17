@@ -399,7 +399,8 @@ Codex CLI, curl) and OAuth 2.1 access tokens issued by this Worker for
 connectors that cannot send custom headers (ChatGPT developer mode, claude.ai).
 The server publishes its OAuth metadata under `/.well-known/`; the consent flow
 asks for the API token once per connector and binds the grant to it, and scopes
-every grant to `mail:read`.
+every grant to `mail:read`. Every authorization request must carry a PKCE
+`S256` challenge: requests without one are refused before the consent page.
 
 Connect from Claude Code (single-quote the header so the shell does not expand
 the token; this CLI may store an expanded header value):
@@ -438,8 +439,9 @@ claude mcp add --transport http icloud-mail https://icloud-mail.diegobit.com/mcp
   never forwarded upstream. There is no remember-consent: ChatGPT's CIMD
   `client_id` is shared by every ChatGPT user, and a remembered consent would
   make a crafted `/authorize` link approvable without the token. Grants are
-  bound to the current `API_TOKEN`, so rotating it revokes every one of them
-  (see [DEPLOY.md](DEPLOY.md)).
+  bound to the current `API_TOKEN`, so rotating it revokes every one of them —
+  including a consent page left open across the rotation, which cannot be
+  approved afterwards (see [DEPLOY.md](DEPLOY.md)).
 - **No caching, no content logging.** All responses set
   `Cache-Control: private, no-store`. Unexpected-error logging only ever
   includes an error message, never a request body or message content.

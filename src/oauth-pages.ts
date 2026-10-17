@@ -114,8 +114,11 @@ ${errorHtml}
   );
 }
 
-export function consentPage(options: { client: ClientFacts; handle: string }): string {
-  const { client, handle } = options;
+// The consent form carries the grant epoch of the API token that was
+// verified at sign-in (see oauth-authorize.ts): the consent handler refuses
+// to mint a grant when the token has rotated since.
+export function consentPage(options: { client: ClientFacts; handle: string; epoch: string }): string {
+  const { client, handle, epoch } = options;
   return page(
     "Approve access",
     `<h1>Approve access</h1>
@@ -124,6 +127,7 @@ ${clientFactsHtml(client)}
 <p class="fact"><strong>Read mail (mail:read)</strong> — list folders, search messages, read message bodies and download allowed attachments. It cannot send, move, flag, or delete anything.</p>
 <form method="post" action="/authorize/consent">
 <input type="hidden" name="handle" value="${escapeHtml(handle)}">
+<input type="hidden" name="epoch" value="${escapeHtml(epoch)}">
 <div class="buttons">
 <button type="submit" name="action" value="approve" class="primary">Approve</button>
 <button type="submit" name="action" value="deny">Deny</button>

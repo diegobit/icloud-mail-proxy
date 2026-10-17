@@ -69,6 +69,37 @@ async function rateLimitGate(request: Request, limiter: RateLimit, message: stri
   return withNoStore(json({ error: { code: "rate_limited", message } }, 429));
 }
 
+/**
+ * The same URL on `origin`, with pathname, query and fragment untouched.
+ * Used when PUBLIC_ORIGIN overrides the request's origin (e.g. `wrangler dev`
+ * behind a cloudflared tunnel): only the origin is replaced, so a pathname
+ * like `//host/oauth/register` is never re-read as a network-path reference
+ * that changes the host or collapses onto a gated path.
+ */
+function withOrigin(url: URL, origin: string): URL {
+  const publicUrl = new URL(origin);
+  const rewritten = new URL(url);
+  rewritten.protocol = publicUrl.protocol;
+  rewritten.host = publicUrl.host;
+  // Assigning `host` alone keeps the old port; the origin's port is set
+  // explicitly so loopback ports never leak into the public URL.
+  rewritten.port = publicUrl.port;
+  return rewritten;
+}
+
+/**
+ * A sanitized 500 for unexpected failures on the way to the provider (a
+ * rejected dispatch, a failing limiter binding): OAuth endpoints answer with
+ * an RFC 6749 error body, everything else with the REST error shape. The
+ * caller adds no-store, unlike the runtime error page it replaces.
+ */
+function dispatchFailure(pathname: string): Response {
+  if (pathname.startsWith("/oauth/") || pathname.startsWith("/authorize")) {
+    return json({ error: "server_error", error_description: "unexpected error" }, 500);
+  }
+  return json({ error: { code: "internal_error", message: "unexpected error" } }, 500);
+}
+
 /** Everything the provider does not own, behind the static bearer token. */
 async function bearerFetch(request: Request, env: Env): Promise<Response> {
   if (!(await isAuthorized(request, env.API_TOKEN))) {
@@ -160,34 +191,48 @@ export default {
       return withNoStore(json({ error: { code: "not_configured", message } }, 500));
     }
 
+    // When PUBLIC_ORIGIN overrides the request's origin, rewrite the request
+    // URL onto that origin so the provider's issuer, metadata URL matching,
+    // audience checks, and `__Host-` consent cookie checks all see the public
+    // origin. Only the origin is replaced: the pathname is copied as parsed,
+    // so a `//host/...` path can neither change the host nor become a gated
+    // path (e.g. `/oauth/register`) after the checks below have run. The
+    // checks run on the effective pathname — the one the provider dispatches.
     const url = new URL(request.url);
-    if (request.method === "POST" && url.pathname === "/oauth/register") {
-      const limited = await rateLimitGate(request, env.OAUTH_REGISTER_LIMITER, "too many registration attempts");
-      if (limited) return limited;
-    }
-    if (request.method === "POST" && url.pathname === "/oauth/token") {
-      const limited = await rateLimitGate(request, env.OAUTH_TOKEN_LIMITER, "too many token requests");
-      if (limited) return limited;
-    }
+    const effectiveUrl = url.origin === origin ? url : withOrigin(url, origin);
+    const pathname = effectiveUrl.pathname;
 
-    // The library intercepts all `/.well-known/oauth-protected-resource*` paths
-    // and returns a bare bodyless 404 when the suffix is not `/mcp`. Answer
-    // those here with our standard 404 JSON so every unknown `.well-known`
-    // path behaves uniformly.
-    if (
-      url.pathname.startsWith("/.well-known/oauth-protected-resource") &&
-      url.pathname !== "/.well-known/oauth-protected-resource/mcp"
-    ) {
-      return withNoStore(json({ error: { code: "not_found", message: "not found" } }, 404));
+    try {
+      if (request.method === "POST" && pathname === "/oauth/register") {
+        const limited = await rateLimitGate(request, env.OAUTH_REGISTER_LIMITER, "too many registration attempts");
+        if (limited) return limited;
+      }
+      if (request.method === "POST" && pathname === "/oauth/token") {
+        const limited = await rateLimitGate(request, env.OAUTH_TOKEN_LIMITER, "too many token requests");
+        if (limited) return limited;
+      }
+
+      // The library intercepts all `/.well-known/oauth-protected-resource*`
+      // paths and returns a bare bodyless 404 when the suffix is not `/mcp`.
+      // Answer those here with our standard 404 JSON so every unknown
+      // `.well-known` path behaves uniformly.
+      if (
+        pathname.startsWith("/.well-known/oauth-protected-resource") &&
+        pathname !== "/.well-known/oauth-protected-resource/mcp"
+      ) {
+        return withNoStore(json({ error: { code: "not_found", message: "not found" } }, 404));
+      }
+
+      const effectiveRequest = effectiveUrl === url ? request : new Request(effectiveUrl, request);
+      // The library memoizes its helpers on `env.OAUTH_PROVIDER` and reuses
+      // them whenever present, so handing it the shared env would pin the
+      // first origin's resource configuration (issuer, resource URLs) onto
+      // every other origin. Each dispatch gets a fresh wrapper without it.
+      const { OAUTH_PROVIDER: _memoized, ...dispatchEnv } = env;
+      return withNoStore(await providerFor(origin).fetch(effectiveRequest, dispatchEnv as Env, ctx));
+    } catch (error) {
+      console.error("provider_dispatch_error", error instanceof Error ? error.message : String(error));
+      return withNoStore(dispatchFailure(pathname));
     }
-
-    // When PUBLIC_ORIGIN overrides the request's origin (e.g. `wrangler dev`
-    // behind a cloudflared tunnel), rewrite the request URL onto that origin
-    // so the provider's issuer, metadata URL matching, audience checks, and
-    // `__Host-` consent cookie checks all see the public origin.
-    const effectiveRequest =
-      url.origin === origin ? request : new Request(new URL(url.pathname + url.search, origin), request);
-
-    return withNoStore(await providerFor(origin).fetch(effectiveRequest, env, ctx));
   },
 } satisfies ExportedHandler<Env>;

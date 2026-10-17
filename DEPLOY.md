@@ -138,9 +138,10 @@ generate a new token, because that would break every existing client.
 - **OAuth connectors stop with it:** every grant is bound to the current
   `API_TOKEN`, so a rotation revokes all of them at once. ChatGPT and claude.ai
   fail their next token refresh with `invalid_grant` and must reconnect through
-  the sign-in page (which asks for the new token). That is also the supported
-  way to revoke a connector's access without touching the others beyond one
-  reconnect.
+  the sign-in page (which asks for the new token). A consent page left open
+  across the rotation is refused at approval time, so it cannot mint a fresh
+  grant from the old token. That is also the supported way to revoke a
+  connector's access without touching the others beyond one reconnect.
 - **Replace the Apple app-specific password:** revoke it at appleid.apple.com
   → Sign-In and Security → App-Specific Passwords, create a new one, then run
   `npm run setup` and answer yes to replacing the credentials. Do this

@@ -1,8 +1,10 @@
 // OAuth on /mcp against a real local workerd, started through Wrangler's
 // unstable_startWorker: provider metadata, the browser flow with a dynamic
-// client and PKCE, token use on /mcp versus the REST API, token rotation,
-// PUBLIC_ORIGIN rewriting behind a tunnel, and the rate limits on
-// /oauth/register and /oauth/token.
+// client and PKCE, the PKCE requirement (public and confidential clients),
+// token use on /mcp versus the REST API, rotation (including a consent
+// transaction left pending across the rotation), PUBLIC_ORIGIN rewriting
+// behind a tunnel (including double-slash paths), per-origin provider
+// isolation, and the rate limits on /oauth/register and /oauth/token.
 // iCloud itself is never contacted.
 
 import { createHash, randomBytes } from "node:crypto";
@@ -89,7 +91,7 @@ function mcpRequest(base, token) {
   });
 }
 
-async function registerClient(base) {
+async function registerClient(base, options = {}) {
   const res = await fetch(`${base}/oauth/register`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -99,6 +101,7 @@ async function registerClient(base) {
       token_endpoint_auth_method: "none",
       grant_types: ["authorization_code", "refresh_token"],
       response_types: ["code"],
+      ...options,
     }),
   });
   expect(res.status).toBe(201);
@@ -232,7 +235,8 @@ describe("OAuth on /mcp, end to end", () => {
     expect(posted.status).toBe(200);
     const cookie = posted.headers.get("set-cookie");
     expect(cookie).toContain("HttpOnly");
-    const handle = hidden(await posted.text(), "handle");
+    const consentHtml = await posted.text();
+    const handle = hidden(consentHtml, "handle");
 
     // A handle the browser never received cannot be approved.
     const bogus = await fetch(`${current.base}/authorize/consent`, {
@@ -245,7 +249,7 @@ describe("OAuth on /mcp, end to end", () => {
     const approved = await fetch(`${current.base}/authorize/consent`, {
       method: "POST",
       headers: { ...FORM, Cookie: cookie.split(";")[0] },
-      body: new URLSearchParams({ handle, action: "approve" }),
+      body: new URLSearchParams({ handle, action: "approve", epoch: hidden(consentHtml, "epoch") }),
       redirect: "manual",
     });
     expect(approved.status).toBe(302);
@@ -293,12 +297,116 @@ describe("OAuth on /mcp, end to end", () => {
     flow = { clientId, refreshToken: next.refresh_token, accessToken: next.access_token };
   }, 60_000);
 
+  it("requires an S256 PKCE challenge for public and confidential clients", async () => {
+    for (const authMethod of ["client_secret_basic", "none"]) {
+      const clientId = await registerClient(current.base, { token_endpoint_auth_method: authMethod });
+      const query = new URLSearchParams({
+        response_type: "code",
+        client_id: clientId,
+        redirect_uri: REDIRECT_URI,
+        scope: "mail:read",
+        state: `state-${authMethod}`,
+      }).toString();
+
+      // The sign-in prompt bounces back with invalid_request: no page and no
+      // consent transaction. The library only requires PKCE for public
+      // clients at token exchange, so this is enforced here for both.
+      const prompt = await fetch(`${current.base}/authorize?${query}`, { redirect: "manual" });
+      expect(prompt.status).toBe(302);
+      expect(prompt.headers.get("set-cookie")).toBeNull();
+      const bounce = new URL(prompt.headers.get("location"));
+      expect(`${bounce.origin}${bounce.pathname}`).toBe(REDIRECT_URI);
+      expect(bounce.searchParams.get("error")).toBe("invalid_request");
+      expect(bounce.searchParams.get("error_description")).toContain("PKCE");
+      expect(bounce.searchParams.get("state")).toBe(`state-${authMethod}`);
+
+      // Submitting the correct API token cannot start the consent flow either.
+      const submitted = await fetch(`${current.base}/authorize`, {
+        method: "POST",
+        headers: FORM,
+        body: new URLSearchParams({ authQuery: query, token: TOKEN_A }),
+        redirect: "manual",
+      });
+      expect(submitted.status).toBe(302);
+      expect(submitted.headers.get("set-cookie")).toBeNull();
+
+      // A `plain` challenge is rejected the same way.
+      const plain = new URLSearchParams({
+        response_type: "code",
+        client_id: clientId,
+        redirect_uri: REDIRECT_URI,
+        scope: "mail:read",
+        state: "state-plain",
+        code_challenge: "plain-challenge",
+        code_challenge_method: "plain",
+      }).toString();
+      const plainPrompt = await fetch(`${current.base}/authorize?${plain}`, { redirect: "manual" });
+      expect(plainPrompt.status).toBe(302);
+      expect(new URL(plainPrompt.headers.get("location")).searchParams.get("error")).toBe("invalid_request");
+    }
+  }, 30_000);
+
+  it("keeps per-origin providers isolated across hostnames in one isolate", async () => {
+    const localhost = `http://localhost:${current.port}`;
+    const queryFor = (origin) =>
+      new URLSearchParams({
+        response_type: "code",
+        client_id: flow.clientId,
+        redirect_uri: REDIRECT_URI,
+        scope: "mail:read",
+        state: "state-origins",
+        code_challenge: pkce().challenge,
+        code_challenge_method: "S256",
+        resource: `${origin}/mcp`,
+      }).toString();
+
+    // The 127.0.0.1 provider is already cached from the tests above; the
+    // localhost provider must not inherit its resource configuration (the
+    // second origin used to be answered with invalid_target).
+    const first = await fetch(`${current.base}/authorize?${queryFor(current.base)}`, { redirect: "manual" });
+    expect(first.status).toBe(200);
+    expect(await first.text()).toContain("Connect iCloud Mail");
+
+    const second = await fetch(`${localhost}/authorize?${queryFor(localhost)}`, { redirect: "manual" });
+    expect(second.status).toBe(200);
+    expect(await second.text()).toContain("Connect iCloud Mail");
+  }, 30_000);
+
   it("rotating API_TOKEN revokes existing grants and tokens", async () => {
     const persist = path.join(dir, "kv");
     const origin = current.port;
+
+    // A consent transaction opened just before the rotation: the handle and
+    // cookie stay valid in KV, but approval must be refused because the token
+    // verified at sign-in is no longer the deployment's token.
+    const pendingChallenge = pkce();
+    const pendingQuery = authorizeQuery(flow.clientId, pendingChallenge.challenge, "state-pending");
+    const pendingPage = await fetch(`${current.base}/authorize`, {
+      method: "POST",
+      headers: FORM,
+      body: new URLSearchParams({ authQuery: pendingQuery, token: TOKEN_A }),
+    });
+    expect(pendingPage.status).toBe(200);
+    const pendingHtml = await pendingPage.text();
+    const pending = {
+      cookie: pendingPage.headers.get("set-cookie").split(";")[0],
+      handle: hidden(pendingHtml, "handle"),
+      epoch: hidden(pendingHtml, "epoch"),
+    };
+
     await current.worker.dispose();
     // Same origin and same KV: the only difference is the API token.
     current = await startWorker(TOKEN_B, persist, origin);
+
+    const staleApproval = await fetch(`${current.base}/authorize/consent`, {
+      method: "POST",
+      headers: { ...FORM, Cookie: pending.cookie },
+      body: new URLSearchParams({ handle: pending.handle, action: "approve", epoch: pending.epoch }),
+      redirect: "manual",
+    });
+    expect(staleApproval.status).toBe(400);
+    expect(staleApproval.headers.get("location")).toBeNull();
+    expect(await staleApproval.text()).toContain("API token changed after sign-in");
 
     // The access token is still a valid provider token, but its epoch is not:
     // the 401 comes from the /mcp epoch check, not from token validation.
@@ -327,6 +435,39 @@ describe("OAuth on /mcp, end to end", () => {
     const revoked = await again.json();
     expect(revoked.error).toBe("invalid_grant");
     expect(revoked.error_description).toBe("Grant not found");
+
+    // Signing in again with the new token restores access end to end.
+    const reconnect = pkce();
+    const reconnectQuery = authorizeQuery(flow.clientId, reconnect.challenge, "state-reconnect");
+    const reconnectPage = await fetch(`${current.base}/authorize`, {
+      method: "POST",
+      headers: FORM,
+      body: new URLSearchParams({ authQuery: reconnectQuery, token: TOKEN_B }),
+    });
+    expect(reconnectPage.status).toBe(200);
+    const reconnectHtml = await reconnectPage.text();
+    const approved = await fetch(`${current.base}/authorize/consent`, {
+      method: "POST",
+      headers: { ...FORM, Cookie: reconnectPage.headers.get("set-cookie").split(";")[0] },
+      body: new URLSearchParams({
+        handle: hidden(reconnectHtml, "handle"),
+        action: "approve",
+        epoch: hidden(reconnectHtml, "epoch"),
+      }),
+      redirect: "manual",
+    });
+    expect(approved.status).toBe(302);
+    const code = new URL(approved.headers.get("location")).searchParams.get("code");
+    const exchanged = await tokenRequest(current.base, {
+      grant_type: "authorization_code",
+      code,
+      redirect_uri: REDIRECT_URI,
+      client_id: flow.clientId,
+      code_verifier: reconnect.verifier,
+    });
+    expect(exchanged.status).toBe(200);
+    const { access_token: accessToken } = await exchanged.json();
+    expect((await mcpRequest(current.base, accessToken)).status).toBe(200);
   }, 120_000);
 });
 
@@ -386,12 +527,13 @@ describe("PUBLIC_ORIGIN tunnel override", () => {
     });
     expect(posted.status).toBe(200);
     const cookie = posted.headers.get("set-cookie");
-    const handle = hidden(await posted.text(), "handle");
+    const consentHtml = await posted.text();
+    const handle = hidden(consentHtml, "handle");
 
     const approved = await fetch(`${current.base}/authorize/consent`, {
       method: "POST",
       headers: { ...FORM, Cookie: cookie.split(";")[0] },
-      body: new URLSearchParams({ handle, action: "approve" }),
+      body: new URLSearchParams({ handle, action: "approve", epoch: hidden(consentHtml, "epoch") }),
       redirect: "manual",
     });
     expect(approved.status).toBe(302);
@@ -408,6 +550,42 @@ describe("PUBLIC_ORIGIN tunnel override", () => {
     const { access_token: accessToken } = await exchanged.json();
     expect((await mcpRequest(current.base, accessToken)).status).toBe(200);
   }, 60_000);
+
+  it("does not let double-slash paths reach the gated endpoints", async () => {
+    // `//host/oauth/register` must not be re-read as a network-path reference:
+    // the rewrite used to change the host and leave `/oauth/register` behind
+    // it, so the path reached the provider without ever passing the limiter.
+    for (const host of ["tunnel.example.com", "evil.example.com"]) {
+      const registration = await fetch(`${current.base}//${host}/oauth/register`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          client_name: `Bypass ${host}`,
+          redirect_uris: [REDIRECT_URI],
+          token_endpoint_auth_method: "none",
+        }),
+      });
+      expect(registration.status).toBe(401);
+      expect(registration.headers.get("WWW-Authenticate")).toBe("Bearer");
+      expect(registration.headers.get("Cache-Control")).toBe("private, no-store");
+
+      const token = await fetch(`${current.base}//${host}/oauth/token`, {
+        method: "POST",
+        headers: FORM,
+        body: new URLSearchParams({
+          grant_type: "refresh_token",
+          refresh_token: "user:grant0000000000:secret",
+          client_id: "bypass",
+        }),
+      });
+      expect(token.status).toBe(401);
+      expect((await token.json()).error.code).toBe("unauthorized");
+    }
+
+    // The gated endpoints themselves are untouched: a normal registration
+    // still succeeds, and the bypass attempts did not consume its quota.
+    expect(await registerClient(current.base)).toBeTruthy();
+  }, 30_000);
 
   it("fails closed with 500 not_configured JSON when PUBLIC_ORIGIN is invalid", async () => {
     await current.worker.dispose();

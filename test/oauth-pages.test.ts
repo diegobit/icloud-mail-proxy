@@ -57,25 +57,28 @@ describe("tokenEntryPage", () => {
 });
 
 describe("consentPage", () => {
-  it("shows one fixed permission and posts handle plus action", () => {
-    const html = consentPage({ client: CLIENT, handle: "h-1" });
+  it("shows one fixed permission and posts handle, epoch plus action", () => {
+    const html = consentPage({ client: CLIENT, handle: "h-1", epoch: "epoch-1" });
     expect(html).toContain("Read mail (mail:read)");
     expect(html).toContain('name="handle" value="h-1"');
+    expect(html).toContain('name="epoch" value="epoch-1"');
     expect(html).toContain('method="post" action="/authorize/consent"');
     expect(html).toContain('name="action" value="approve"');
     expect(html).toContain('name="action" value="deny"');
   });
 
   it("offers no scope selection", () => {
-    const html = consentPage({ client: CLIENT, handle: "h-1" });
+    const html = consentPage({ client: CLIENT, handle: "h-1", epoch: "epoch-1" });
     expect(html).not.toContain('type="checkbox"');
     expect(html).not.toMatch(/name="scope/);
   });
 
-  it("escapes a hostile consent handle", () => {
-    const html = consentPage({ client: CLIENT, handle: `"><script>alert(1)</script>` });
+  it("escapes a hostile consent handle and epoch", () => {
+    const html = consentPage({ client: CLIENT, handle: `"><script>alert(1)</script>`, epoch: `"><img src=x>` });
     expect(html).not.toContain("<script>");
+    expect(html).not.toContain("<img");
     expect(html).toContain(`value="&quot;&gt;&lt;script&gt;alert(1)&lt;/script&gt;"`);
+    expect(html).toContain(`value="&quot;&gt;&lt;img src=x&gt;"`);
   });
 });
 

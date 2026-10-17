@@ -1,14 +1,16 @@
 import { describe, expect, it, vi } from "vitest";
+import type { AuthRequest } from "@cloudflare/workers-oauth-provider";
 import { grantEpoch } from "../src/auth";
 import { handleAuthorize } from "../src/oauth-authorize";
 import type { Env } from "../src/types";
 
 const TOKEN = "test-token-abcdefghijklmnopqrstuvwxyz01";
+const OTHER_TOKEN = "test-token-zzzzzzzzzzzzzzzzzzzzzzzzzz01";
 const AUTH_QUERY =
   "response_type=code&client_id=client-1&redirect_uri=https%3A%2F%2Fclient.example%2Fcb" +
   "&state=st-1&code_challenge=challenge-1&code_challenge_method=S256&scope=mail%3Aread";
 
-const AUTH_REQUEST = {
+const AUTH_REQUEST: AuthRequest = {
   responseType: "code",
   clientId: "client-1",
   redirectUri: "https://client.example/cb",
@@ -152,6 +154,36 @@ describe("GET /authorize", () => {
     expect(await response.text()).toContain("client metadata could not be fetched");
   });
 
+  it("redirects back when the request carries no S256 PKCE challenge", async () => {
+    const helpers = fakeHelpers();
+    helpers.parseAuthRequest.mockResolvedValueOnce({
+      ...AUTH_REQUEST,
+      codeChallenge: undefined,
+      codeChallengeMethod: undefined,
+    });
+    const response = await handleAuthorize(getPromptRequest(), fakeEnv(helpers));
+
+    expect(response.status).toBe(302);
+    const target = new URL(response.headers.get("Location")!);
+    expect(`${target.origin}${target.pathname}`).toBe("https://client.example/cb");
+    expect(target.searchParams.get("error")).toBe("invalid_request");
+    expect(target.searchParams.get("error_description")).toContain("PKCE");
+    expect(target.searchParams.get("state")).toBe("st-1");
+    expect(helpers.describeConsent).not.toHaveBeenCalled();
+    expect(helpers.beginConsent).not.toHaveBeenCalled();
+  });
+
+  it("rejects a plain challenge method before describeConsent", async () => {
+    const helpers = fakeHelpers();
+    helpers.parseAuthRequest.mockResolvedValueOnce({ ...AUTH_REQUEST, codeChallengeMethod: "plain" });
+    const response = await handleAuthorize(getPromptRequest(), fakeEnv(helpers));
+
+    expect(response.status).toBe(302);
+    expect(new URL(response.headers.get("Location")!).searchParams.get("error")).toBe("invalid_request");
+    expect(helpers.describeConsent).not.toHaveBeenCalled();
+    expect(helpers.beginConsent).not.toHaveBeenCalled();
+  });
+
   it("rejects other methods and paths", async () => {
     const helpers = fakeHelpers();
     const put = new Request(`https://mail.example.com/authorize?${AUTH_QUERY}`, { method: "PUT" });
@@ -205,7 +237,22 @@ describe("POST /authorize", () => {
     );
     const body = await response.text();
     expect(body).toContain('name="handle" value="handle-1"');
+    expect(body).toContain(`name="epoch" value="${await grantEpoch(TOKEN)}"`);
     expect(body).toContain("Read mail (mail:read)");
+  });
+
+  it("rejects a token submission without an S256 challenge before consent", async () => {
+    const helpers = fakeHelpers();
+    helpers.parseAuthRequest.mockResolvedValueOnce({ ...AUTH_REQUEST, codeChallenge: undefined });
+    const response = await handleAuthorize(
+      postForm("/authorize", { authQuery: AUTH_QUERY, token: TOKEN }),
+      fakeEnv(helpers),
+    );
+
+    expect(response.status).toBe(302);
+    expect(new URL(response.headers.get("Location")!).searchParams.get("error")).toBe("invalid_request");
+    expect(helpers.beginConsent).not.toHaveBeenCalled();
+    expect(helpers.completeAuthorization).not.toHaveBeenCalled();
   });
 
   it("rejects a body that is not a form", async () => {
@@ -239,7 +286,7 @@ describe("POST /authorize/consent", () => {
   it("approves with exactly mail:read and the current epoch", async () => {
     const helpers = fakeHelpers();
     const response = await handleAuthorize(
-      postForm("/authorize/consent", { handle: "handle-1", action: "approve" }, true),
+      postForm("/authorize/consent", { handle: "handle-1", action: "approve", epoch: await grantEpoch(TOKEN) }, true),
       fakeEnv(helpers),
     );
 
@@ -262,11 +309,51 @@ describe("POST /authorize/consent", () => {
     expect(Date.parse(authOptions.metadata.approvedAt)).not.toBeNaN();
   });
 
+  it("refuses approval when the API token rotated after sign-in", async () => {
+    const helpers = fakeHelpers();
+    const response = await handleAuthorize(
+      postForm("/authorize/consent", { handle: "handle-1", action: "approve", epoch: await grantEpoch(TOKEN) }, true),
+      fakeEnv(helpers, OTHER_TOKEN),
+    );
+
+    expect(response.status).toBe(400);
+    expect(await response.text()).toContain("API token changed after sign-in");
+    expect(helpers.approveConsent).not.toHaveBeenCalled();
+    expect(helpers.completeAuthorization).not.toHaveBeenCalled();
+  });
+
+  it("refuses approval when the epoch is missing or forged", async () => {
+    const variants: Record<string, string>[] = [
+      { handle: "handle-1", action: "approve" },
+      { handle: "handle-1", action: "approve", epoch: "forged-epoch" },
+    ];
+    for (const fields of variants) {
+      const helpers = fakeHelpers();
+      const response = await handleAuthorize(postForm("/authorize/consent", fields, true), fakeEnv(helpers));
+      expect(response.status).toBe(400);
+      expect(await response.text()).toContain("API token changed after sign-in");
+      expect(helpers.approveConsent).not.toHaveBeenCalled();
+      expect(helpers.completeAuthorization).not.toHaveBeenCalled();
+    }
+  });
+
+  it("still lets a rotated sign-in be denied", async () => {
+    const helpers = fakeHelpers();
+    const response = await handleAuthorize(
+      postForm("/authorize/consent", { handle: "handle-1", action: "deny" }, true),
+      fakeEnv(helpers, OTHER_TOKEN),
+    );
+
+    expect(response.status).toBe(302);
+    expect(helpers.denyConsent).toHaveBeenCalledTimes(1);
+    expect(helpers.completeAuthorization).not.toHaveBeenCalled();
+  });
+
   it("grants mail:read even when the client asked for more", async () => {
     const helpers = fakeHelpers();
     helpers.parseAuthRequest.mockResolvedValueOnce({ ...AUTH_REQUEST, scope: ["mail:read", "mail:send"] });
     const response = await handleAuthorize(
-      postForm("/authorize/consent", { handle: "handle-1", action: "approve" }, true),
+      postForm("/authorize/consent", { handle: "handle-1", action: "approve", epoch: await grantEpoch(TOKEN) }, true),
       fakeEnv(helpers),
     );
 
@@ -295,7 +382,7 @@ describe("POST /authorize/consent", () => {
     const helpers = fakeHelpers();
     helpers.approveConsent.mockRejectedValueOnce(authorizationError("Consent handle not found"));
     const response = await handleAuthorize(
-      postForm("/authorize/consent", { handle: "stale", action: "approve" }, true),
+      postForm("/authorize/consent", { handle: "stale", action: "approve", epoch: await grantEpoch(TOKEN) }, true),
       fakeEnv(helpers),
     );
 
@@ -323,7 +410,7 @@ describe("POST /authorize/consent", () => {
     const helpers = fakeHelpers();
     helpers.completeAuthorization.mockRejectedValueOnce(new Error("KV write failed"));
     const response = await handleAuthorize(
-      postForm("/authorize/consent", { handle: "handle-1", action: "approve" }, true),
+      postForm("/authorize/consent", { handle: "handle-1", action: "approve", epoch: await grantEpoch(TOKEN) }, true),
       fakeEnv(helpers),
     );
 

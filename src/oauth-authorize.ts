@@ -7,13 +7,15 @@
 // name, which both classes set explicitly.
 
 import type { AuthRequest, ConsentDescription, OAuthHelpers } from "@cloudflare/workers-oauth-provider";
-import { grantEpoch, tokenMatches } from "./auth";
+import { epochMatches, grantEpoch, tokenMatches } from "./auth";
 import { consentPage, errorPage, htmlHeaders, tokenEntryPage, type ClientFacts } from "./oauth-pages";
 import type { Env } from "./types";
 
 const METADATA_FAILED = "The connecting app's client metadata could not be fetched. Try again from the app.";
 const FORM_UNREADABLE = "The form could not be read. Start again from the connecting app.";
 const UNEXPECTED_FAILURE = "Something went wrong. Start again from the connecting app.";
+const PKCE_REQUIRED = "PKCE with an S256 code challenge is required.";
+const TOKEN_ROTATED = "API token changed after sign-in. Start again from the connecting app.";
 const GRANTED_SCOPE = ["mail:read"];
 
 interface WireAuthorizationError extends Error {
@@ -31,6 +33,31 @@ function isAuthorizationError(error: unknown): error is WireAuthorizationError {
 
 function isCimdFetchError(error: unknown): boolean {
   return error instanceof Error && error.name === "CimdFetchError";
+}
+
+/**
+ * An authorization request without an S256 PKCE challenge. The library only
+ * requires PKCE for public clients (enforced at token exchange); OAuth 2.1
+ * wants it for every authorization request, so this handler rejects such
+ * requests itself, before any consent transaction exists.
+ */
+class PkceRequiredError extends Error {
+  readonly redirectTo: string;
+
+  constructor(redirectTo: string) {
+    super(PKCE_REQUIRED);
+    this.name = "PkceRequiredError";
+    this.redirectTo = redirectTo;
+  }
+}
+
+/** Build the OAuth error redirect back to a redirect URI the library validated. */
+function redirectToClient(authRequest: AuthRequest, error: string, description: string): string {
+  const target = new URL(authRequest.redirectUri);
+  target.searchParams.set("error", error);
+  target.searchParams.set("error_description", description);
+  if (authRequest.state) target.searchParams.set("state", authRequest.state);
+  return target.toString();
 }
 
 function htmlResponse(html: string, status: number, extraHeaders?: Headers): Response {
@@ -71,6 +98,9 @@ function toClientFacts(consent: ConsentDescription): ClientFacts {
 
 /** A validation failure: redirect back when the library validated the client, render otherwise. */
 function authorizationFailure(error: unknown): Response {
+  if (error instanceof PkceRequiredError) {
+    return Response.redirect(error.redirectTo, 302);
+  }
   if (isAuthorizationError(error)) {
     if (error.redirectTo) return Response.redirect(error.redirectTo, 302);
     return htmlResponse(errorPage(error.description, 400), 400);
@@ -97,6 +127,13 @@ async function readRequestFacts(
   request: Request,
 ): Promise<{ authRequest: AuthRequest; facts: ClientFacts }> {
   const authRequest = await helpers.parseAuthRequest(request);
+  // OAuth 2.1 requires PKCE on every authorization request: a confidential
+  // client could otherwise consent and exchange without a challenge or
+  // verifier at all, and this deployment has no OIDC nonce alternative.
+  // Checked before describeConsent so no metadata fetch happens either.
+  if (authRequest.codeChallengeMethod !== "S256" || !authRequest.codeChallenge) {
+    throw new PkceRequiredError(redirectToClient(authRequest, "invalid_request", PKCE_REQUIRED));
+  }
   const facts = toClientFacts(await helpers.describeConsent(authRequest));
   return { authRequest, facts };
 }
@@ -134,8 +171,13 @@ async function handleTokenSubmission(request: Request, env: Env): Promise<Respon
   }
 
   try {
+    const epoch = await grantEpoch(env.API_TOKEN);
     const transaction = await env.OAUTH_PROVIDER.beginConsent(authRequest);
-    return htmlResponse(consentPage({ client: facts, handle: transaction.handle }), 200, transaction.headers);
+    return htmlResponse(
+      consentPage({ client: facts, handle: transaction.handle, epoch }),
+      200,
+      transaction.headers,
+    );
   } catch (error) {
     return consentFailure(error);
   }
@@ -160,6 +202,18 @@ async function handleConsentSubmission(request: Request, env: Env): Promise<Resp
     return htmlResponse(errorPage("Unrecognized consent action.", 400), 400);
   }
 
+  // The consent form carries the grant epoch of the token that was verified
+  // at sign-in. If API_TOKEN has rotated since, approval must not mint a
+  // fresh grant from that stale sign-in, so the epoch is compared with the
+  // current token and only the verified value is stamped into the grant. The
+  // field comes from the browser, which is safe: any value that does not
+  // equal the current token's epoch can only be rejected here, and the epoch
+  // itself is a non-reversible HMAC of the token (auth.ts).
+  const epoch = formValue(form, "epoch");
+  if (!(await epochMatches(epoch, env.API_TOKEN))) {
+    return htmlResponse(errorPage(TOKEN_ROTATED, 400), 400);
+  }
+
   try {
     const approved = await env.OAUTH_PROVIDER.approveConsent(request, handle, { scope: GRANTED_SCOPE });
     const consent = await env.OAUTH_PROVIDER.describeConsent(approved.request);
@@ -168,7 +222,7 @@ async function handleConsentSubmission(request: Request, env: Env): Promise<Resp
       userId: "owner",
       scope: GRANTED_SCOPE,
       metadata: { clientName: consent.clientName, approvedAt: new Date().toISOString() },
-      props: { epoch: await grantEpoch(env.API_TOKEN), via: "oauth" },
+      props: { epoch, via: "oauth" },
     });
     const headers = new Headers(approved.headers);
     headers.set("Location", redirectTo);
