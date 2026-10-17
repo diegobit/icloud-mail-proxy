@@ -33,6 +33,7 @@ afterEach(() => {
 });
 
 function endpoint() {
+  const origin = "https://w.personal.workers.dev";
   return fakeFetch([
     [
       "/healthz",
@@ -40,6 +41,27 @@ function endpoint() {
         { status: 401, body: { error: { code: "unauthorized" } } },
         { status: 200, body: { ok: true, imapLatencyMs: 210 } },
       ],
+    ],
+    [
+      "/.well-known/oauth-protected-resource/mcp",
+      {
+        status: 200,
+        body: { resource: `${origin}/mcp`, authorization_servers: [origin], scopes_supported: ["mail:read"] },
+      },
+    ],
+    [
+      "/.well-known/oauth-authorization-server",
+      { status: 200, body: { issuer: origin, client_id_metadata_document_supported: true } },
+    ],
+    [
+      (url, options) => url.endsWith("/mcp") && !options.headers?.Authorization,
+      {
+        status: 401,
+        headers: {
+          "www-authenticate": `Bearer realm="OAuth", resource_metadata="${origin}/.well-known/oauth-protected-resource/mcp", scope="mail:read"`,
+        },
+        body: { error: { code: "unauthorized" } },
+      },
     ],
     [
       "/mcp",
@@ -132,9 +154,13 @@ describe("first guided setup, end to end", () => {
       url: "https://w.personal.workers.dev",
     });
 
-    // All four live checks ran against the reported URL.
+    // Every live check ran against the reported URL: the anonymous gate, the
+    // three OAuth probes, the authenticated calls and the folder search.
     expect(fetchImpl.requests.map((request) => request.url)).toEqual([
       "https://w.personal.workers.dev/healthz",
+      "https://w.personal.workers.dev/.well-known/oauth-protected-resource/mcp",
+      "https://w.personal.workers.dev/.well-known/oauth-authorization-server",
+      "https://w.personal.workers.dev/mcp",
       "https://w.personal.workers.dev/healthz",
       "https://w.personal.workers.dev/mcp",
       "https://w.personal.workers.dev/mcp",
@@ -147,5 +173,8 @@ describe("first guided setup, end to end", () => {
     expect(output).toContain("claude mcp add --transport http icloud-mail https://w.personal.workers.dev/mcp");
     expect(output).toContain("$ICLOUD_MAIL_TOKEN");
     expect(output).toContain("[ok  ] MCP initialize and tools/list");
+    expect(output).toContain("ChatGPT");
+    expect(output).toContain("claude.ai");
+    expect(output).toContain("OAUTH_KV");
   });
 });

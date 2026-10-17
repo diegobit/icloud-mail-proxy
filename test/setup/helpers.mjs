@@ -117,14 +117,15 @@ export function fakeVerify(outcome = { ok: true, checks: [{ name: "all", ok: tru
   return fn;
 }
 
-/** Fake fetch driven by a list of [urlSubstring, response(s)] rules. */
+/** Fake fetch driven by a list of [urlSubstringOrMatcher, response(s)] rules. */
 export function fakeFetch(rules) {
   const requests = [];
   const queues = rules.map(([match, responses]) => [match, Array.isArray(responses) ? [...responses] : responses]);
   const fn = async (url, options = {}) => {
     requests.push({ url, options });
     for (const [match, responses] of queues) {
-      if (!url.includes(match)) continue;
+      const hit = typeof match === "function" ? match(url, options) : url.includes(match);
+      if (!hit) continue;
       const spec = Array.isArray(responses) ? (responses.length > 1 ? responses.shift() : responses[0]) : responses;
       if (spec instanceof Error) throw spec;
       if (spec?.hang) return new Promise(() => {});
