@@ -13,7 +13,29 @@
   "name": "icloud-mail-proxy",
   "main": "src/index.ts",
   "compatibility_date": "2026-07-01",
-  "compatibility_flags": ["nodejs_compat"],
+  // global_fetch_strictly_public is required by client ID metadata documents
+  // (CIMD): without it @cloudflare/workers-oauth-provider declines to fetch
+  // client metadata from arbitrary HTTPS hosts and does not advertise CIMD.
+  "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
+  // OAuth grants, tokens and consent handles for /mcp. No `id`: wrangler >=
+  // 4.45 provisions the namespace on the first non-interactive deploy (guided
+  // setup and Workers Builds alike) and keeps it linked to the Worker.
+  "kv_namespaces": [{ "binding": "OAUTH_KV" }],
+  // Per-IP rate limiters for the unauthenticated OAuth endpoints that write to
+  // OAUTH_KV (free tier: 1,000 writes/day): /oauth/register and /oauth/token
+  // (the latter caches CIMD client-assertion replay markers per request).
+  "ratelimits": [
+    {
+      "name": "OAUTH_REGISTER_LIMITER",
+      "namespace_id": "1001",
+      "simple": { "limit": 5, "period": 60 }
+    },
+    {
+      "name": "OAUTH_TOKEN_LIMITER",
+      "namespace_id": "1002",
+      "simple": { "limit": 30, "period": 60 }
+    }
+  ],
   // Guided deployments are reachable at <name>.<subdomain>.workers.dev.
   // Targets that serve a custom domain instead set this to false.
   "workers_dev": true,

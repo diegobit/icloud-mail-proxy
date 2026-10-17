@@ -109,11 +109,11 @@ function isPropagating(result) {
   return false;
 }
 
-async function withRetries(run, { attempts, sleep, delayMs }) {
+async function withRetries(run, { attempts, sleep, delayMs, shouldRetry = isPropagating }) {
   let last;
   for (let i = 0; i < attempts; i++) {
     last = await run();
-    if (!isPropagating(last)) return last;
+    if (!shouldRetry(last)) return last;
     if (i < attempts - 1) await sleep(Math.min(delayMs * 2 ** i, 8000));
   }
   return last;
@@ -165,6 +165,11 @@ export async function verifyDeployment({
   const base = url.replace(/\/+$/, "");
   const checks = [];
   const retry = (run) => withRetries(run, { attempts, sleep, delayMs });
+  // The metadata URLs answer 200 on a healthy Worker; a 401 right after a
+  // deploy can be the previous (pre-OAuth) version still serving, so retry it
+  // before reporting the deployment as too old.
+  const retryMetadata = (run) =>
+    withRetries(run, { attempts, sleep, delayMs, shouldRetry: (result) => isPropagating(result) || result.status === 401 });
   const get = (path, options) => retry(() => attempt(fetchImpl, `${base}${path}`, options, deadlineMs));
 
   // 1. The endpoint exists and refuses unauthenticated callers.
@@ -193,6 +198,9 @@ export async function verifyDeployment({
   }
   checks.push({ name: "unauthenticated request is rejected", ok: true, detail: "HTTP 401 without a bearer token" });
 
+  // 1b. OAuth discovery: needs no token, so these also run in token-skipped runs.
+  checks.push(...(await checkOAuthDiscovery({ base, fetchImpl, retry, retryMetadata, deadlineMs })));
+
   // 2. The token works and the Worker can log in to iCloud.
   if (!token) {
     checks.push({ name: "authenticated /healthz", ok: false, skipped: true, kind: "no_token", detail: "no API token available in this run" });
@@ -213,6 +221,121 @@ export async function verifyDeployment({
 
   const ok = checks.every((check) => check.ok);
   return { ok, checks };
+}
+
+/**
+ * OAuth discovery checks: the Worker serves the provider metadata and
+ * challenges anonymous /mcp callers with it. A 401 on the metadata URLs,
+ * still there after the bounded retries, means the deployed code predates
+ * OAuth (see retryMetadata in verifyDeployment).
+ */
+async function checkOAuthDiscovery({ base, fetchImpl, retry, retryMetadata, deadlineMs }) {
+  const origin = new URL(base).origin;
+  const resource = await retryMetadata(() =>
+    attempt(fetchImpl, `${origin}/.well-known/oauth-protected-resource/mcp`, { method: "GET" }, deadlineMs),
+  );
+  const authorization = await retryMetadata(() =>
+    attempt(fetchImpl, `${origin}/.well-known/oauth-authorization-server`, { method: "GET" }, deadlineMs),
+  );
+  const challenge = await retry(() =>
+    attempt(
+      fetchImpl,
+      `${origin}/mcp`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/json, text/event-stream" },
+        body: "{}",
+      },
+      deadlineMs,
+    ),
+  );
+  return [
+    describeResourceMetadata(resource, origin),
+    describeAuthorizationServer(authorization, origin),
+    describeMcpChallenge(challenge, origin),
+  ];
+}
+
+function describeResourceMetadata(result, origin) {
+  const name = "OAuth protected-resource metadata";
+  const url = `${origin}/.well-known/oauth-protected-resource/mcp`;
+  if (isPropagating(result)) {
+    return { name, ok: false, kind: "propagation", detail: propagationDetail(result, url) };
+  }
+  if (result.status === 401) {
+    return {
+      name,
+      ok: false,
+      kind: "oauth",
+      detail: `HTTP 401 on ${url}: the deployed Worker predates OAuth. Deploy this checkout (\`npm run setup\`), then re-check.`,
+    };
+  }
+  if (result.status !== 200) {
+    return { name, ok: false, kind: "oauth", detail: `HTTP ${result.status} on ${url}: ${result.text?.slice(0, 200) ?? ""}` };
+  }
+  if (result.body?.resource !== `${origin}/mcp`) {
+    return { name, ok: false, kind: "oauth", detail: `resource is "${result.body?.resource}", expected "${origin}/mcp"` };
+  }
+  const servers = Array.isArray(result.body.authorization_servers) ? result.body.authorization_servers : [];
+  if (!servers.includes(origin)) {
+    return {
+      name,
+      ok: false,
+      kind: "oauth",
+      detail: `authorization_servers is ${JSON.stringify(servers)}, expected to include "${origin}"`,
+    };
+  }
+  return { name, ok: true, detail: `resource ${origin}/mcp, authorization server ${origin}` };
+}
+
+function describeAuthorizationServer(result, origin) {
+  const name = "OAuth authorization-server metadata";
+  const url = `${origin}/.well-known/oauth-authorization-server`;
+  if (isPropagating(result)) {
+    return { name, ok: false, kind: "propagation", detail: propagationDetail(result, url) };
+  }
+  if (result.status === 401) {
+    return {
+      name,
+      ok: false,
+      kind: "oauth",
+      detail: `HTTP 401 on ${url}: the deployed Worker predates OAuth. Deploy this checkout (\`npm run setup\`), then re-check.`,
+    };
+  }
+  if (result.status !== 200) {
+    return { name, ok: false, kind: "oauth", detail: `HTTP ${result.status} on ${url}: ${result.text?.slice(0, 200) ?? ""}` };
+  }
+  if (result.body?.issuer !== origin) {
+    return { name, ok: false, kind: "oauth", detail: `issuer is "${result.body?.issuer}", expected "${origin}"` };
+  }
+  if (result.body.client_id_metadata_document_supported !== true) {
+    return {
+      name,
+      ok: false,
+      kind: "oauth",
+      detail:
+        "client_id_metadata_document_supported is not true: the global_fetch_strictly_public " +
+        "compatibility flag is probably missing from the deploy.",
+    };
+  }
+  return { name, ok: true, detail: `issuer ${origin}, client_id_metadata_document_supported: true` };
+}
+
+function describeMcpChallenge(result, origin) {
+  const name = "OAuth challenge on anonymous /mcp";
+  const url = `${origin}/mcp`;
+  if (isPropagating(result)) {
+    return { name, ok: false, kind: "propagation", detail: propagationDetail(result, url) };
+  }
+  if (result.status !== 401) {
+    return { name, ok: false, kind: "oauth", detail: `expected HTTP 401 without a token, got HTTP ${result.status}` };
+  }
+  const challenge = result.headers?.get?.("www-authenticate") ?? "";
+  const metadataRef = `resource_metadata="${origin}/.well-known/oauth-protected-resource/mcp"`;
+  if (!challenge.includes(metadataRef) || !challenge.includes('scope="mail:read"')) {
+    return { name, ok: false, kind: "oauth", detail: `WWW-Authenticate was "${challenge}", expected resource_metadata and scope="mail:read"` };
+  }
+  return { name, ok: true, detail: "HTTP 401 pointing at the OAuth metadata, scope mail:read" };
 }
 
 function describeHealth(result, base) {

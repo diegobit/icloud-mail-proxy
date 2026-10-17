@@ -65,6 +65,11 @@ function connectionInstructions(url, { tokenEnvVar = "ICLOUD_MAIL_TOKEN" } = {})
     "  [mcp_servers.icloud_mail]",
     `  url = "${url}/mcp"`,
     `  bearer_token_env_var = "${tokenEnvVar}"`,
+    "",
+    "ChatGPT (developer mode) and claude.ai connect over OAuth instead:",
+    `  ChatGPT: Settings → Connectors, add a custom connector with URL ${url}/mcp`,
+    `  claude.ai: Settings → Connectors, add a custom connector with URL ${url}/mcp`,
+    "Both ask for the API token once on the Worker's sign-in page, then hold their own OAuth grant.",
   ].join("\n");
 }
 
@@ -95,6 +100,8 @@ function verificationHint(checks) {
       return "The first configured folder could not be read. Folder names must match iCloud exactly; re-run `npm run setup` to correct them. Setup always deploys again, then verifies.";
     case "protocol":
       return "REST worked but MCP did not. Re-run `npm run setup` (it will deploy again, then re-check); if it persists, check `npx wrangler tail` while a client connects.";
+    case "oauth":
+      return "OAuth discovery is broken on the deployed Worker; bearer clients keep working. Check that the deploy came from this checkout (the global_fetch_strictly_public flag and the OAUTH_KV binding appear in the deploy output), then run `npm run setup` again — it deploys before it verifies.";
     default:
       return "Run `npm run setup` again to deploy and re-check; the Worker and its secrets are left as they are.";
   }
@@ -309,6 +316,7 @@ export async function runSetup({
     }`,
   );
   log("  URL: https://<worker>.<your-subdomain>.workers.dev (no custom domain)");
+  log("  OAuth: the first deploy creates the OAUTH_KV namespace for connector sign-ins (nothing to configure)");
   if (!(await prompts.confirm("Proceed?", { defaultValue: true }))) {
     return { code: 130, message: "Nothing was changed. Run `npm run setup` again when you are ready." };
   }

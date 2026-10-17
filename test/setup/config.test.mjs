@@ -63,6 +63,22 @@ describe("composing a deployable config", () => {
     expect(config.description).toBeUndefined();
   });
 
+  it("carries the OAuth bindings and flags into every target", () => {
+    const configs = [
+      composeConfig(base, profileFragment("production", readProfiles()), path.join(repoRoot, ".deploy")),
+      composeConfig(base, stateFragment({ accountId: "acc-9", workerName: "my-mail" }), path.join(repoRoot, ".deploy")),
+    ];
+    for (const config of configs) {
+      expect(config.compatibility_flags).toEqual(["nodejs_compat", "global_fetch_strictly_public"]);
+      // Deliberately id-less: wrangler provisions the namespace on first deploy.
+      expect(config.kv_namespaces).toEqual([{ binding: "OAUTH_KV" }]);
+      expect(config.ratelimits).toEqual([
+        { name: "OAUTH_REGISTER_LIMITER", namespace_id: "1001", simple: { limit: 5, period: 60 } },
+        { name: "OAUTH_TOKEN_LIMITER", namespace_id: "1002", simple: { limit: 30, period: 60 } },
+      ]);
+    }
+  });
+
   it("rewrites relative paths for the generated config's directory", () => {
     const config = composeConfig(base, profileFragment("production", readProfiles()), path.join(repoRoot, ".deploy"));
     expect(config.main).toBe("../src/index.ts");
