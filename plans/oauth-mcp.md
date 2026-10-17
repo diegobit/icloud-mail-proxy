@@ -395,9 +395,9 @@ and a claude.ai account with custom connectors.
 
 ### Delivered
 
-All seven code steps and the review fixes are committed on `oauth-mcp` (base
-`dev` @ `e6e38d2`); `npm test` (17 files, 241 tests), `npm run typecheck` and
-both bundle dry-runs are green.
+All seven code steps and both review rounds are committed on `oauth-mcp`
+(base `dev` @ `e6e38d2`); `npm test` (17 files, 247 tests), `npm run typecheck`
+and both bundle dry-runs are green.
 
 | Step | Commit | What landed |
 | --- | --- | --- |
@@ -410,6 +410,7 @@ both bundle dry-runs are green.
 | 6 | `39449a7` | `checkOAuthDiscovery` in `verify.mjs` (three hard checks, `kind: "oauth"`), setup hint, connector instructions, `OAUTH_KV` line in the "About to" summary. |
 | 7 | `30e1586` | README (connectors, two auth paths, security bullet, architecture), DEPLOY (bindings, rotation, KV consistency, CI), `.dev.vars.example`. |
 | Review 1 | `0032b29` | Round-1 review findings, including the `PUBLIC_ORIGIN` request rewriting. |
+| Review 2 | `ad13296` | Round-2 review findings: `/oauth/token` rate limiter (M1), `/authorize` form and error guards (N1), integration coverage (L2, L3), setup 401 retry (L5), doc corrections (L1, L4). |
 
 The integration test starts the real Worker with `unstable_startWorker`
 against `wrangler.base.jsonc` and covers: discovery metadata, `/.well-known`
