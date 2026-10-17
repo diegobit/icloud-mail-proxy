@@ -1,8 +1,9 @@
 # OAuth 2.1 for /mcp
 
-Status: planned, not started. Deferred until a connector needs it: Claude
-Code, opencode and Codex already work with the static bearer header; ChatGPT
-and claude.ai are the only clients that would benefit. Design checked against
+Status: implemented on branch `oauth-mcp` (worktree), steps 1–7 committed with
+tests green; step 8 (live connector acceptance) is owner-run and still pending,
+and the independent review by Claude Opus 5.5 runs after the implementation
+freezes. Design checked against
 `@cloudflare/workers-oauth-provider` 1.2.x docs and `dist/oauth-provider.js`,
 reviewed by Claude Opus 5.5 (Oct 2026).
 
@@ -327,7 +328,8 @@ forced to reconnect. Then one `npm run setup` rerun against a test Worker.
   `kv_namespaces` entry without `id` (step 1 surfaces it immediately). If it
   does not, keep the id-less entry for real deploys and drop the binding from
   dry-run configs, or pin an id in the production profile (would need
-  `kv_namespaces` in `FRAGMENT_KEYS`).
+  `kv_namespaces` in `FRAGMENT_KEYS`). *Confirmed in step 1: both dry-runs
+  accept it.*
 - **Redirect URIs and `state`.** ChatGPT and claude.ai callback URLs must
   match exactly what they register (DCR) or publish (CIMD); `state` and `iss`
   are preserved by the library. Only the live run proves both clients; record
@@ -345,10 +347,10 @@ forced to reconnect. Then one `npm run setup` rerun against a test Worker.
   plus about two per hourly refresh per connector. `/oauth/register` is
   unauthenticated: the per-IP limiter slows abuse but cannot cap a day, so a
   distributed attacker can exhaust writes and block OAuth logins/refreshes
-  until the daily reset; bearer clients are unaffected. Check in `dist`
-  whether CIMD lookups cache into KV; if so, rate-limit `GET /authorize`
-  for URL `client_id`s too. If claude.ai supports CIMD, consider disabling
-  DCR by default.
+  until the daily reset; bearer clients are unaffected. CIMD lookups do not
+  write KV (they cache in the Cache API, confirmed), so the exposure is DCR
+  and grant writes only. If claude.ai supports CIMD, consider disabling DCR
+  by default.
 - **Clients with a wrong bearer.** `/mcp` now advertises OAuth on 401, so a
   CLI with a stale token may start a browser OAuth flow instead of failing
   (opencode's `"oauth": false` already prevents this).
@@ -357,7 +359,8 @@ forced to reconnect. Then one `npm run setup` rerun against a test Worker.
   free plan during the first real deploy.
 - **Library surface to confirm in `dist`.** `ctx.props` on `apiHandler`,
   `beginConsent` argument type, `OAuthError` export path, and plain-object
-  `apiHandler`/`defaultHandler` acceptance.
+  `apiHandler`/`defaultHandler` acceptance. *Confirmed against 1.2.3 during
+  steps 4–5.*
 - **`unstable_startWorker` stability.** If it proves flaky in CI or Workers
   Builds, move the integration test behind its own npm script and keep it out
   of the deploy build command.
@@ -370,3 +373,82 @@ library; the custom work is the token and consent pages, epoch wiring,
 origin handling, rate limit, setup verification, the integration test and
 docs. Live acceptance needs a tunnel, a ChatGPT plan with developer mode,
 and a claude.ai account with custom connectors.
+
+## Implementation status
+
+### Delivered
+
+All seven code steps are committed on `oauth-mcp` (base `dev` @ `e6e38d2`);
+`npm test` (17 files, 239 tests), `npm run typecheck` and both bundle
+dry-runs are green after each one.
+
+| Step | Commit | What landed |
+| --- | --- | --- |
+| Plan | `970e838` | This file, as written by the plan pass. |
+| 1 | `d7d2f7e` | `@cloudflare/workers-oauth-provider` 1.2.3, `global_fetch_strictly_public`, id-less `OAUTH_KV`, `OAUTH_REGISTER_LIMITER` (5/60 s), `Env` additions. |
+| 2 | `3013e31` | `src/auth.ts`: bearer primitives and the `grant-epoch-v1` HMAC; test crypto shim. |
+| 3 | `a26c276` | `src/oauth-pages.ts`: token-entry, consent and error pages, escaped and CSP'd. |
+| 4 | `3510986` | `src/oauth-authorize.ts`: `/authorize` and `/authorize/consent`; no KV write before a correct token. |
+| 5 | `8fb7da1` | `src/index.ts` provider wiring (per-origin map, epoch check on `/mcp`, register limiter, `PUBLIC_ORIGIN`) plus `test/oauth.integration.test.mjs` against real workerd. |
+| 6 | `39449a7` | `checkOAuthDiscovery` in `verify.mjs` (three hard checks, `kind: "oauth"`), setup hint, connector instructions, `OAUTH_KV` line in the "About to" summary. |
+| 7 | `30e1586` | README (connectors, two auth paths, security bullet, architecture), DEPLOY (bindings, rotation, KV consistency, CI), `.dev.vars.example`. |
+
+The integration test starts the real Worker with `unstable_startWorker`
+against `wrangler.base.jsonc` and covers: discovery metadata, `/.well-known`
+unknown → 404, the anonymous `/mcp` challenge, static bearer initialize and
+`tools/list`, the full dynamic-client flow (register, wrong token → 401 with
+no consent transaction, consent, PKCE exchange, refresh, OAuth token on
+`/v1/*` → 401), rotation (epoch 401 on `/mcp`, `invalid_grant - API token
+rotated; reconnect` on refresh, then `Grant not found` proving revocation),
+and the registration rate limit (5 then 429).
+
+### Deviations from the plan
+
+- `lookupClient` is not called separately: the library calls it inside
+  `parseAuthRequest`, and an unknown client surfaces as an
+  `AuthorizationError` from there.
+- The test shim (`test/support/workers-crypto.ts`) installs a pure-JS
+  `crypto.subtle.timingSafeEqual`; the repo has no `@types/node`, so the
+  planned `node:crypto` import failed typecheck.
+- `ExecutionContext<Props>` in workers-types has a required `props` field, so
+  `mcpApiHandler` reads `ctx.props as GrantProps | undefined` instead of
+  declaring a new interface.
+- `unstable_startWorker` is the raw DevEnv: it needs `build.nodejsCompatMode:
+  "v2"`, `dev.server.port` and secret values passed through `bindings` (no
+  `.dev.vars`). The rotation worker reuses the same port and persist dir,
+  because grants are bound to the origin they were issued for.
+- `fakeFetch` learned function matchers: the anonymous challenge and the
+  authenticated MCP calls share the `/mcp` URL and only differ by the
+  `Authorization` header.
+- The register limiter keys on `CF-Connecting-IP`, falling back to `"unknown"`
+  when the header is absent (local runs), so the limit still applies there.
+- `requestOrigin` validates `PUBLIC_ORIGIN` itself (bare origin, https or http
+  on loopback) before handing it to the provider.
+
+### Open items resolved
+
+- **Id-less KV in CI dry-runs:** both `check:bundle` and
+  `deploy:production --dry-run` accept `OAUTH_KV` without an id.
+- **CIMD and KV writes:** CIMD lookups cache in the Cache API
+  (`workers-oauth-provider:cimd:v1`), not KV; KV writes are grant and
+  client-registration records only.
+- **Library surface:** `ctx.props` on `apiHandler`, `beginConsent` →
+  `{ handle, headers }`, `OAuthError(code, { description })` (description
+  required), and plain-object handlers all confirmed against 1.2.3.
+- **Challenge format:** the provider answers unauthenticated `/mcp` itself
+  (`apiRoute` runs before `defaultHandler`) with
+  `Bearer realm="OAuth", resource_metadata="…", scope="mail:read"`.
+
+### Live acceptance (step 8, owner-run)
+
+- [ ] `npm run dev` with `PUBLIC_ORIGIN` set to a `cloudflared tunnel --url
+      http://localhost:8787` hostname.
+- [ ] ChatGPT (developer mode) connects: sign-in page, `list_mailboxes`, one
+      `search_mail`.
+- [ ] claude.ai connects: same two tools.
+- [ ] Rotate `API_TOKEN` in `.dev.vars` and confirm both connectors are forced
+      to reconnect.
+- [ ] One `npm run setup` rerun against a test Worker with OAuth checks
+      passing live.
+- [ ] Record both connectors' callback hosts here if anything needed
+      allowlisting.
