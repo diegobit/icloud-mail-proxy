@@ -12,6 +12,8 @@ import { consentPage, errorPage, htmlHeaders, tokenEntryPage, type ClientFacts }
 import type { Env } from "./types";
 
 const METADATA_FAILED = "The connecting app's client metadata could not be fetched. Try again from the app.";
+const FORM_UNREADABLE = "The form could not be read. Start again from the connecting app.";
+const UNEXPECTED_FAILURE = "Something went wrong. Start again from the connecting app.";
 const GRANTED_SCOPE = ["mail:read"];
 
 interface WireAuthorizationError extends Error {
@@ -46,6 +48,15 @@ function htmlResponse(html: string, status: number, extraHeaders?: Headers): Res
 function formValue(form: FormData, name: string): string {
   const value = form.get(name);
   return typeof value === "string" ? value : "";
+}
+
+/** The submitted form, or null when the body is not a readable form submission. */
+async function readForm(request: Request): Promise<FormData | null> {
+  try {
+    return await request.formData();
+  } catch {
+    return null;
+  }
 }
 
 function toClientFacts(consent: ConsentDescription): ClientFacts {
@@ -101,7 +112,8 @@ async function handlePrompt(request: Request, env: Env): Promise<Response> {
 }
 
 async function handleTokenSubmission(request: Request, env: Env): Promise<Response> {
-  const form = await request.formData();
+  const form = await readForm(request);
+  if (!form) return htmlResponse(errorPage(FORM_UNREADABLE, 400), 400);
   const authQuery = formValue(form, "authQuery");
   const token = formValue(form, "token");
 
@@ -130,7 +142,8 @@ async function handleTokenSubmission(request: Request, env: Env): Promise<Respon
 }
 
 async function handleConsentSubmission(request: Request, env: Env): Promise<Response> {
-  const form = await request.formData();
+  const form = await readForm(request);
+  if (!form) return htmlResponse(errorPage(FORM_UNREADABLE, 400), 400);
   const handle = formValue(form, "handle");
   const action = formValue(form, "action");
 
@@ -165,7 +178,19 @@ async function handleConsentSubmission(request: Request, env: Env): Promise<Resp
   }
 }
 
+// An unexpected failure anywhere in the flow (e.g. a KV write error inside
+// completeAuthorization) must still come back as a no-store HTML page rather
+// than the runtime's error page, which carries no cache headers.
 export async function handleAuthorize(request: Request, env: Env): Promise<Response> {
+  try {
+    return await routeAuthorize(request, env);
+  } catch (error) {
+    console.error("authorize_unexpected_error", error instanceof Error ? error.message : String(error));
+    return htmlResponse(errorPage(UNEXPECTED_FAILURE, 500), 500);
+  }
+}
+
+async function routeAuthorize(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
 
   if (url.pathname === "/authorize/consent") {

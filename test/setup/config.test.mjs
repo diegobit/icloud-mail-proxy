@@ -74,6 +74,7 @@ describe("composing a deployable config", () => {
       expect(config.kv_namespaces).toEqual([{ binding: "OAUTH_KV" }]);
       expect(config.ratelimits).toEqual([
         { name: "OAUTH_REGISTER_LIMITER", namespace_id: "1001", simple: { limit: 5, period: 60 } },
+        { name: "OAUTH_TOKEN_LIMITER", namespace_id: "1002", simple: { limit: 30, period: 60 } },
       ]);
     }
   });

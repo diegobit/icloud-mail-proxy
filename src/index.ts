@@ -3,7 +3,8 @@
 //   /mcp                 -> MCP handler, behind an OAuth access token or the static bearer
 //   /authorize           -> sign-in and consent pages (defaultFetch -> oauth-authorize)
 //   /authorize/consent
-//   /oauth/token         -> implemented by the provider (token issuance, revocation)
+//   /oauth/token         -> implemented by the provider (token issuance,
+//                           revocation), rate-limited here first
 //   /oauth/register      -> dynamic client registration, rate-limited here first
 //   /.well-known/*       -> provider metadata; unknown paths answer 404 JSON
 //   everything else      -> REST API behind the static bearer
@@ -55,6 +56,18 @@ const mcpApiHandler = {
     return createMailMcpHandler(env)(request, env, ctx);
   },
 };
+
+/**
+ * The 429 for an over-budget per-IP limiter, or null when the request may
+ * proceed. Both unauthenticated OAuth endpoints that write to KV go through
+ * this first; the fallback key covers local runs without CF-Connecting-IP.
+ */
+async function rateLimitGate(request: Request, limiter: RateLimit, message: string): Promise<Response | null> {
+  const key = request.headers.get("CF-Connecting-IP") ?? "unknown";
+  const { success } = await limiter.limit({ key });
+  if (success) return null;
+  return withNoStore(json({ error: { code: "rate_limited", message } }, 429));
+}
 
 /** Everything the provider does not own, behind the static bearer token. */
 async function bearerFetch(request: Request, env: Env): Promise<Response> {
@@ -149,11 +162,12 @@ export default {
 
     const url = new URL(request.url);
     if (request.method === "POST" && url.pathname === "/oauth/register") {
-      const key = request.headers.get("CF-Connecting-IP") ?? "unknown";
-      const { success } = await env.OAUTH_REGISTER_LIMITER.limit({ key });
-      if (!success) {
-        return withNoStore(json({ error: { code: "rate_limited", message: "too many registration attempts" } }, 429));
-      }
+      const limited = await rateLimitGate(request, env.OAUTH_REGISTER_LIMITER, "too many registration attempts");
+      if (limited) return limited;
+    }
+    if (request.method === "POST" && url.pathname === "/oauth/token") {
+      const limited = await rateLimitGate(request, env.OAUTH_TOKEN_LIMITER, "too many token requests");
+      if (limited) return limited;
     }
 
     // The library intercepts all `/.well-known/oauth-protected-resource*` paths

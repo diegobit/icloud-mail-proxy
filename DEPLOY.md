@@ -37,9 +37,11 @@ Two bindings and one optional var come with the OAuth layer:
 - `OAUTH_KV` — the KV namespace that holds grants. The config tracks it
   **without an id**, and Wrangler auto-provisions the namespace on the first
   real deploy (the dry-runs succeed without an account).
-- `OAUTH_REGISTER_LIMITER` — the rate limit on `/oauth/register`. Its
-  `namespace_id` is account-wide: two deployments share the counters, which is
-  harmless but means a busy second Worker can make the first one stricter.
+- `OAUTH_REGISTER_LIMITER` and `OAUTH_TOKEN_LIMITER` — the per-IP rate limits
+  on `/oauth/register` (5/min) and `/oauth/token` (30/min), the two endpoints
+  that are reachable without a token and write to `OAUTH_KV`. Their
+  `namespace_id`s are account-wide: two deployments share the counters, which
+  is harmless but means a busy second Worker can make the first one stricter.
 - `PUBLIC_ORIGIN` (optional var) — set it only when a tunnel or proxy makes
   `request.url` disagree with the origin clients actually use (e.g. `wrangler
   dev` behind `cloudflared`). It must be a bare origin: `https`, or `http` on
@@ -122,7 +124,12 @@ generate a new token, because that would break every existing client.
   working the moment the new secret is uploaded, so update every client (MCP
   config, scripts, whatever holds `ICLOUD_MAIL_TOKEN`). By hand:
   `openssl rand -base64 32`, then
-  `npx wrangler secret put API_TOKEN --name <worker>`.
+  `npx wrangler secret put API_TOKEN --name <worker>`. A hand-set token must
+  have no spaces or commas inside it and must not look like the provider's
+  grant tokens (`user:grantId:secret`): `/mcp` parses the bearer with the MCP
+  library's stricter rules, so such a value would still work on `/v1/*` and
+  `/healthz` but be rejected on `/mcp`. `openssl rand -base64 32` satisfies
+  both constraints.
   A failed upload is reported as a failure, but that does not prove the old
   token is unchanged: Cloudflare may have applied the new secret before the
   connection dropped. Inspect `npx wrangler secret list --name <worker>`, then

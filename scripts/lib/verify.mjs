@@ -109,11 +109,11 @@ function isPropagating(result) {
   return false;
 }
 
-async function withRetries(run, { attempts, sleep, delayMs }) {
+async function withRetries(run, { attempts, sleep, delayMs, shouldRetry = isPropagating }) {
   let last;
   for (let i = 0; i < attempts; i++) {
     last = await run();
-    if (!isPropagating(last)) return last;
+    if (!shouldRetry(last)) return last;
     if (i < attempts - 1) await sleep(Math.min(delayMs * 2 ** i, 8000));
   }
   return last;
@@ -165,6 +165,11 @@ export async function verifyDeployment({
   const base = url.replace(/\/+$/, "");
   const checks = [];
   const retry = (run) => withRetries(run, { attempts, sleep, delayMs });
+  // The metadata URLs answer 200 on a healthy Worker; a 401 right after a
+  // deploy can be the previous (pre-OAuth) version still serving, so retry it
+  // before reporting the deployment as too old.
+  const retryMetadata = (run) =>
+    withRetries(run, { attempts, sleep, delayMs, shouldRetry: (result) => isPropagating(result) || result.status === 401 });
   const get = (path, options) => retry(() => attempt(fetchImpl, `${base}${path}`, options, deadlineMs));
 
   // 1. The endpoint exists and refuses unauthenticated callers.
@@ -194,7 +199,7 @@ export async function verifyDeployment({
   checks.push({ name: "unauthenticated request is rejected", ok: true, detail: "HTTP 401 without a bearer token" });
 
   // 1b. OAuth discovery: needs no token, so these also run in token-skipped runs.
-  checks.push(...(await checkOAuthDiscovery({ base, fetchImpl, retry, deadlineMs })));
+  checks.push(...(await checkOAuthDiscovery({ base, fetchImpl, retry, retryMetadata, deadlineMs })));
 
   // 2. The token works and the Worker can log in to iCloud.
   if (!token) {
@@ -220,15 +225,16 @@ export async function verifyDeployment({
 
 /**
  * OAuth discovery checks: the Worker serves the provider metadata and
- * challenges anonymous /mcp callers with it. A 401 on the metadata URLs means
- * the deployed code predates OAuth.
+ * challenges anonymous /mcp callers with it. A 401 on the metadata URLs,
+ * still there after the bounded retries, means the deployed code predates
+ * OAuth (see retryMetadata in verifyDeployment).
  */
-async function checkOAuthDiscovery({ base, fetchImpl, retry, deadlineMs }) {
+async function checkOAuthDiscovery({ base, fetchImpl, retry, retryMetadata, deadlineMs }) {
   const origin = new URL(base).origin;
-  const resource = await retry(() =>
+  const resource = await retryMetadata(() =>
     attempt(fetchImpl, `${origin}/.well-known/oauth-protected-resource/mcp`, { method: "GET" }, deadlineMs),
   );
-  const authorization = await retry(() =>
+  const authorization = await retryMetadata(() =>
     attempt(fetchImpl, `${origin}/.well-known/oauth-authorization-server`, { method: "GET" }, deadlineMs),
   );
   const challenge = await retry(() =>

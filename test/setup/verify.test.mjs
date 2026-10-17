@@ -342,6 +342,29 @@ describe("OAuth discovery", () => {
     expect(result.checks[1].detail).toContain("predates OAuth");
   });
 
+  it("retries a metadata 401 before calling the deployment pre-OAuth", async () => {
+    const delays = [];
+    const fetchImpl = fakeFetch([
+      healthzRules({ status: 200, body: { ok: true } }),
+      [
+        "/.well-known/oauth-protected-resource/mcp",
+        [{ status: 401, body: { error: { code: "unauthorized" } } }, okResource],
+      ],
+      ["/.well-known/oauth-authorization-server", okAuthorization],
+      [challengeMatcher, challenge401()],
+      okMcp,
+    ]);
+    const result = await verifyDeployment({
+      url: "https://w.example.workers.dev",
+      token: TOKEN,
+      fetchImpl,
+      sleep: async (ms) => delays.push(ms),
+    });
+
+    expect(result.ok).toBe(true);
+    expect(delays).toEqual([1000]);
+  });
+
   it("requires the anonymous /mcp challenge to point at the metadata", async () => {
     const fetchImpl = oauthFixture({ challenge: challenge401('Bearer realm="OAuth"') });
     const result = await verifyDeployment({ url: "https://w.example.workers.dev", token: TOKEN, fetchImpl, sleep: noSleep });

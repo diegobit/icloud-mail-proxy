@@ -21,13 +21,19 @@
   // 4.45 provisions the namespace on the first non-interactive deploy (guided
   // setup and Workers Builds alike) and keeps it linked to the Worker.
   "kv_namespaces": [{ "binding": "OAUTH_KV" }],
-  // Rate limiter for the unauthenticated /oauth/register endpoint, otherwise a
-  // free path into OAUTH_KV writes (free tier: 1,000 writes/day).
+  // Per-IP rate limiters for the unauthenticated OAuth endpoints that write to
+  // OAUTH_KV (free tier: 1,000 writes/day): /oauth/register and /oauth/token
+  // (the latter caches CIMD client-assertion replay markers per request).
   "ratelimits": [
     {
       "name": "OAUTH_REGISTER_LIMITER",
       "namespace_id": "1001",
       "simple": { "limit": 5, "period": 60 }
+    },
+    {
+      "name": "OAUTH_TOKEN_LIMITER",
+      "namespace_id": "1002",
+      "simple": { "limit": 30, "period": 60 }
     }
   ],
   // Guided deployments are reachable at <name>.<subdomain>.workers.dev.

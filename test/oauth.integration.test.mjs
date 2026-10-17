@@ -1,7 +1,8 @@
 // OAuth on /mcp against a real local workerd, started through Wrangler's
 // unstable_startWorker: provider metadata, the browser flow with a dynamic
 // client and PKCE, token use on /mcp versus the REST API, token rotation,
-// PUBLIC_ORIGIN rewriting behind a tunnel, and the registration rate limit.
+// PUBLIC_ORIGIN rewriting behind a tunnel, and the rate limits on
+// /oauth/register and /oauth/token.
 // iCloud itself is never contacted.
 
 import { createHash, randomBytes } from "node:crypto";
@@ -176,6 +177,17 @@ describe("OAuth on /mcp, end to end", () => {
     expect(challenge).toContain('scope="mail:read"');
   }, 30_000);
 
+  it("answers anonymous /healthz and /v1/mailboxes with 401 JSON", async () => {
+    for (const path of ["/healthz", "/v1/mailboxes"]) {
+      const res = await fetch(`${current.base}${path}`);
+      expect(res.status).toBe(401);
+      expect(res.headers.get("WWW-Authenticate")).toBe("Bearer");
+      expect(await res.json()).toEqual({
+        error: { code: "unauthorized", message: "missing or invalid bearer token" },
+      });
+    }
+  }, 30_000);
+
   it("accepts the static bearer on /mcp", async () => {
     const init = await mcpRequest(current.base, TOKEN_A);
     expect(init.status).toBe(200);
@@ -256,13 +268,16 @@ describe("OAuth on /mcp, end to end", () => {
     expect(tokens.scope).toBe("mail:read");
     expect(tokens.refresh_token).toBeTruthy();
 
-    // The OAuth access token works on /mcp but not on the REST API.
+    // The OAuth access token works on /mcp but not on the REST API or /healthz.
     const init = await mcpRequest(current.base, tokens.access_token);
     expect(init.status).toBe(200);
-    const rest = await fetch(`${current.base}/v1/mailboxes`, {
-      headers: { Authorization: `Bearer ${tokens.access_token}` },
-    });
-    expect(rest.status).toBe(401);
+    for (const path of ["/v1/mailboxes", "/healthz"]) {
+      const rest = await fetch(`${current.base}${path}`, {
+        headers: { Authorization: `Bearer ${tokens.access_token}` },
+      });
+      expect(rest.status).toBe(401);
+      expect((await rest.json()).error.code).toBe("unauthorized");
+    }
 
     // Refreshing issues a new access token.
     const refreshed = await tokenRequest(current.base, {
@@ -309,7 +324,9 @@ describe("OAuth on /mcp, end to end", () => {
       client_id: flow.clientId,
     });
     expect(again.status).toBe(400);
-    expect((await again.json()).error).toBe("invalid_grant");
+    const revoked = await again.json();
+    expect(revoked.error).toBe("invalid_grant");
+    expect(revoked.error_description).toBe("Grant not found");
   }, 120_000);
 });
 
@@ -441,5 +458,39 @@ describe("registration rate limit", () => {
       }
     }
     expect(statuses).toEqual([201, 201, 201, 201, 201, 429]);
+  }, 60_000);
+});
+
+describe("token rate limit", () => {
+  let dir;
+  let current;
+
+  beforeAll(async () => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), "icloud-oauth-token-limit-"));
+    current = await startWorker(TOKEN_A, path.join(dir, "kv"), await freePort());
+  }, 120_000);
+
+  afterAll(async () => {
+    await current?.worker.dispose();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }, 120_000);
+
+  it("returns 429 after thirty token requests in a minute", async () => {
+    const clientId = await registerClient(current.base);
+    const statuses = [];
+    for (let attempt = 0; attempt < 31; attempt += 1) {
+      const res = await tokenRequest(current.base, {
+        grant_type: "refresh_token",
+        refresh_token: "user:grant0000000000:secret",
+        client_id: clientId,
+      });
+      statuses.push(res.status);
+      if (res.status === 429) {
+        expect(await res.json()).toEqual({
+          error: { code: "rate_limited", message: "too many token requests" },
+        });
+      }
+    }
+    expect(statuses).toEqual([...Array(30).fill(400), 429]);
   }, 60_000);
 });

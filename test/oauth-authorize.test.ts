@@ -208,6 +208,20 @@ describe("POST /authorize", () => {
     expect(body).toContain("Read mail (mail:read)");
   });
 
+  it("rejects a body that is not a form", async () => {
+    const helpers = fakeHelpers();
+    const request = new Request("https://mail.example.com/authorize", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
+    const response = await handleAuthorize(request, fakeEnv(helpers));
+
+    expect(response.status).toBe(400);
+    expect(await response.text()).toContain("could not be read");
+    expect(helpers.beginConsent).not.toHaveBeenCalled();
+  });
+
   it("re-parses the submitted hidden query and fails closed on tampering", async () => {
     const helpers = fakeHelpers();
     helpers.parseAuthRequest.mockRejectedValueOnce(authorizationError("Invalid client_id"));
@@ -288,6 +302,33 @@ describe("POST /authorize/consent", () => {
     expect(response.status).toBe(400);
     expect(await response.text()).toContain("Consent handle not found");
     expect(helpers.completeAuthorization).not.toHaveBeenCalled();
+  });
+
+  it("rejects a body that is not a form", async () => {
+    const helpers = fakeHelpers();
+    const request = new Request("https://mail.example.com/authorize/consent", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
+    const response = await handleAuthorize(request, fakeEnv(helpers));
+
+    expect(response.status).toBe(400);
+    expect(await response.text()).toContain("could not be read");
+    expect(helpers.approveConsent).not.toHaveBeenCalled();
+    expect(helpers.denyConsent).not.toHaveBeenCalled();
+  });
+
+  it("answers an unexpected grant-write failure with a controlled 500", async () => {
+    const helpers = fakeHelpers();
+    helpers.completeAuthorization.mockRejectedValueOnce(new Error("KV write failed"));
+    const response = await handleAuthorize(
+      postForm("/authorize/consent", { handle: "handle-1", action: "approve" }, true),
+      fakeEnv(helpers),
+    );
+
+    expect(response.status).toBe(500);
+    expect(await response.text()).toContain("Something went wrong");
   });
 
   it("rejects an unknown action", async () => {

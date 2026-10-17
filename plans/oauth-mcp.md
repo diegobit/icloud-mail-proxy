@@ -62,14 +62,15 @@ TTLs already expire records; `purgeExpiredData()` stays an optional follow-up).
   advertised, without it); `"kv_namespaces": [{ "binding": "OAUTH_KV" }]`
   with no `id` (wrangler ≥ 4.45 provisions it on first non-interactive deploy
   — guided setup and Workers Builds alike — and keeps it linked to the
-  Worker); `"ratelimits": [{ "name": "OAUTH_REGISTER_LIMITER", "namespace_id":
-  "1001", "simple": { "limit": 5, "period": 60 } }]`. Comment each: why the
-  flag, why no id, what the limiter protects.
+  Worker); `"ratelimits"` with two per-IP bindings: `OAUTH_REGISTER_LIMITER`
+  (`namespace_id` `1001`, 5/60 s) and `OAUTH_TOKEN_LIMITER` (`namespace_id`
+  `1002`, 30/60 s). Comment each: why the flag, why no id, what the limiters
+  protect.
 - `src/types.ts`: add `OAUTH_KV: KVNamespace`, `OAUTH_REGISTER_LIMITER:
-  RateLimit`, `OAUTH_PROVIDER: OAuthHelpers` (type-only import), optional
-  `PUBLIC_ORIGIN?: string` (step 5).
+  RateLimit`, `OAUTH_TOKEN_LIMITER: RateLimit`, `OAUTH_PROVIDER: OAuthHelpers`
+  (type-only import), optional `PUBLIC_ORIGIN?: string` (step 5).
 - `test/setup/config.test.mjs`: the composed `local` and `production`
-  configs carry `OAUTH_KV`, the limiter and both compat flags.
+  configs carry `OAUTH_KV`, both limiters and both compat flags.
 - CI: no workflow change; the existing `npm run check:bundle` and
   `npm run deploy:production -- --dry-run` steps now exercise the id-less KV
   binding. Run both locally before pushing.
@@ -167,9 +168,11 @@ moves into `bearerFetch(request, env)` unchanged except that its `/mcp`
 branch goes away (the provider's `apiRoute` owns `/mcp`).
 
 - Outer `fetch`: missing `API_TOKEN` or invalid `PUBLIC_ORIGIN` → 500
-  `not_configured` for every path. `POST /oauth/register` →
-  `env.OAUTH_REGISTER_LIMITER.limit({ key: CF-Connecting-IP })`; over limit →
-  429 JSON, before the provider runs. Rewrite `request` onto `origin` when
+  `not_configured` for every path. `POST /oauth/register` and `POST
+  /oauth/token` → `env.OAUTH_REGISTER_LIMITER.limit({ key: CF-Connecting-IP
+  })` and `env.OAUTH_TOKEN_LIMITER` (30/60 s: CIMD client-assertion replay
+  markers make the token endpoint a KV write path too); over limit → 429
+  JSON, before the provider runs. Rewrite `request` onto `origin` when
   `PUBLIC_ORIGIN` differs from `new URL(request.url).origin`, then
   `withNoStore(await providerFor(origin).fetch(effectiveRequest, env, ctx))`.
 - `requestOrigin(request, env)`: `env.PUBLIC_ORIGIN` when set (validated:
@@ -228,7 +231,10 @@ tmpdir persist path (no IMAP is touched: `initialize` and `tools/list` only):
 - `PUBLIC_ORIGIN` tunnel override: metadata, challenges, static bearer and
   full OAuth flow work when reached on loopback with an HTTPS `PUBLIC_ORIGIN`;
   an invalid `PUBLIC_ORIGIN` fails closed with 500 `not_configured` JSON.
-- Registration over the limit → 429.
+- Registration over the limit → 429; more than thirty token requests in a
+  minute → 429.
+- Anonymous `/healthz` and `/v1/mailboxes` → 401 JSON; an OAuth access token
+  is rejected the same way on both.
 
 Completion: deployed Worker serves OAuth and bearer side by side; existing
 REST behaviour and setup verification unchanged.
@@ -249,7 +255,9 @@ also runs in token-skipped runs). Three hard checks, `kind: "oauth"`:
   `scope="mail:read"`.
 
 `<origin>` is `new URL(base).origin`. A 401 on the metadata URLs means the
-deployed code predates OAuth; say so in the detail.
+deployed code predates OAuth; say so in the detail. Both metadata reads are
+retried on 401 first, because right after a deploy the previous pre-OAuth
+version can still answer.
 
 `scripts/lib/setup.mjs`:
 - `verificationHint`: `case "oauth"` — bearer clients work; check the
@@ -263,11 +271,12 @@ deployed code predates OAuth; say so in the detail.
   namespace.
 
 Tests: `verify.test.mjs` — the three checks pass/fail individually, wrong
-`issuer`/`resource`, missing CIMD flag, 401 on metadata (pre-OAuth Worker),
-and existing success fixtures gain an `okOAuth` rule set placed before the
-`/mcp` rule (`fakeFetch` matches by substring, and the metadata path contains
-`/mcp`). `setup-flow.test.mjs`: `oauth` failure maps to its hint.
-`integration.test.mjs`: printed instructions mention ChatGPT and claude.ai.
+`issuer`/`resource`, missing CIMD flag, 401 on metadata (pre-OAuth Worker)
+and a 401 that clears on the retry, and existing success fixtures gain an
+`okOAuth` rule set placed before the `/mcp` rule (`fakeFetch` matches by
+substring, and the metadata path contains `/mcp`). `setup-flow.test.mjs`:
+`oauth` failure maps to its hint. `integration.test.mjs`: printed
+instructions mention ChatGPT and claude.ai.
 
 Completion: `npm run setup` fails loudly on a deployment whose OAuth
 discovery is broken, while REST/bearer checks report as before.
@@ -317,8 +326,9 @@ forced to reconnect. Then one `npm run setup` rerun against a test Worker.
   returns 401 with `resource_metadata="<origin>/.well-known/
   oauth-protected-resource/mcp"` and `scope="mail:read"`; unknown
   `/.well-known/*` returns 404. `npm run setup` checks all of this.
-- No KV write happens before a correct API token is entered, except DCR
-  (rate-limited) and whatever CIMD caching the library does (see risks).
+- No KV write happens before a correct API token is entered, except DCR and
+  CIMD client-assertion replay markers on `/oauth/token` (both per-IP
+  rate-limited) and whatever CIMD caching the library does (see risks).
 - Every grant has scope exactly `["mail:read"]`; OAuth tokens are rejected on
   `/v1/*`.
 - After rotating `API_TOKEN`, OAuth access tokens get 401 `invalid_token` and
@@ -349,13 +359,15 @@ forced to reconnect. Then one `npm run setup` rerun against a test Worker.
   the base sets `preview_urls: false`, and whether guided users adding a
   custom domain should turn `workers_dev` off or set `PUBLIC_ORIGIN`.
 - **KV free tier.** 1,000 writes/day. Normal use is a few writes per login
-  plus about two per hourly refresh per connector. `/oauth/register` is
-  unauthenticated: the per-IP limiter slows abuse but cannot cap a day, so a
-  distributed attacker can exhaust writes and block OAuth logins/refreshes
-  until the daily reset; bearer clients are unaffected. CIMD lookups do not
-  write KV (they cache in the Cache API, confirmed), so the exposure is DCR
-  and grant writes only. If claude.ai supports CIMD, consider disabling DCR
-  by default.
+  plus about two per hourly refresh per connector. Both unauthenticated write
+  paths are per-IP rate-limited (`/oauth/register` 5/60 s, `/oauth/token`
+  30/60 s), but the limits are per minute, not per day: one IP alone can still
+  exhaust the daily budget (registration alone allows 7,200/day) and a
+  distributed attacker trivially can, blocking OAuth logins/refreshes until
+  the daily reset; bearer clients are unaffected. CIMD lookups do not write
+  KV (they cache in the Cache API, confirmed), so the exposure is DCR,
+  client-assertion replay markers and grant writes only. If claude.ai
+  supports CIMD, consider disabling DCR by default.
 - **Clients with a wrong bearer.** `/mcp` now advertises OAuth on 401, so a
   CLI with a stale token may start a browser OAuth flow instead of failing
   (opencode's `"oauth": false` already prevents this).
@@ -397,16 +409,19 @@ both bundle dry-runs are green.
 | 5 | `8fb7da1` | `src/index.ts` provider wiring (per-origin map, epoch check on `/mcp`, register limiter, `PUBLIC_ORIGIN`) plus `test/oauth.integration.test.mjs` against real workerd. |
 | 6 | `39449a7` | `checkOAuthDiscovery` in `verify.mjs` (three hard checks, `kind: "oauth"`), setup hint, connector instructions, `OAUTH_KV` line in the "About to" summary. |
 | 7 | `30e1586` | README (connectors, two auth paths, security bullet, architecture), DEPLOY (bindings, rotation, KV consistency, CI), `.dev.vars.example`. |
+| Review 1 | `0032b29` | Round-1 review findings, including the `PUBLIC_ORIGIN` request rewriting. |
 
 The integration test starts the real Worker with `unstable_startWorker`
 against `wrangler.base.jsonc` and covers: discovery metadata, `/.well-known`
-unknown → 404, the anonymous `/mcp` challenge, static bearer initialize and
-`tools/list`, the full dynamic-client flow (register, wrong token → 401 with
-no consent transaction, consent, PKCE exchange, refresh, OAuth token on
-`/v1/*` → 401), rotation (epoch 401 on `/mcp`, `invalid_grant - API token
-rotated; reconnect` on refresh, then `Grant not found` proving revocation),
-`PUBLIC_ORIGIN` tunnel rewriting and validation, and the registration rate
-limit (5 then 429).
+unknown → 404, the anonymous `/mcp` challenge plus 401 JSON on anonymous
+`/healthz` and `/v1/mailboxes`, static bearer initialize and `tools/list`,
+the full dynamic-client flow (register, wrong token → 401 with no consent
+transaction, consent, PKCE exchange, refresh, OAuth token on `/mcp` but
+rejected with 401 JSON on `/v1/*` and `/healthz`), rotation (epoch 401 on
+`/mcp`, `invalid_grant - API token rotated; reconnect` on refresh, then
+`invalid_grant - Grant not found` proving revocation), `PUBLIC_ORIGIN`
+tunnel rewriting and validation, and both rate limits (registration 5 then
+429; token 30 then 429).
 
 ### Deviations from the plan
 
@@ -428,6 +443,9 @@ limit (5 then 429).
   `Authorization` header.
 - The register limiter keys on `CF-Connecting-IP`, falling back to `"unknown"`
   when the header is absent (local runs), so the limit still applies there.
+- `handleAuthorize` answers unparsable form bodies with a 400 page and wraps
+  unexpected failures (e.g. a KV write error in `completeAuthorization`) in a
+  500 no-store page, instead of letting them reach the runtime error page.
 - `requestOrigin` validates `PUBLIC_ORIGIN` itself (bare origin, https or http
   on loopback), returning 500 `not_configured` JSON when invalid, and the
   outer `fetch` rewrites the request URL onto `PUBLIC_ORIGIN` before handing
