@@ -113,7 +113,7 @@ describe("first guided setup, end to end", () => {
       name: "missing",
       account_id: "acc-2",
       workers_dev: true,
-      compatibility_flags: ["nodejs_compat"],
+      compatibility_flags: ["nodejs_compat", "global_fetch_strictly_public"],
     });
     expect(config.vars.ALLOWED_MAILBOXES).toBe("INBOX,Archive");
     expect(config.routes).toBeUndefined();
