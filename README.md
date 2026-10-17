@@ -32,7 +32,8 @@ name, takes your iCloud address and app-specific password, asks which folders
 the proxy may read, generates the API bearer token, uploads the three secrets,
 deploys to `<worker>.<your-subdomain>.workers.dev`, and verifies the live
 endpoint over both REST and MCP. It prints the client snippets for Claude
-Code, opencode and Codex CLI at the end.
+Code, opencode and Codex CLI at the end, plus how to connect ChatGPT and
+claude.ai over OAuth.
 
 Four things worth knowing before you run it:
 
@@ -112,6 +113,17 @@ url = "https://<your-worker>/mcp"
 bearer_token_env_var = "ICLOUD_MAIL_TOKEN"
 ```
 
+**ChatGPT** (developer mode) and **claude.ai** connect through OAuth instead
+of a header:
+
+- ChatGPT: Settings → Connectors → add a custom connector with URL
+  `https://<your-worker>/mcp` (under developer mode).
+- claude.ai: Settings → Connectors → Add custom connector with the same URL.
+
+The connector is sent to the Worker's sign-in page, which asks for the API
+token once; after that it holds its own OAuth grant. OAuth covers `/mcp` only —
+every REST call and the CLI clients above still use the bearer token.
+
 REST works the same way:
 
 ```bash
@@ -190,6 +202,14 @@ over a TLS socket (`cloudflare:sockets`) to `imap.mail.me.com:993`. It only
 ever issues `LOGIN`, `EXAMINE`, `UID SEARCH`, `UID FETCH` (always
 `BODY.PEEK[...]`, never `BODY[...]`), and `LOGOUT` — there is no command that
 can mark a message as read, and no SMTP code anywhere in the project.
+
+The OAuth layer (`src/index.ts`, `src/oauth-authorize.ts`,
+`src/oauth-pages.ts`) rides on `@cloudflare/workers-oauth-provider`: it serves
+the `/.well-known/oauth-*` metadata, the authorization/consent pages, dynamic
+client registration and the token endpoint, keeping grants in the `OAUTH_KV`
+namespace (created by the first deploy). It wraps every request; REST and the
+static bearer behave exactly as before. `npm run setup` verifies the discovery
+endpoints and the anonymous `/mcp` challenge on each run.
 
 ## API
 
@@ -373,6 +393,13 @@ tools that mirror the REST endpoints: `list_mailboxes`, `search_mail`,
 subject to the same type allowlist and size cap). A fresh `McpServer` is built
 per request; no session state is held between calls.
 
+`/mcp` accepts two credentials: the static bearer token (Claude Code, opencode,
+Codex CLI, curl) and OAuth 2.1 access tokens issued by this Worker for
+connectors that cannot send custom headers (ChatGPT developer mode, claude.ai).
+The server publishes its OAuth metadata under `/.well-known/`; the consent flow
+asks for the API token once per connector and binds the grant to it, and scopes
+every grant to `mail:read`.
+
 Connect from Claude Code (single-quote the header so the shell does not expand
 the token; this CLI may store an expanded header value):
 
@@ -397,8 +424,19 @@ claude mcp add --transport http icloud-mail https://icloud-mail.diegobit.com/mcp
   App-Specific Passwords if the Worker or its secrets are ever compromised.
 - **Bearer auth on every request.** Both the presented token and
   `API_TOKEN` are SHA-256 hashed and compared with
-  `crypto.subtle.timingSafeEqual` (`src/index.ts`), so the comparison does
+  `crypto.subtle.timingSafeEqual` (`src/auth.ts`), so the comparison does
   not leak timing information about the secret.
+- **OAuth grants are issued by the Worker itself.** For MCP connectors that
+  cannot send a custom header, `/mcp` also accepts OAuth 2.1 access tokens:
+  the sign-in and consent pages hand one out only after the owner enters
+  `API_TOKEN`, the grant's scope is fixed to `mail:read`, and it reads exactly
+  the folders the bearer reads. The static bearer itself is also accepted on
+  `/mcp` as an external token — it is this deployment's own credential and is
+  never forwarded upstream. There is no remember-consent: ChatGPT's CIMD
+  `client_id` is shared by every ChatGPT user, and a remembered consent would
+  make a crafted `/authorize` link approvable without the token. Grants are
+  bound to the current `API_TOKEN`, so rotating it revokes every one of them
+  (see [DEPLOY.md](DEPLOY.md)).
 - **No caching, no content logging.** All responses set
   `Cache-Control: private, no-store`. Unexpected-error logging only ever
   includes an error message, never a request body or message content.
