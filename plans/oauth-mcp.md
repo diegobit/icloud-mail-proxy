@@ -147,23 +147,35 @@ fake helpers object.
   redirect. `action=approve` → the epoch the consent page carried is checked
   against `env.API_TOKEN` (mismatch → 400 `errorPage`, no grant): a consent
   transaction left pending across a token rotation cannot mint a fresh grant.
-  Then `approveConsent(request, handle, { scope: ["mail:read"] })`, then
+  The stored transaction's own request must still carry an S256 challenge
+  (a consent page left open across the PKCE upgrade → 400, transaction
+  consumed). Then `approveConsent(request, handle, { scope: ["mail:read"] })`,
+  then
   `completeAuthorization({ request: approved, userId: "owner", scope:
-  ["mail:read"], metadata: { clientName, approvedAt }, props: { epoch, via:
-  "oauth" } })`; 302 to `redirectTo`, merging the consent `headers`. Default
-  `revokeExistingGrants` stays on, so reconnecting a client replaces its
-  previous grant.
-- `state` and `iss` pass through the library untouched; nothing here reads
-  or rewrites them.
+  ["mail:read"], metadata: { clientName, approvedAt }, props: { epoch,
+  pkce: true, via: "oauth" } })`; 302 to `redirectTo`, merging the consent
+  `headers`. Default `revokeExistingGrants` stays on, so reconnecting a
+  client replaces its previous grant.
+- Error redirects to a library-validated redirect URI mirror the library's
+  `authorizationErrorRedirect`: stale `error`, `error_description`,
+  `error_uri`, `state` and `iss` parameters are replaced, and `iss` (from
+  `AuthRequest.issuer`) is set, so the issuer the discovery metadata
+  advertises is present on errors too. The helper itself is not imported —
+  its module loads `cloudflare:workers` and would break the Node-run tests.
+- `state` passes through the library untouched; nothing here reads or
+  rewrites it.
 
 `test/oauth-authorize.test.ts` with a fake `OAUTH_PROVIDER`: wrong or missing
 token never calls `beginConsent`; a request without an S256 challenge is
 redirected back with `invalid_request` before `beginConsent`; approve always
 grants exactly `["mail:read"]` whatever scopes the client requested; props
-carry the epoch from the consent form; an approval whose epoch does not match
-the current token is refused before `approveConsent`; deny calls
-`denyConsent`; invalid client/redirect without `redirectTo` renders 400
-instead of redirecting; consent cookies survive into the redirect.
+carry the epoch from the consent form plus the `pkce` marker; an approval
+whose epoch does not match the current token is refused before
+`approveConsent`; a stored transaction without an S256 challenge is refused
+before `completeAuthorization`; the error redirect clears stale response
+parameters and carries `iss`; deny calls `denyConsent`; invalid
+client/redirect without `redirectTo` renders 400 instead of redirecting;
+consent cookies survive into the redirect.
 
 Completion: unused module, tests green.
 
@@ -211,9 +223,11 @@ branch goes away (the provider's `apiRoute` owns `/mcp`).
   non-`userId:grantId:secret` token reaches this without a KV read, so CLI
   clients do no KV operations.
 - `tokenExchangeCallback({ grantType, props, env })`: for
-  `authorization_code` and `refresh_token`, `epochMatches(props.epoch,
-  env.API_TOKEN)` or `throw new OAuthError("invalid_grant", { description:
-  "API token rotated; reconnect" })`, which also revokes the grant.
+  `authorization_code` and `refresh_token`, both `hasPkcePolicy(props)`
+  (grants minted before PKCE became mandatory are refused) and
+  `epochMatches(props.epoch, env.API_TOKEN)` must hold, else
+  `throw new OAuthError("invalid_grant", { description: … })`, which also
+  revokes the grant.
 - `mcpApiHandler.fetch(request, env, ctx)`: read `ctx.props` (confirm the
   field against `dist`; 1.2 also sets `ctx.auth`, which stays ignored);
   epoch mismatch → 401 with `WWW-Authenticate: Bearer realm="OAuth",
@@ -408,8 +422,8 @@ and a claude.ai account with custom connectors.
 
 ### Delivered
 
-All seven code steps and all three review rounds are committed on `oauth-mcp`
-(base `dev` @ `e6e38d2`); `npm test` (17 files, 256 tests), `npm run typecheck`
+All seven code steps and all four review rounds are committed on `oauth-mcp`
+(base `dev` @ `e6e38d2`); `npm test` (17 files, 259 tests), `npm run typecheck`
 and both bundle dry-runs are green.
 
 | Step | Commit | What landed |
@@ -425,6 +439,7 @@ and both bundle dry-runs are green.
 | Review 1 | `0032b29` | Round-1 review findings, including the `PUBLIC_ORIGIN` request rewriting. |
 | Review 2 | `ad13296` | Round-2 review findings: `/oauth/token` rate limiter (M1), `/authorize` form and error guards (N1), integration coverage (L2, L3), setup 401 retry (L5), doc corrections (L1, L4). |
 | Review 3 | `d625783` | Round-3 review findings (GPT-6-Astra): approval bound to the sign-in epoch (H1), origin-only request rewriting (M1), per-dispatch env wrappers so origins stay isolated (M2), S256 PKCE on every authorization request (M3), controlled 500s when the provider fails (L1), KV-write summary correction (N1). |
+| Review 4 | `e20d136` | Round-4 review findings (GPT-6-Astra, no High/Medium): `iss` and stale-response-parameter handling on error redirects (L), PKCE re-checked on the stored consent transaction and a `pkce: true` marker enforced at every code exchange and refresh (L). |
 
 The integration test starts the real Worker with `unstable_startWorker`
 against `wrangler.base.jsonc` and covers: discovery metadata, `/.well-known`
@@ -434,7 +449,7 @@ the full dynamic-client flow (register, wrong token → 401 with no consent
 transaction, consent, PKCE exchange, refresh, OAuth token on `/mcp` but
 rejected with 401 JSON on `/v1/*` and `/healthz`), the PKCE requirement (no
 challenge or `plain`, for public and confidential clients, refused before the
-consent page), per-origin isolation across `127.0.0.1` and `localhost`,
+consent page, with `iss` on the bounce), per-origin isolation across `127.0.0.1` and `localhost`,
 rotation (epoch 401 on `/mcp`, `invalid_grant - API token rotated; reconnect`
 on refresh, then `invalid_grant - Grant not found` proving revocation, a
 consent transaction left pending across the rotation whose approval is
@@ -486,6 +501,16 @@ then 429).
   `OAUTH_PROVIDER`: the library memoizes its helpers on that key, so the
   shared env pinned the first origin's resource configuration onto every
   other origin served by the same isolate.
+- Consent-created grants carry `pkce: true`, and `tokenExchangeCallback`
+  refuses authorization-code and refresh grants without that marker
+  (`hasPkcePolicy` in `src/auth.ts`): a code or refresh token minted by a
+  build that predates the PKCE requirement cannot be exchanged after the
+  upgrade, so no deployment window can bridge it. `DEPLOY.md` describes the
+  connector reconnect this causes.
+- `/authorize` error redirects mirror the library's
+  `authorizationErrorRedirect` locally rather than importing it: that module
+  imports `cloudflare:workers` and cannot load under Node, which the unit
+  tests rely on.
 
 ### Open items resolved
 
