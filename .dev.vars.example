@@ -5,3 +5,6 @@ ICLOUD_USER=you@icloud.com
 ICLOUD_APP_PASSWORD=xxxx-xxxx-xxxx-xxxx
 # Long random bearer token required on every request to this proxy
 API_TOKEN=change-me
+# Optional: the public origin when a tunnel or proxy hides the local one
+# (a bare https origin, or http on loopback). Leave commented for normal runs.
+# PUBLIC_ORIGIN=https://your-tunnel.trycloudflare.com

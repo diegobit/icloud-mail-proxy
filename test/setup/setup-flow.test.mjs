@@ -477,4 +477,32 @@ describe("verification outcomes", () => {
     expect(result.message).toContain("Folder names must match iCloud exactly");
     expect(h.store.history.at(-1).stage).toBe("verification_failed");
   });
+
+  it("points at the deploy flags when OAuth discovery is broken", async () => {
+    const prompts = fakePrompts([
+      ["Worker name", ""],
+      ["iCloud email address", "me@icloud.com"],
+      ["app-specific password", PASSWORD],
+      ["Folders the proxy may read", ""],
+      ["Proceed?", true],
+      ["Show it once now", false],
+    ]);
+    const verify = fakeVerify({
+      ok: false,
+      checks: [
+        { name: "unauthenticated request is rejected", ok: true, detail: "HTTP 401" },
+        { name: "OAuth protected-resource metadata", ok: false, kind: "oauth", detail: "HTTP 401 on the metadata URL" },
+      ],
+    });
+    const h = harness({ prompts, wrangler: fakeWrangler(), verify });
+
+    const result = await h.run();
+
+    expect(result.code).toBe(1);
+    expect(result.message).toContain("verification failed");
+    expect(result.message).toContain("global_fetch_strictly_public");
+    expect(result.message).toContain("OAUTH_KV");
+    expect(result.message).toMatch(/deploys before it verifies/);
+    expect(h.store.history.at(-1).stage).toBe("verification_failed");
+  });
 });

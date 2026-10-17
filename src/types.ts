@@ -1,3 +1,5 @@
+import type { OAuthHelpers } from "@cloudflare/workers-oauth-provider";
+
 export interface Env {
   ICLOUD_USER: string;
   ICLOUD_APP_PASSWORD: string;
@@ -12,6 +14,17 @@ export interface Env {
   ALLOWED_ATTACHMENT_TYPES: string;
   // Cap on the encoded size of a single downloadable attachment, in bytes.
   MAX_ATTACHMENT_BYTES: string;
+  // OAuth on /mcp (plans/oauth-mcp.md). OAUTH_KV stores grants, tokens and
+  // consent handles; the limiters guard the unauthenticated registration and
+  // token endpoints; OAUTH_PROVIDER is injected by
+  // @cloudflare/workers-oauth-provider into the env of the handlers it calls.
+  OAUTH_KV: KVNamespace;
+  OAUTH_REGISTER_LIMITER: RateLimit;
+  OAUTH_TOKEN_LIMITER: RateLimit;
+  OAUTH_PROVIDER: OAuthHelpers;
+  // Public origin to advertise when the request URL is not the origin clients
+  // reach (tunnels, proxies). Unset in normal deployments.
+  PUBLIC_ORIGIN?: string;
 }
 
 export interface Address {
