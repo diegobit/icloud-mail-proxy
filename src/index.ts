@@ -3,7 +3,6 @@
 //   /mcp                 -> MCP handler, behind an OAuth access token or the static bearer
 //   /authorize           -> sign-in and consent pages (defaultFetch -> oauth-authorize)
 //   /authorize/consent
-//   /send/approve        -> owner approval page for outgoing drafts (only path that sends)
 //   /oauth/token         -> implemented by the provider (token issuance,
 //                           revocation), rate-limited here first
 //   /oauth/register      -> dynamic client registration, rate-limited here first
@@ -16,7 +15,6 @@ import { epochMatches, grantEpoch, hasPkcePolicy, isAuthorized, json, tokenMatch
 import { createMailMcpHandler } from "./mcp";
 import { handleAuthorize } from "./oauth-authorize";
 import { handleRest } from "./rest";
-import { handleApprove } from "./send-approve";
 import type { Env } from "./types";
 
 // The Durable Object class must be exported from the entry module so the
@@ -127,9 +125,6 @@ const defaultFetch = {
     const url = new URL(request.url);
     if (url.pathname === "/authorize" || url.pathname === "/authorize/consent") {
       return handleAuthorize(request, env);
-    }
-    if (url.pathname === "/send/approve") {
-      return handleApprove(request, env);
     }
     if (url.pathname.startsWith("/.well-known/")) {
       return json({ error: { code: "not_found", message: "not found" } }, 404);

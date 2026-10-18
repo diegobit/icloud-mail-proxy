@@ -3,9 +3,9 @@
 An iCloud Mail proxy running as a Cloudflare Worker. It lets an agent read a
 mailbox (list mailboxes, search, fetch a message) over HTTP or MCP without
 running anything locally, keeping the Apple credentials on the Worker rather
-than on whatever machine the agent runs on — and it can compose new messages,
-replies and forwards as drafts. Nothing is ever sent until the owner approves
-it on the Worker's own page: the agent cannot send mail.
+than on whatever machine the agent runs on — and it can send mail: new
+messages, replies and forwards, plus saving a message into the real Drafts
+folder so it can be finished from any mail app.
 
 One deployment serves one iCloud account and lives in its owner's Cloudflare
 account. The examples in this README use the author's instance at
@@ -197,7 +197,7 @@ rollback, automated deploys: [DEPLOY.md](DEPLOY.md).
 ```
 Agent  --HTTPS (REST /v1 or MCP /mcp)-->  Cloudflare Worker  --IMAPS:993-->        imap.mail.me.com
        <-- JSON -----------------------                    <-- LOGIN/EXAMINE/UID SEARCH/UID FETCH BODY.PEEK/APPEND/LOGOUT --
-Owner  --HTTPS (/send/approve)--------->                    --SMTP STARTTLS:587-->  smtp.mail.me.com
+                                                          --SMTP STARTTLS:587-->  smtp.mail.me.com
 ```
 
 The Worker speaks a small, hand-rolled IMAP client (`src/imap.ts`) directly
@@ -209,10 +209,10 @@ the `Drafts` mailbox, and (when `SEND_SENT_COPY` is enabled) a copy of a sent
 message into `Sent Messages`.
 
 Sending is a separate client (`src/smtp.ts`) to `smtp.mail.me.com:587`
-(STARTTLS, `AUTH PLAIN`). Only the approval page can reach it, and everything a
-send needs — the message bytes, the quota reservation and the audit trail —
-lives in a `SendLedger` Durable Object (`src/send-ledger.ts`), created by the
-first deploy. See [Sending mail](#sending-mail).
+(STARTTLS, `AUTH PLAIN`), reachable only through the `send_mail` tool. The
+quota reservation, the duplicate-send window and the audit trail live in a
+`SendLedger` Durable Object (`src/send-ledger.ts`), created by the first
+deploy. See [Sending mail](#sending-mail).
 
 The OAuth layer (`src/index.ts`, `src/oauth-authorize.ts`,
 `src/oauth-pages.ts`) rides on `@cloudflare/workers-oauth-provider`: it serves
@@ -402,16 +402,11 @@ A stateless Streamable HTTP MCP server is served at `/mcp`, exposing four read
 tools that mirror the REST endpoints — `list_mailboxes`, `search_mail`,
 `get_mail_message`, and `get_mail_attachment` (returns
 `{ filename, mimeType, size, contentBase64 }`, base64 of the decoded content,
-subject to the same type allowlist and size cap) — plus five draft tools:
-`create_draft` (new message, reply or forward), `list_drafts`, `get_draft`,
-`discard_draft` and `save_draft_to_icloud`. A fresh `McpServer` is built
-per request; no session state is held between calls.
-
-`create_draft` returns the draft id, the exact message that would be sent, and
-an **approval URL**. The agent can show that URL to the owner but cannot send:
-approving happens on the Worker's own page (see
-[Sending mail](#sending-mail)). Drafts are bound to the client that created
-them — an OAuth client's id, or the shared static bearer.
+subject to the same type allowlist and size cap) — plus two sending tools:
+`send_mail` (a new message, a reply or a forward, submitted immediately) and
+`save_draft` (the same message put into iCloud's `Drafts` folder, to be
+finished from any mail app). A fresh `McpServer` is built per request; no
+session state is held between calls.
 
 `/mcp` accepts two credentials: the static bearer token (Claude Code, opencode,
 Codex CLI, curl) and OAuth 2.1 access tokens issued by this Worker for
@@ -430,60 +425,40 @@ claude mcp add --transport http icloud-mail https://icloud-mail.diegobit.com/mcp
 
 ## Sending mail
 
-Any authenticated client can *draft*. Only the owner can *send*:
+Any authenticated client can send. Two tools do it:
 
-1. The agent calls `create_draft`. The Worker validates the recipients, builds
-   the final RFC 5322 message (`Date` and `Message-ID` are fixed here) and
-   stores the exact bytes in the `SendLedger` Durable Object. Nothing touches
-   SMTP; the draft expires after `SEND_DRAFT_TTL_SECONDS` (default one hour).
-2. The agent shows the returned approval URL.
-3. The owner opens it, signs in with the approval token (a 15-minute
-   `__Host-send` session cookie), reads the message exactly as it will be
-   sent, and presses **Send now** — or **Save in Drafts** to finish it from
-   any mail app, or **Delete**.
-4. Only that click starts the SMTP submission. The draft flips to `sending`
-   before the first byte leaves, so a double click can never send twice.
+- **`send_mail`** validates the recipients, builds the final RFC 5322 message
+  and submits it over `smtp.mail.me.com:587` (STARTTLS, `AUTH PLAIN`) right
+  away. It returns `{ status: "sent", messageId, recipients, replyCode }` or an
+  error carrying a stable code.
+- **`save_draft`** builds the same message and APPENDs it to iCloud's `Drafts`
+  mailbox, where it shows up in Apple Mail and on the iPhone. Nothing is sent;
+  finishing it later is a normal action in the mail client. A draft keeps its
+  `Bcc:` header (there is no SMTP envelope to carry it), while a submission
+  never has one.
 
-Configuration: caps live in `wrangler.base.jsonc` — `SEND_MAX_PER_DAY`
+Replies (`inReplyTo`) get `In-Reply-To`/`References` from the parent message;
+forwards (`forwardOf`) quote its text and name the attachments they do not
+carry. Messages are plain text only, no attachments, ASCII-only addresses.
+
+Configuration: the caps live in `wrangler.base.jsonc` — `SEND_MAX_PER_DAY`
 (default 20, **0 disables all sending**), `SEND_MAX_RCPTS_PER_DAY` (50),
-`SEND_MAX_RCPTS_PER_MESSAGE` (5), `SEND_MAX_BODY_BYTES` (64 KiB),
-`SEND_DRAFT_TTL_SECONDS` (3600) and `SEND_MAX_OPEN_DRAFTS` (20) — and are
+`SEND_MAX_RCPTS_PER_MESSAGE` (5) and `SEND_MAX_BODY_BYTES` (64 KiB) — and are
 clamped to hard maxima in `src/send-policy.ts`. Optional secrets: `SEND_FROM`
-(default `ICLOUD_USER`; must be an address the account owns),
-`SEND_FROM_NAME`, `SEND_SENT_COPY=1` to append a `\Seen` copy of each sent
-message to `Sent Messages` (off by default; iCloud may already file SMTP
-submissions, in which case leave it off to avoid a duplicate), and
-`SEND_APPROVAL_TOKEN`, the credential the approval page asks for instead of
-`API_TOKEN`.
+(default `ICLOUD_USER`; must be an address the account owns), `SEND_FROM_NAME`
+and `SEND_SENT_COPY=1` to append a `\Seen` copy of each sent message to
+`Sent Messages` (off by default; iCloud may already file SMTP submissions, in
+which case leave it off to avoid a duplicate).
 
-**Set `SEND_APPROVAL_TOKEN`** whenever the agents holding `API_TOKEN` run
-with shell access (Claude Code, opencode, Codex CLI). Without it, the
-approval page accepts `API_TOKEN`, so an agent that can make arbitrary HTTPS
-requests could approve its own drafts and the human step would be
-decorative. With it, only whoever knows the approval token — the owner — can
-press Send. Mint one with `openssl rand -base64 32` and store it in your
-password manager as well as the Worker:
-
-```
-openssl rand -base64 32 | tee /dev/stderr | npx wrangler secret put SEND_APPROVAL_TOKEN --name <worker>
-```
-
-The honest boundary: this gate defeats model-driven and prompt-injected
-sends. A compromised machine or Cloudflare account can deploy code that
-bypasses any in-Worker check, and the app password itself can send mail from
-anywhere.
-
-Outgoing messages are plain text only: no attachments, no HTML, ASCII-only
-addresses. A forward quotes the original text and names the attachments it
-does not carry. Replies get `In-Reply-To`/`References` from the parent message.
-
-SMTP failure semantics: a rejection before the message is accepted leaves the
-draft sendable again (retryable failures return it to `ready`, permanent
-rejections mark it `failed`); **a connection lost after the final dot is
-reported as "delivery state unknown"** — the message may already be queued, so
-that draft is never retried automatically and the page tells the owner to check
-the recipient or `Sent Messages` first. Sends are logged as metadata only
-(draft id, counts, recipient domains, SMTP code, duration), never content.
+Failure semantics: a rejection before the message is accepted gives the quota
+back and may be retried; **a connection lost after the final dot is reported as
+"delivery state unknown"** — the quota and the duplicate claim stay, the tool
+tells the model to check the recipient or `Sent`, and nothing is retried
+automatically. The same message (same recipients, subject, body and parent)
+submitted again within 60 seconds is refused as `duplicate_send` unless the
+caller passes `allowDuplicate: true`: that is what keeps a client that retries
+after a timeout from sending twice. Sends are logged as metadata only
+(principal, recipient count and domains, SMTP code, duration), never content.
 
 ## Security model
 
@@ -492,18 +467,13 @@ the recipient or `Sent Messages` first. Sends are logged as metadata only
   with `BODY.PEEK[...]` (never `BODY[...]`, which would set `\Seen`), the one
   write command `APPEND` (a draft into `Drafts`, or the optional sent copy),
   and `LOGOUT`. No command can mark a message as read or delete anything.
-- **Sending is decided by a human, not by the model.** An agent can create
-  drafts; the only code path that reaches SMTP runs behind the approval page,
-  which shows the exact stored message and requires the approval credential —
-  a one-time nonce, a `__Host-send` session cookie, and either a dedicated
-  `SEND_APPROVAL_TOKEN` or, if none is set, `API_TOKEN`. Because agents hold
-  `API_TOKEN`, setting the dedicated secret is what keeps a shell-capable
-  agent from approving its own drafts; the honest boundary is that a
-  compromised machine or Cloudflare account can bypass any in-Worker check.
-  Inside those limits, an email that instructs the agent to send something
-  can at most cause a draft to exist. The project no longer pretends that
-  SMTP code is absent, so the app password itself — which Apple issues for
-  full-account access, SMTP included — could still send mail.
+- **Sending is direct, by the owner's decision.** The agent sends; there is no
+  approval step. An email whose content instructs the agent to send something
+  can therefore produce a real message, bounded only by the caps above and
+  visible in the audit trail. The tool description and the server instructions
+  still say to send only when the user asked, and never because an email asked,
+  but nothing enforces that. The app password itself — which Apple issues for
+  full-account access, SMTP included — can send mail regardless of this code.
 - **The Apple app-specific password is not read-only.** Nothing about the
   password itself restricts it to reading mail: it is an account credential.
   Use a password created specifically for this proxy (e.g. named
@@ -529,8 +499,8 @@ the recipient or `Sent Messages` first. Sends are logged as metadata only
   including a consent page left open across the rotation, which cannot be
   approved afterwards; grants minted before the PKCE requirement was
   introduced are refused the same way (see [DEPLOY.md](DEPLOY.md)). A grant
-  can create drafts but never send, and each draft is bound to the client
-  that created it.
+  can also send, like the bearer; the audit trail records which principal
+  performed each send or draft save.
 - **No caching, no content logging.** All responses set
   `Cache-Control: private, no-store`. Unexpected-error logging only ever
   includes an error message, never a request body or message content.
@@ -540,9 +510,10 @@ the recipient or `Sent Messages` first. Sends are logged as metadata only
   arbitrary text, including instructions crafted to look like they come from
   the user or the system. Agents consuming this proxy must not treat that
   text as instructions to act on — the MCP tool description and server
-  instructions both call this out explicitly. The worst an injected
-  instruction can achieve through this proxy is a draft: sending always needs
-  the owner's approval on the Worker's own page.
+  instructions both call this out explicitly. An injected instruction can make
+  the agent send real mail; the caps bound the volume and the audit trail shows
+  what happened, and nothing else stands in the way (see
+  [Sending mail](#sending-mail)).
 - **Hard caps everywhere.** Only mailboxes in `ALLOWED_MAILBOXES` can be
   read; `MAX_RESULTS` caps how many summaries a search returns;
   `MAX_SEARCH_DAYS` caps how far back a search can look (an explicit `after`
@@ -551,9 +522,8 @@ the recipient or `Sent Messages` first. Sends are logged as metadata only
   truncated, flagged with `truncated: true`, never in full).
   `ALLOWED_ATTACHMENT_TYPES` restricts which MIME types can be downloaded and
   `MAX_ATTACHMENT_BYTES` caps a single attachment's size. On the send side,
-  `SEND_MAX_PER_DAY`, `SEND_MAX_RCPTS_PER_DAY`, `SEND_MAX_RCPTS_PER_MESSAGE`,
-  `SEND_MAX_BODY_BYTES`, `SEND_DRAFT_TTL_SECONDS` and `SEND_MAX_OPEN_DRAFTS`
-  cap drafts and sends and are clamped to hard maxima in
+  `SEND_MAX_PER_DAY`, `SEND_MAX_RCPTS_PER_DAY`, `SEND_MAX_RCPTS_PER_MESSAGE`
+  and `SEND_MAX_BODY_BYTES` cap sending and are clamped to hard maxima in
   `src/send-policy.ts`; a `0` daily cap refuses every send.
 - **Attachment content is untrusted, and served defensively.** Attachment
   bytes are third-party content; the download endpoint sets

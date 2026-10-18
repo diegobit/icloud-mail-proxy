@@ -357,6 +357,12 @@ export interface DraftMessageInput {
   inReplyTo?: string | null;
   references?: string[];
   maxBodyBytes: number;
+  /**
+   * Emit a `Bcc:` header. Never for an SMTP submission (Bcc lives in the
+   * envelope only); yes for a draft APPENDed to the mailbox, where there is
+   * no envelope and the header is the only place the recipients survive.
+   */
+  includeBcc?: boolean;
 }
 
 export interface BuiltMessage {
@@ -411,7 +417,11 @@ export function buildMessage(input: DraftMessageInput): BuiltMessage {
   if (input.cc.length > 0) {
     headers.push(`Cc: ${foldHeaderValue("Cc: ", input.cc.map(formatMailbox), ", ")}`);
   }
-  // Never a Bcc header: Bcc recipients exist only in the SMTP envelope.
+  if (input.includeBcc === true && input.bcc.length > 0) {
+    headers.push(`Bcc: ${foldHeaderValue("Bcc: ", input.bcc.map(formatMailbox), ", ")}`);
+  }
+  // For a submission there is never a Bcc header: Bcc recipients exist only
+  // in the SMTP envelope.
   headers.push(`Subject: ${encodeSubject(input.subject)}`);
   headers.push(`Date: ${rfc5322Date(input.date)}`);
   headers.push(`Message-ID: ${input.messageId}`);

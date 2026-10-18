@@ -1,10 +1,9 @@
-// Worker-side composition and operations for outgoing mail
-// (plans/email-send.md, steps 5 and 7).
+// Composition and the two send-side operations (plans/email-send.md,
+// "Owner revision": direct send and a real iCloud draft; no approval page).
 //
 // This module validates caller input, fetches what replies and forwards need,
-// builds the final message bytes and talks to the SendLedger Durable Object.
-// It never sends: the only call that can reach SMTP is `approveSend`, used by
-// the approval page after the owner signed in and the nonce was checked.
+// builds the final message bytes and hands them to the SendLedger Durable
+// Object, which is the only place that talks to SMTP or IMAP.
 
 import { ApiError, fetchParentForComposition } from "./core";
 import {
@@ -19,8 +18,8 @@ import {
   type Mailbox,
 } from "./mime-build";
 import { readSendConfig } from "./send-policy";
-import { bytesToBase64, type DraftMeta, type DraftView } from "./send-ledger-core";
-import type { NewDraftInput, SendLedger, SendReport } from "./send-ledger";
+import { bytesToBase64, type LedgerErrorCode } from "./send-ledger-core";
+import type { DirectSendReport, SaveDraftReport, SendLedger } from "./send-ledger";
 import type { Env } from "./types";
 
 export const DRAFTS_MAILBOX = "Drafts";
@@ -35,39 +34,23 @@ export interface ComposeRequest {
   forwardOf?: { mailbox: string; uidValidity: number; uid: number };
 }
 
+export interface SendMailRequest extends ComposeRequest {
+  allowDuplicate?: boolean;
+}
+
 export function ledgerStub(env: Env): DurableObjectStub<SendLedger> {
   return env.SEND_LEDGER.get(env.SEND_LEDGER.idFromName("deployment"));
 }
 
-function base64Url(bytes: Uint8Array): string {
-  let binary = "";
-  for (const byte of bytes) binary += String.fromCharCode(byte);
-  return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
-}
-
-function randomToken(byteLength: number): string {
-  const bytes = new Uint8Array(byteLength);
-  crypto.getRandomValues(bytes);
-  return base64Url(bytes);
-}
-
 const LEDGER_STATUS: Record<string, number> = {
-  draft_not_found: 404,
-  draft_expired: 410,
-  already_sent: 409,
-  already_saved: 409,
-  send_in_progress: 409,
-  send_status_unknown: 409,
-  draft_not_ready: 409,
-  invalid_nonce: 403,
   daily_limit_reached: 429,
-  too_many_drafts: 429,
+  duplicate_send: 409,
   send_not_configured: 500,
 };
 
-/** Map a ledger error code to the API error the tools and the page render. */
+/** Map a ledger error code to the API error the tools render. */
 export function ledgerApiError(code: string, message: string): ApiError {
-  return new ApiError(LEDGER_STATUS[code] ?? 500, code, message);
+  return new ApiError(LEDGER_STATUS[code] ?? 500, code as LedgerErrorCode | string, message);
 }
 
 function asApiError(error: unknown): ApiError {
@@ -98,12 +81,33 @@ function parseRecipientList(list: unknown, field: string): Mailbox[] {
   });
 }
 
+function sha256Hex(bytes: Uint8Array): Promise<string> {
+  return crypto.subtle.digest("SHA-256", bytes).then((digest) => {
+    let hex = "";
+    for (const byte of new Uint8Array(digest)) hex += byte.toString(16).padStart(2, "0");
+    return hex;
+  });
+}
+
+interface ComposedMessage {
+  raw: Uint8Array;
+  recipients: string[];
+  messageId: string;
+  /** Stable content hash for the duplicate window: the same recipient list,
+   * subject, body and parent — never the per-attempt Date or Message-ID. */
+  hash: string;
+}
+
 /**
- * Build the draft's final bytes, store them in the ledger and return the
- * preview. Nothing here touches SMTP; the returned id is what the owner
- * approves later on the Worker's own page.
+ * Validate the request, pull in whatever a reply or a forward needs, and
+ * serialize the final message. Nothing here talks to SMTP. `includeBcc` is
+ * set for drafts, which have no SMTP envelope to carry Bcc recipients.
  */
-export async function createDraft(env: Env, principal: string, input: ComposeRequest): Promise<DraftView> {
+export async function composeMessage(
+  env: Env,
+  input: ComposeRequest,
+  options: { includeBcc?: boolean } = {},
+): Promise<ComposedMessage> {
   try {
     const config = readSendConfig(env);
     if (!config.ok) throw new ApiError(500, "send_not_configured", config.error);
@@ -168,7 +172,6 @@ export async function createDraft(env: Env, principal: string, input: ComposeReq
     const from: Mailbox = { name: config.config.fromName, address: config.config.from };
     const domain = from.address.slice(from.address.lastIndexOf("@") + 1);
     const messageId = `<${crypto.randomUUID()}@${domain}>`;
-    const date = new Date();
     const built = buildMessage({
       from,
       to,
@@ -176,93 +179,101 @@ export async function createDraft(env: Env, principal: string, input: ComposeReq
       bcc,
       subject,
       text,
-      date,
+      date: new Date(),
       messageId,
       inReplyTo,
       references,
       maxBodyBytes: caps.maxBodyBytes,
+      includeBcc: options.includeBcc === true,
     });
-
-    const meta: DraftMeta = {
-      fromName: from.name,
-      fromAddr: from.address,
-      toDisplay: to.map((mailbox) => displayOf(mailbox)),
-      ccDisplay: cc.map((mailbox) => displayOf(mailbox)),
-      bccDisplay: bcc.map((mailbox) => displayOf(mailbox)),
-      subject: built.subject,
-      dateIso: built.dateIso,
-      messageId: built.messageId,
-      inReplyTo,
-      text: built.text,
-      textBytes: built.textBytes,
-    };
-    const draftId = randomToken(16);
-    const nonce = randomToken(16);
-    const newDraft: NewDraftInput = {
-      id: draftId,
-      principal,
-      rawB64: bytesToBase64(built.raw),
-      envelopeFrom: built.envelopeFrom,
+    // The duplicate window hashes the message *content* — recipient roles,
+    // subject, body and parent — never Date or Message-ID, which change on
+    // every attempt, and never a flattened recipient list, which would make
+    // "to: B" and "bcc: B" look identical.
+    const hash = await sha256Hex(
+      new TextEncoder().encode(
+        JSON.stringify({
+          from: from.address.toLowerCase(),
+          to: to.map((mailbox) => mailbox.address.toLowerCase()),
+          cc: cc.map((mailbox) => mailbox.address.toLowerCase()),
+          bcc: bcc.map((mailbox) => mailbox.address.toLowerCase()),
+          subject,
+          text: built.text,
+          inReplyTo: inReplyTo ?? null,
+        }),
+      ),
+    );
+    return {
+      raw: built.raw,
       recipients: built.recipients,
-      meta,
-      nonce,
-      ttlSeconds: caps.draftTtlSeconds,
+      messageId: built.messageId,
+      hash,
     };
-    const result = await ledgerStub(env).createDraft(newDraft);
-    if (!result.ok) throw ledgerApiError(result.code, result.message);
-    return result.value;
   } catch (error) {
     throw asApiError(error);
   }
 }
 
-function displayOf(mailbox: Mailbox): string {
-  return mailbox.name === null ? mailbox.address : `${mailbox.name} <${mailbox.address}>`;
+export interface SendMailResult {
+  status: "sent";
+  messageId: string;
+  recipients: number;
+  replyCode: number;
 }
 
-export async function listDrafts(env: Env, principal: string): Promise<DraftView[]> {
-  return ledgerStub(env).listDrafts(principal);
+/** Compose and submit immediately. */
+export async function sendMailFromTool(
+  env: Env,
+  principal: string,
+  input: SendMailRequest,
+): Promise<SendMailResult> {
+  const composed = await composeMessage(env, input);
+  const report: DirectSendReport = await ledgerStub(env).send({
+    rawB64: bytesToBase64(composed.raw),
+    recipients: composed.recipients,
+    hash: composed.hash,
+    allowDuplicate: input.allowDuplicate === true,
+    principal,
+  });
+  switch (report.status) {
+    case "sent":
+      return {
+        status: "sent",
+        messageId: composed.messageId,
+        recipients: composed.recipients.length,
+        replyCode: report.replyCode ?? 250,
+      };
+    case "unknown":
+      throw new ApiError(
+        504,
+        "send_status_unknown",
+        "the connection dropped after the message was submitted; it may already be queued — check the recipient or Sent before trying again",
+      );
+    case "refused":
+      throw ledgerApiError(report.code ?? "internal_error", report.message ?? "refused");
+    default:
+      throw new ApiError(report.retryable ? 503 : 502, report.code ?? "smtp_error", report.message ?? "send failed");
+  }
 }
 
-export async function getDraft(env: Env, principal: string, id: string): Promise<DraftView> {
-  const view = await ledgerStub(env).getDraft(principal, id);
-  if (!view) throw new ApiError(404, "draft_not_found", `no draft with id ${JSON.stringify(id)}`);
-  return view;
+export interface SaveDraftResult {
+  saved: true;
+  mailbox: string;
+  messageId: string;
 }
 
-export async function discardDraft(env: Env, principal: string, id: string): Promise<{ discarded: true }> {
-  const result = await ledgerStub(env).discardDraft(id, { principal });
-  if (!result.ok) throw ledgerApiError(result.code, result.message);
-  return { discarded: true };
-}
-
-/**
- * Append the draft to iCloud's Drafts mailbox so it can be finished from any
- * mail app; the draft then stops being approvable, which is what keeps it
- * from being sent twice.
- */
-export async function saveDraftToIcloud(env: Env, principal: string, id: string): Promise<{ saved: true; mailbox: string }> {
-  const result = await ledgerStub(env).saveDraft(id, { principal });
-  if (!result.ok) throw ledgerApiError(result.code, result.message);
-  return { saved: true, mailbox: DRAFTS_MAILBOX };
-}
-
-// ---- approval-page operations (nonce-bound, no principal) ------------------
-
-export async function draftForApproval(env: Env, id: string): Promise<{ view: DraftView; nonce: string } | null> {
-  return ledgerStub(env).getDraftForApproval(id);
-}
-
-export async function approveDraft(env: Env, id: string, nonce: string): Promise<SendReport> {
-  return ledgerStub(env).approveSend(id, nonce);
-}
-
-export async function saveDraftFromPage(env: Env, id: string, nonce: string): Promise<{ ok: true } | { ok: false; message: string }> {
-  const result = await ledgerStub(env).saveDraft(id, { nonce });
-  return result.ok ? { ok: true } : { ok: false, message: result.message };
-}
-
-export async function discardDraftFromPage(env: Env, id: string, nonce: string): Promise<{ ok: true } | { ok: false; message: string }> {
-  const result = await ledgerStub(env).discardDraft(id, { nonce });
-  return result.ok ? { ok: true } : { ok: false, message: result.message };
+/** Compose and put the message into iCloud's real Drafts mailbox. */
+export async function saveDraftFromTool(env: Env, principal: string, input: ComposeRequest): Promise<SaveDraftResult> {
+  // A draft has no SMTP envelope, so Bcc recipients are kept in the message
+  // itself; sending it later from a mail client uses that header.
+  const composed = await composeMessage(env, input, { includeBcc: true });
+  const report: SaveDraftReport = await ledgerStub(env).saveDraft({
+    rawB64: bytesToBase64(composed.raw),
+    recipientCount: composed.recipients.length,
+    principal,
+  });
+  if (report.status !== "saved") {
+    throw new ApiError(502, report.code ?? "imap_error", report.message ?? "the draft could not be saved");
+  }
+  return { saved: true, mailbox: DRAFTS_MAILBOX, messageId: composed.messageId };
 }

@@ -52,9 +52,6 @@ const STYLE = `
   button { font: inherit; padding: .5rem 1rem; border-radius: 8px; border: 1px solid #999;
            background: #fff; cursor: pointer; }
   button.primary { background: #0071e3; border-color: #0071e3; color: #fff; }
-  .body { white-space: pre-wrap; word-break: break-word; background: #f5f5f7;
-          border-radius: 8px; padding: .75rem 1rem; max-height: 24rem; overflow: auto; }
-  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .875rem; }
   @media (prefers-color-scheme: dark) {
     body { background: #1d1d1f; color: #f5f5f7; }
     main { background: #2c2c2e; }
@@ -65,7 +62,7 @@ const STYLE = `
   }
 `;
 
-export function page(title: string, body: string): string {
+function page(title: string, body: string): string {
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -106,7 +103,7 @@ export function tokenEntryPage(options: { client: ClientFacts; authQuery: string
     "Connect iCloud Mail",
     `<h1>Connect iCloud Mail</h1>
 ${clientFactsHtml(client)}
-<p>Signing in grants read-only access to the mailbox folders this proxy exposes.</p>
+<p>Signing in grants this app access to the mailbox folders this proxy exposes, and lets it send mail and save drafts from this address.</p>
 ${errorHtml}
 <form method="post" action="/authorize">
 <input type="hidden" name="authQuery" value="${escapeHtml(authQuery)}">
@@ -127,7 +124,7 @@ export function consentPage(options: { client: ClientFacts; handle: string; epoc
     `<h1>Approve access</h1>
 ${clientFactsHtml(client)}
 <p class="fact">This app will be able to:</p>
-<p class="fact"><strong>Read mail (mail:read)</strong> — list folders, search messages, read message bodies and download allowed attachments. It cannot send, move, flag, or delete anything.</p>
+<p class="fact"><strong>Read mail (mail:read)</strong> — list folders, search messages, read message bodies and download allowed attachments. It can also <strong>send mail and save drafts</strong> as this address; it cannot move, flag, or delete anything in the mailbox.</p>
 <form method="post" action="/authorize/consent">
 <input type="hidden" name="handle" value="${escapeHtml(handle)}">
 <input type="hidden" name="epoch" value="${escapeHtml(epoch)}">

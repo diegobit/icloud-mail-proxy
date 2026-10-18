@@ -22,7 +22,7 @@ describe("tokenEntryPage", () => {
     const html = tokenEntryPage({ client: CLIENT, authQuery: "client_id=x&state=y" });
     expect(html).toContain("Example App");
     expect(html).toContain("example.com");
-    expect(html).toContain("read-only access to the mailbox folders this proxy exposes");
+    expect(html).toContain("lets it send mail and save drafts from this address");
     expect(html).toContain('<input type="password" id="token" name="token"');
     expect(html).toContain('method="post" action="/authorize"');
     expect(html).toContain('name="authQuery" value="client_id=x&amp;state=y"');
@@ -60,6 +60,8 @@ describe("consentPage", () => {
   it("shows one fixed permission and posts handle, epoch plus action", () => {
     const html = consentPage({ client: CLIENT, handle: "h-1", epoch: "epoch-1" });
     expect(html).toContain("Read mail (mail:read)");
+    expect(html).toContain("send mail and save drafts");
+    expect(html).not.toContain("It cannot send");
     expect(html).toContain('name="handle" value="h-1"');
     expect(html).toContain('name="epoch" value="epoch-1"');
     expect(html).toContain('method="post" action="/authorize/consent"');

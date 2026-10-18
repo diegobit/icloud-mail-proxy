@@ -29,19 +29,14 @@ export interface Env {
   // Outgoing mail (plans/email-send.md). Caps are base vars clamped by
   // send-policy.ts; the From identity is optional; SMTP_HOST/SMTP_PORT are a
   // test-only loopback override that production ignores. SEND_LEDGER holds
-  // drafts, UTC quota counters and the audit trail. SEND_APPROVAL_TOKEN is an
-  // optional owner-only credential for the approval page: set it wherever the
-  // agents holding API_TOKEN run with shell access.
+  // the UTC quota counters, the duplicate-send window and the audit trail.
   SEND_MAX_PER_DAY: string;
   SEND_MAX_RCPTS_PER_DAY: string;
   SEND_MAX_RCPTS_PER_MESSAGE: string;
   SEND_MAX_BODY_BYTES: string;
-  SEND_DRAFT_TTL_SECONDS: string;
-  SEND_MAX_OPEN_DRAFTS: string;
   SEND_FROM?: string;
   SEND_FROM_NAME?: string;
   SEND_SENT_COPY?: string;
-  SEND_APPROVAL_TOKEN?: string;
   SMTP_HOST?: string;
   SMTP_PORT?: string;
   SEND_LEDGER: DurableObjectNamespace<SendLedger>;
