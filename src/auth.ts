@@ -107,3 +107,82 @@ export async function epochMatches(epoch: unknown, apiToken: string): Promise<bo
 export function hasPkcePolicy(props: Record<string, unknown> | undefined): boolean {
   return props?.pkce === true;
 }
+
+// ---- owner approval session cookie (plans/email-send.md, step 6) ----------
+
+export const SEND_COOKIE_NAME = "__Host-send";
+export const SEND_COOKIE_MAX_AGE_SECONDS = 900;
+
+const SEND_COOKIE_MESSAGE = "send-approval-v1";
+
+/** What the approval page accepts, and can mint sessions with. */
+export interface ApprovalEnv {
+  API_TOKEN: string;
+  SEND_APPROVAL_TOKEN?: string;
+}
+
+/**
+ * The credential the approval page asks for: `SEND_APPROVAL_TOKEN` when the
+ * owner set one, else `API_TOKEN`. A deployment where agents hold `API_TOKEN`
+ * (they all do — it is the MCP bearer) should set the dedicated secret, or a
+ * shell-capable agent could approve its own drafts and the human gate would
+ * be decorative.
+ */
+export function approvalSecret(env: ApprovalEnv): string {
+  return (env.SEND_APPROVAL_TOKEN ?? "").trim() || env.API_TOKEN;
+}
+
+/**
+ * The cookie value for a sign-in that expires at `expiry` (epoch ms):
+ * `<expiry>.<HMAC(secret, "send-approval-v1|<API_TOKEN>|<expiry>")>`. The
+ * message carries the API token too, so rotating either credential
+ * invalidates every live approval session.
+ */
+export async function sendCookieValue(secret: string, apiToken: string, expiry: number): Promise<string> {
+  const key = await crypto.subtle.importKey(
+    "raw",
+    encoder.encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const signature = await crypto.subtle.sign(
+    "HMAC",
+    key,
+    encoder.encode(`${SEND_COOKIE_MESSAGE}|${apiToken}|${expiry}`),
+  );
+  return `${expiry}.${base64Url(new Uint8Array(signature))}`;
+}
+
+/** The raw `__Host-send` cookie from a Cookie header, or null. */
+export function sendCookieFrom(header: string | null): string | null {
+  if (!header) return null;
+  for (const part of header.split(";")) {
+    const [name, ...rest] = part.trim().split("=");
+    if (name === SEND_COOKIE_NAME && rest.length > 0) return rest.join("=");
+  }
+  return null;
+}
+
+/**
+ * Whether a request carries a valid, unexpired approval session. The
+ * signature is compared in constant time against a fresh HMAC, so a tampered
+ * or expired value fails without revealing which part was wrong.
+ */
+export async function hasSendSession(request: Request, env: ApprovalEnv, now = Date.now()): Promise<boolean> {
+  const value = sendCookieFrom(request.headers.get("Cookie"));
+  if (!value) return false;
+  const dot = value.indexOf(".");
+  if (dot <= 0) return false;
+  const expiry = Number(value.slice(0, dot));
+  if (!Number.isSafeInteger(expiry) || now >= expiry) return false;
+  const expected = await sendCookieValue(approvalSecret(env), env.API_TOKEN, expiry);
+  return tokenMatches(value, expected);
+}
+
+/** The Set-Cookie header value for a fresh approval session. */
+export async function sendSessionCookie(env: ApprovalEnv, now = Date.now()): Promise<string> {
+  const expiry = now + SEND_COOKIE_MAX_AGE_SECONDS * 1000;
+  const value = await sendCookieValue(approvalSecret(env), env.API_TOKEN, expiry);
+  return `${SEND_COOKIE_NAME}=${value}; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=${SEND_COOKIE_MAX_AGE_SECONDS}`;
+}

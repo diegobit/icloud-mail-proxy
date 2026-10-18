@@ -52,6 +52,9 @@ const STYLE = `
   button { font: inherit; padding: .5rem 1rem; border-radius: 8px; border: 1px solid #999;
            background: #fff; cursor: pointer; }
   button.primary { background: #0071e3; border-color: #0071e3; color: #fff; }
+  .body { white-space: pre-wrap; word-break: break-word; background: #f5f5f7;
+          border-radius: 8px; padding: .75rem 1rem; max-height: 24rem; overflow: auto; }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .875rem; }
   @media (prefers-color-scheme: dark) {
     body { background: #1d1d1f; color: #f5f5f7; }
     main { background: #2c2c2e; }
@@ -62,7 +65,7 @@ const STYLE = `
   }
 `;
 
-function page(title: string, body: string): string {
+export function page(title: string, body: string): string {
   return `<!doctype html>
 <html lang="en">
 <head>

@@ -4,7 +4,8 @@
 // BODY.PEEK, never BODY[]) and LOGOUT. Sockets are created per call to open()
 // and never held at module scope.
 
-import { connect } from "cloudflare:sockets";
+import { buildAppend } from "./imap-append";
+import { defaultImapSocketFactory } from "./imap-socket";
 import {
   ImapParseError,
   ImapTokenizer,
@@ -30,6 +31,15 @@ export class ImapError extends Error {
   }
 }
 
+/** The slice of the Workers socket API ImapSession uses. */
+export interface ImapSocketLike {
+  readonly readable: ReadableStream<Uint8Array>;
+  readonly writable: WritableStream<Uint8Array>;
+  close(): Promise<void>;
+}
+
+export type ImapSocketFactory = (address: { hostname: string; port: number }) => ImapSocketLike;
+
 const HOST = "imap.mail.me.com";
 const PORT = 993;
 const DEFAULT_TIMEOUT_MS = 30000;
@@ -51,7 +61,7 @@ interface ReadResult {
 }
 
 export class ImapSession {
-  private readonly socket: Socket;
+  private readonly socket: ImapSocketLike;
   private readonly reader: ReadableStreamDefaultReader<Uint8Array>;
   private readonly writer: WritableStreamDefaultWriter<Uint8Array>;
   private readonly tokenizer = new ImapTokenizer();
@@ -60,7 +70,7 @@ export class ImapSession {
   private closed = false;
 
   private constructor(
-    socket: Socket,
+    socket: ImapSocketLike,
     reader: ReadableStreamDefaultReader<Uint8Array>,
     writer: WritableStreamDefaultWriter<Uint8Array>,
     timeoutMs: number,
@@ -71,17 +81,18 @@ export class ImapSession {
     this.timeoutMs = timeoutMs;
   }
 
-  /** Connect, read the greeting and LOGIN. Throws ImapError on any failure. */
+  /**
+   * Connect, read the greeting and LOGIN. Throws ImapError on any failure.
+   * `connectSocket` is a test seam: production always uses the default
+   * implicit-TLS factory, tests drive an in-memory duplex.
+   */
   static async open(
     user: string,
     appPassword: string,
-    opts?: { timeoutMs?: number },
+    opts?: { timeoutMs?: number; connectSocket?: ImapSocketFactory },
   ): Promise<ImapSession> {
     const timeoutMs = opts?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-    const socket = connect(
-      { hostname: HOST, port: PORT },
-      { secureTransport: "on", allowHalfOpen: false },
-    );
+    const socket = (opts?.connectSocket ?? defaultImapSocketFactory)({ hostname: HOST, port: PORT });
     const reader = socket.readable.getReader() as ReadableStreamDefaultReader<Uint8Array>;
     const writer = socket.writable.getWriter() as WritableStreamDefaultWriter<Uint8Array>;
     const session = new ImapSession(socket, reader, writer, timeoutMs);
@@ -318,6 +329,86 @@ export class ImapSession {
     return body;
   }
 
+  /**
+   * The CAPABILITY list from an untagged `* CAPABILITY ...` response. Best
+   * effort: a failure yields an empty set, which makes the caller choose the
+   * conservative (synchronizing) behaviour.
+   */
+  async capability(): Promise<Set<string>> {
+    const untagged = await this.command("CAPABILITY", "CAPABILITY");
+    const caps = new Set<string>();
+    for (const tok of untagged) {
+      if (tok.kind !== "line") continue;
+      const m = /^\* CAPABILITY\s+(.*)$/i.exec(tok.text);
+      if (!m) continue;
+      for (const name of m[1].trim().split(/\s+/)) {
+        if (name !== "") caps.add(name.toUpperCase());
+      }
+    }
+    return caps;
+  }
+
+  /**
+   * APPEND a message literal to a mailbox (plans/email-send.md, step 8). The
+   * one write command this proxy issues: saving a draft into iCloud's Drafts
+   * mailbox, and optionally filing a sent copy. Flags are restricted by
+   * buildAppend; the literal is the exact serialized message.
+   *
+   * The literal is synchronizing (`{n}`) unless the server advertises
+   * LITERAL+, in which case it is sent as the non-synchronizing `{n+}`: with
+   * `{n}` the client must wait for the `+` continuation before the bytes,
+   * and with `{n+}` it must not (RFC 2088) — getting this backwards either
+   * writes the message before the server accepts it or deadlocks.
+   */
+  async append(mailbox: string, flags: string[], raw: Uint8Array): Promise<void> {
+    let nonSynchronizing = false;
+    try {
+      nonSynchronizing = (await this.capability()).has("LITERAL+");
+    } catch {
+      // Treat an unreadable capability list as "no LITERAL+".
+      nonSynchronizing = false;
+    }
+
+    let command: string;
+    try {
+      command = buildAppend(mailbox, flags, raw.byteLength, { nonSynchronizing });
+    } catch (e) {
+      throw toImapError(e);
+    }
+
+    const tag = this.nextTag();
+    await this.write(`${tag} ${command}\r\n`);
+    if (!nonSynchronizing) {
+      for (;;) {
+        const tok = await this.nextToken();
+        if (tok.kind === "literal") continue;
+        if (tok.text.startsWith("+")) break;
+        if (tok.text.startsWith(`${tag} `)) {
+          // The server refused before the literal: surface its NO/BAD.
+          this.checkTagged(tok.text, "APPEND");
+          throw new ImapError("PARSE", "APPEND server accepted without a continuation");
+        }
+        if (tok.text.startsWith("* BYE")) {
+          await this.destroy();
+          throw new ImapError("BYE", tok.text);
+        }
+      }
+    }
+    await this.writeBytes(raw);
+    await this.write("\r\n");
+    for (;;) {
+      const tok = await this.nextToken();
+      if (tok.kind === "line" && tok.text.startsWith(`${tag} `)) {
+        this.checkTagged(tok.text, "APPEND");
+        return;
+      }
+      if (tok.kind === "line" && tok.text.startsWith("* BYE")) {
+        await this.destroy();
+        throw new ImapError("BYE", tok.text);
+      }
+    }
+  }
+
   /** Best-effort LOGOUT then socket close. Never throws. */
   async logout(): Promise<void> {
     try {
@@ -353,6 +444,10 @@ export class ImapSession {
 
   private async write(line: string): Promise<void> {
     await this.writer.write(encoder.encode(line));
+  }
+
+  private async writeBytes(bytes: Uint8Array): Promise<void> {
+    await this.writer.write(bytes);
   }
 
   /**
