@@ -47,6 +47,24 @@ Two bindings and one optional var come with the OAuth layer:
   dev` behind `cloudflared`). It must be a bare origin: `https`, or `http` on
   loopback. Normal deployments never need it.
 
+The send path adds one binding and a set of caps:
+
+- `SEND_LEDGER` — the Durable Object that holds drafts, the UTC quota
+  counters and the audit trail. The first deploy creates it from the
+  `migrations` entry in `wrangler.base.jsonc`. Its storage is part of the
+  Worker's; drafts expire on their own (`SEND_DRAFT_TTL_SECONDS`, default one
+  hour) and audit rows prune after 90 days.
+- `SEND_MAX_PER_DAY`, `SEND_MAX_RCPTS_PER_DAY`, `SEND_MAX_RCPTS_PER_MESSAGE`,
+  `SEND_MAX_BODY_BYTES`, `SEND_DRAFT_TTL_SECONDS`, `SEND_MAX_OPEN_DRAFTS` —
+  base vars, clamped to hard maxima in `src/send-policy.ts`; `SEND_MAX_PER_DAY=0`
+  is the kill switch. Details in README's "Sending mail".
+- Optional secrets: `SEND_FROM` (an address the account owns),
+  `SEND_FROM_NAME`, `SEND_SENT_COPY=1` (append a copy to `Sent Messages`).
+- **Test-only:** `SMTP_HOST`/`SMTP_PORT` are honoured only for the literal
+  `127.0.0.1` or `localhost`, and only then is TLS skipped. Any other value is
+  ignored in favour of `smtp.mail.me.com:587` with mandatory STARTTLS, so a
+  stray binding cannot redirect production mail or downgrade it.
+
 ## Migrating the production deployment
 
 The tracked config no longer carries the `icloud-mail.diegobit.com` route: it
@@ -142,6 +160,9 @@ generate a new token, because that would break every existing client.
   across the rotation is refused at approval time, so it cannot mint a fresh
   grant from the old token. That is also the supported way to revoke a
   connector's access without touching the others beyond one reconnect.
+  Approval sessions stop too: the `__Host-send` cookie is an HMAC of
+  `API_TOKEN`, so a rotation invalidates every live one. Drafts themselves
+  survive in the ledger until they expire.
 - **Upgrade across the PKCE requirement:** grants minted by a build that did
   not require PKCE carry no marker, so their authorization code and refresh
   token are refused with `invalid_grant` (the grant is revoked) and the
@@ -156,6 +177,26 @@ generate a new token, because that would break every existing client.
 - **Lost token, nothing else wrong:** rotation is the only recovery path.
   Cloudflare's API cannot return a secret's value; nothing on your machine
   keeps a copy.
+
+## Sending operations
+
+- **Kill switch:** set `SEND_MAX_PER_DAY=0` in `wrangler.base.jsonc` and
+  deploy. Drafts stay visible on their approval pages; every send is refused
+  with "Daily limit reached". Drafting keeps working.
+- **Revoke a connector's drafting:** rotate `API_TOKEN` (that also kills live
+  approval sessions) and reconnect it when wanted.
+- **Inspect what happened:** `wrangler tail` shows one `send_event` line per
+  state change — draft id, event, recipient count and domains, SMTP code,
+  duration; never the subject, the body or address local parts. The
+  Durable Object also keeps the same rows in its `audit` table (90 days).
+- **"Delivery state unknown":** the connection dropped after the message was
+  submitted, so it may already be queued. Check the recipient or
+  `Sent Messages`; the draft is never retried automatically. If iCloud files
+  no copy of SMTP submissions, set `SEND_SENT_COPY=1` so future sends append
+  one.
+- **Rate-limit sending further:** tighten the `SEND_*` caps; they are checked
+  on the approval page too, where a refusal is a normal HTML page (429), not
+  an SMTP attempt.
 
 ## Recovering an interrupted setup
 
