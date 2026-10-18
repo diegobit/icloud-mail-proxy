@@ -1,8 +1,9 @@
 # Sending mail (draft-first, owner-approved)
 
-Status: planned, not started. Design input: a Claude Opus 5.5 brief
-(2026-10-18), adapted to the owner's decisions recorded below. This file
-supersedes `plans/outbound-send-proxy.md`.
+Status: implemented on branch `email-send` (steps 1–9 committed with tests
+green); step 10 (live acceptance) is owner-run and still pending. Design
+input: a Claude Opus 5.5 brief (2026-10-18), adapted to the owner's decisions
+recorded below. This file supersedes `plans/outbound-send-proxy.md`.
 
 ## Decisions (owner, 2026-10-18)
 
@@ -531,7 +532,52 @@ L: about 5 developer days plus half a day of live acceptance.
 
 ## Implementation status
 
-Not started. Design input from Claude Opus 5.5 (2026-10-18) is folded into
-the sections above; the owner's decisions of the same date are recorded at
-the top. This file was written before any code, so every "verified" claim
-above is about the environment, not about the feature.
+### Delivered
+
+Steps 1–9 are committed on branch `email-send` (base `main` @ `b13c34b`);
+`npm test` (24 files, 349 tests), `npm run typecheck`, `npm run check:bundle`
+and `npm run deploy:production -- --dry-run` are green.
+
+| Step | What landed |
+| --- | --- |
+| 1 | `SEND_LEDGER` Durable Object, its migration and the `SEND_*` caps in `wrangler.base.jsonc`; `src/send-policy.ts` with clamping; both dry-runs accept the migration. |
+| 2 | `src/mime-build.ts` (30 unit tests): encoded words, quoted-printable, strict ASCII addresses, rebuilt references, no `Bcc:` header, 7-bit assertion. |
+| 3 | `src/smtp.ts` + `src/smtp-socket.ts` (12 unit tests): STARTTLS, AUTH PLAIN, SIZE, dot-stuffing, the whole error taxonomy, the loopback-only override. |
+| 4 | `src/send-ledger-core.ts` (pure) + `src/send-ledger.ts` (SQLite DO): state machine, quota reserve/release, nonce, TTL sweep, audit (14 unit tests). |
+| 5 | `fetchParentForComposition` in `src/core.ts`; hostile parent ids are dropped before they can reach a header. |
+| 6 | `src/approve-page.ts` + `src/send-approve.ts` + the `__Host-send` HMAC cookie in `src/auth.ts` (8 page tests, 5 cookie tests). |
+| 7 | The five MCP tools in `src/mcp.ts`, principal-bound; `test/send.integration.test.mjs` (11 tests) drives draft → approve → fake SMTP, double submits, caps, expiry, rotation and OAuth binding. |
+| 8 | `src/imap-append.ts` + `ImapSession.append` + `save_draft_to_icloud` + the page's Save in Drafts button; `SEND_SENT_COPY` implemented, default off. |
+| 9 | README (intro, architecture, MCP, new "Sending mail", security model), DEPLOY (binding, caps, override, "Sending operations"), `.dev.vars.example`. |
+
+### Deviations from the plan
+
+- The Cloudflare socket factory lives in `src/smtp-socket.ts` rather than in
+  `src/smtp.ts`, so the client module stays importable under Node for unit
+  tests (the same reason `imap-parse.ts` sits apart from `imap.ts`).
+- A retryable SMTP failure returns the draft to `ready` **with its bytes
+  intact** — the ledger tests caught a first cut that discarded the body.
+- A second approval POST on an `unknown` draft renders the same "delivery
+  state unknown" page instead of a generic refusal.
+- `SEND_DRAFT_TTL_SECONDS` has no lower clamp beyond one second, so the
+  integration suite can exercise expiry without a clock injection.
+- `vitest.config.ts` runs test files one at a time: with two suites booting
+  real workerd, parallel files starved each other (observed `beforeAll`
+  timeouts), and the unit suites take milliseconds.
+
+### Open items resolved
+
+- SQLite Durable Objects and the `migrations` entry are accepted by both
+  dry-runs; the first real deploy provisions the class.
+- `ctx.auth.clientId` is present on grant tokens and absent on external
+  tokens (verified in `dist/oauth-provider.js`), so the principal is
+  `oauth:<clientId>` or `bearer`.
+- Loopback TCP and `startTls()` were validated locally by the design brief;
+  the integration suite now drives the same client against the fake server.
+
+### Live acceptance (step 10, owner-run)
+
+Still pending: STARTTLS against `smtp.mail.me.com`, the Sent mailbox
+behaviour (which decides `SEND_SENT_COPY`), aliases as `SEND_FROM`, a real
+message from ChatGPT and from claude.ai through the approval page, and the
+production smoke test.
