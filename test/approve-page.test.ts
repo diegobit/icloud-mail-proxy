@@ -37,6 +37,14 @@ describe("approveLoginPage", () => {
     expect(html).not.toContain("<script>");
     expect(html).toContain("&lt;b&gt;nope&lt;/b&gt;");
   });
+
+  it("flags the API_TOKEN fallback without letting the warning inject markup", () => {
+    const quiet = approveLoginPage({ draftId: VIEW.id });
+    expect(quiet).not.toContain("SEND_APPROVAL_TOKEN");
+    const loud = approveLoginPage({ draftId: VIEW.id, warning: "no dedicated <b>token</b>" });
+    expect(loud).toContain("no dedicated &lt;b&gt;token&lt;/b&gt;");
+    expect(loud).not.toContain("<b>token</b>");
+  });
 });
 
 describe("approveDraftPage", () => {

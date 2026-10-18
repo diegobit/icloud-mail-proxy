@@ -15,11 +15,12 @@ function utcTime(epochMs: number): string {
 }
 
 /** The sign-in page shown before a draft's content is revealed or acted on. */
-export function approveLoginPage(options: { draftId: string; error?: string }): string {
+export function approveLoginPage(options: { draftId: string; error?: string; warning?: string }): string {
   return page(
     "Approve a draft",
     `<h1>Approve a draft</h1>
 <p>A connected app created a draft message for this mailbox. Sign in with the approval token to review it. Nothing is sent without this step.</p>
+${options.warning ? `<p class="warn">${escapeHtml(options.warning)}</p>` : ""}
 ${errorHtml(options.error)}
 <form method="post" action="/send/approve">
 <input type="hidden" name="d" value="${escapeHtml(options.draftId)}">

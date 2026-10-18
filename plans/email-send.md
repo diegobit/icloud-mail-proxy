@@ -539,7 +539,7 @@ L: about 5 developer days plus half a day of live acceptance.
 ### Delivered
 
 Steps 1–9 are committed on branch `email-send` (base `main` @ `b13c34b`);
-`npm test` (24 files, 362 tests), `npm run typecheck`, `npm run check:bundle`
+`npm test` (24 files, 365 tests), `npm run typecheck`, `npm run check:bundle`
 and `npm run deploy:production -- --dry-run` are green.
 
 | Step | What landed |
@@ -594,6 +594,21 @@ Nine findings, two of them High; all are addressed and covered by tests.
 | 7 | Medium | Writes had no timeout: backpressure could hang an approval indefinitely. | Every write is wrapped in the same per-step deadline, and a `data-final` write timeout is classified unknown; a stuck-socket test covers it. |
 | 8 | Low | Ten long valid message ids overflowed the `References` line instead of folding. | `foldHeaderValue` folds To/Cc and References at their separators; a long-chain test asserts the result. |
 | 9 | Low | Once no drafts remained no alarm was scheduled, so the 90-day audit prune never ran on an idle deployment. | `alarm()` always re-arms, falling back to a daily maintenance sweep. |
+
+### Review round 2 (verification, same model)
+
+The verifier confirmed findings 2, 4, 5, 6, 7 and 9 as fixed, and 1, 3 and 8
+as partially fixed, and it found **two regressions introduced by the round-1
+fixes** — both real and both fixed here:
+
+| # | Severity | Regression | Fix |
+| --- | --- | --- | --- |
+| R1 | Medium | `foldHeaderValue` wrote the separator and the newline but forgot the atom, so wrapped To/Cc entries and `References` ids vanished from the wire headers while the envelope still carried every recipient. | Append the atom after the fold, and assert with PostalMime that every recipient and every reference survives the round trip. |
+| R2 | Medium | The LITERAL+ path sent a `{n}` literal without waiting for the continuation; RFC 2088 requires the non-synchronizing form `{n+}` for that, so a refusing server could already have received the message. | `buildAppend` emits `{n+}` when LITERAL+ is advertised; the exchange tests assert the plus form and a new test covers a post-literal `NO`. |
+
+Also: on deployments without `SEND_APPROVAL_TOKEN` the approval login page now
+says so — the fallback to `API_TOKEN` remains (the owner chose no extra
+activation step), but it is no longer silent.
 
 ### Live acceptance (step 10, owner-run)
 

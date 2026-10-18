@@ -9,10 +9,17 @@ const ALLOWED_FLAGS = new Set(["\\Draft", "\\Seen"]);
 /**
  * The command text that introduces an APPEND literal, without the tag or the
  * trailing CRLF (the session composes `A<n> <command>\r\n`):
- * `APPEND "Drafts" (\Draft) {1234}`. The caller then writes exactly
- * `byteLength` octets plus a terminating CRLF.
+ * `APPEND "Drafts" (\Draft) {1234}`. With `nonSynchronizing` it emits the
+ * RFC 2088 `{1234+}`, which tells a LITERAL+-capable server to expect the
+ * bytes without a continuation. The caller then writes exactly `byteLength`
+ * octets plus a terminating CRLF.
  */
-export function buildAppend(mailbox: string, flags: string[], byteLength: number): string {
+export function buildAppend(
+  mailbox: string,
+  flags: string[],
+  byteLength: number,
+  options?: { nonSynchronizing?: boolean },
+): string {
   if (!Array.isArray(flags)) throw new ImapParseError("flags must be an array");
   for (const flag of flags) {
     if (!ALLOWED_FLAGS.has(flag)) throw new ImapParseError(`flag not allowed: ${flag}`);
@@ -22,6 +29,6 @@ export function buildAppend(mailbox: string, flags: string[], byteLength: number
   }
   const parts = ["APPEND", quoteImapString(mailbox)];
   if (flags.length > 0) parts.push(`(${flags.join(" ")})`);
-  parts.push(`{${byteLength}}`);
+  parts.push(`{${byteLength}${options?.nonSynchronizing === true ? "+" : ""}}`);
   return parts.join(" ");
 }

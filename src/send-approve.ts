@@ -17,9 +17,17 @@ import type { Env } from "./types";
 
 const FORM_UNREADABLE = "The form could not be read. Open the approval link again.";
 const DRAFT_ID_RE = /^[A-Za-z0-9_-]{8,64}$/;
+const NO_DEDICATED_TOKEN =
+  "This deployment has no dedicated SEND_APPROVAL_TOKEN, so the same API token that connected apps " +
+  "hold can approve drafts. Set the secret to make this step owner-only.";
 
 function htmlResponse(html: string, status: number, headers?: HeadersInit): Response {
   return new Response(html, { status, headers: { ...htmlHeaders(), ...headers } });
+}
+
+/** The fallback warning shown only while the dedicated secret is unset. */
+function approvalWarning(env: Env): string | undefined {
+  return approvalSecret(env) === env.API_TOKEN ? NO_DEDICATED_TOKEN : undefined;
 }
 
 function readForm(request: Request): Promise<FormData | null> {
@@ -38,7 +46,7 @@ async function handleGet(request: Request, env: Env): Promise<Response> {
     return htmlResponse(errorPage("Missing or invalid draft id.", 404), 404);
   }
   if (!(await hasSendSession(request, env))) {
-    return htmlResponse(approveLoginPage({ draftId }), 200);
+    return htmlResponse(approveLoginPage({ draftId, warning: approvalWarning(env) }), 200);
   }
   const draft = await draftForApproval(env, draftId);
   if (!draft) {
@@ -52,7 +60,7 @@ async function handleLogin(form: FormData, env: Env): Promise<Response> {
   const token = formValue(form, "token");
   if (!(await tokenMatches(token, approvalSecret(env)))) {
     return htmlResponse(
-      approveLoginPage({ draftId, error: "That token does not match this deployment." }),
+      approveLoginPage({ draftId, warning: approvalWarning(env), error: "That token does not match this deployment." }),
       401,
     );
   }
@@ -170,7 +178,7 @@ async function handlePost(request: Request, env: Env): Promise<Response> {
     return htmlResponse(errorPage("Missing or invalid draft id.", 404), 404);
   }
   if (!(await hasSendSession(request, env))) {
-    return htmlResponse(approveLoginPage({ draftId, error: "Sign in to continue." }), 401);
+    return htmlResponse(approveLoginPage({ draftId, warning: approvalWarning(env), error: "Sign in to continue." }), 401);
   }
   const nonce = formValue(form, "nonce");
 

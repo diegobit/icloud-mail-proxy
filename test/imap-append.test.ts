@@ -15,6 +15,15 @@ describe("buildAppend", () => {
     expect(buildAppend("Drafts", [], 5)).toBe('APPEND "Drafts" {5}');
   });
 
+  it("emits the RFC 2088 non-synchronizing literal for LITERAL+ servers", () => {
+    expect(buildAppend("Drafts", ["\\Draft"], 5, { nonSynchronizing: true })).toBe(
+      'APPEND "Drafts" (\\Draft) {5+}',
+    );
+    expect(buildAppend("Drafts", ["\\Draft"], 5, { nonSynchronizing: false })).toBe(
+      'APPEND "Drafts" (\\Draft) {5}',
+    );
+  });
+
   it("escapes quotes and backslashes in the mailbox name", () => {
     expect(buildAppend('We"ird\\', ["\\Draft"], 5)).toBe('APPEND "We\\"ird\\\\" (\\Draft) {5}');
   });
@@ -119,13 +128,14 @@ describe("ImapSession.append", () => {
     expect(server.received).toContain(`APPEND "Drafts" (\\Draft) {${RAW.byteLength}}`);
   });
 
-  it("sends the literal immediately when the server advertises LITERAL+", async () => {
+  it("sends the non-synchronizing {n+} literal when the server advertises LITERAL+", async () => {
     const { socket, server } = fakeSocket();
     let scriptError: unknown = null;
     const script = (async () => {
       await handshake(server, "IMAP4rev1 LITERAL+ AUTH=PLAIN");
-      expect(await server.line()).toBe(`A3 APPEND "Sent Messages" (\\Seen) {${RAW.byteLength}}`);
-      // No "+" is sent: the bytes must arrive on their own.
+      // RFC 2088: with LITERAL+ the literal is `{n+}`, and the server must
+      // not send a continuation.
+      expect(await server.line()).toBe(`A3 APPEND "Sent Messages" (\\Seen) {${RAW.byteLength}+}`);
       expect(await server.bytes(RAW.byteLength)).toBe("Subject: x\r\n\r\nCiao\r\n");
       expect(await server.line()).toBe("");
       await server.send("A3 OK appended\r\n");
@@ -138,6 +148,28 @@ describe("ImapSession.append", () => {
       timeoutMs: 500,
     });
     await session.append("Sent Messages", ["\\Seen"], RAW);
+    await script;
+    expect(scriptError).toBeNull();
+  });
+
+  it("surfaces a NO that arrives after a non-synchronizing literal", async () => {
+    const { socket, server } = fakeSocket();
+    let scriptError: unknown = null;
+    const script = (async () => {
+      await handshake(server, "IMAP4rev1 LITERAL+");
+      expect(await server.line()).toBe(`A3 APPEND "Drafts" (\\Draft) {${RAW.byteLength}+}`);
+      expect(await server.bytes(RAW.byteLength)).toBe("Subject: x\r\n\r\nCiao\r\n");
+      expect(await server.line()).toBe("");
+      await server.send("A3 NO [OVERQUOTA] mailbox is full\r\n");
+    })().catch((error) => {
+      scriptError = error;
+    });
+
+    const session = await ImapSession.open("owner@example.com", "app-pass", {
+      connectSocket: () => socket,
+      timeoutMs: 500,
+    });
+    await expect(session.append("Drafts", ["\\Draft"], RAW)).rejects.toMatchObject({ code: "NO" });
     await script;
     expect(scriptError).toBeNull();
   });

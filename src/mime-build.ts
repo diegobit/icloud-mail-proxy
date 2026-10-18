@@ -196,7 +196,7 @@ function foldHeaderValue(prefix: string, atoms: string[], glue: string): string 
   for (const atom of atoms) {
     const pending = out === "" ? "" : glue;
     if (out !== "" && lineLength + pending.length + atom.length > 78) {
-      out += `${glue.trimEnd()}\r\n `;
+      out += `${glue.trimEnd()}\r\n ${atom}`;
       lineLength = 1 + atom.length;
     } else {
       out += pending + atom;

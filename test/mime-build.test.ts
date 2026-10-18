@@ -362,25 +362,29 @@ describe("delivery round-trip (PostalMime)", () => {
     expect(reparsed.text?.trim()).toBe("venerdì");
   });
 
-  it("folds long recipient lists and reference chains without over-long lines", () => {
+  it("folds long recipient lists and reference chains without dropping values", async () => {
     const to = Array.from({ length: 5 }, (_, index) => ({
       name: "N".repeat(60) + index,
       address: `user${index}@example.com`,
     }));
     const references = Array.from({ length: 9 }, (_, index) => `<${"a".repeat(90)}${index}@example.com>`);
-    const built = buildMessage({
-      ...base,
-      to,
-      cc: to,
-      references,
-      inReplyTo: `<${"a".repeat(90)}9@example.com>`,
-    });
+    const inReplyTo = `<${"a".repeat(90)}9@example.com>`;
+    const built = buildMessage({ ...base, to, cc: to, references, inReplyTo });
     const text = new TextDecoder().decode(built.raw);
     for (const line of text.split("\r\n")) {
       expect(line.length).toBeLessThanOrEqual(998);
     }
     expect(text).toContain("\r\n ");
     expect(built.recipients).toHaveLength(5);
+
+    // The folded headers must decode back to every original value: the first
+    // cut of the folder dropped the atoms it wrapped onto a new line.
+    const parsed = await new PostalMime().parse(built.raw);
+    expect(parsed.to?.map((entry) => entry.address)).toEqual(to.map((entry) => entry.address));
+    expect(parsed.cc?.map((entry) => entry.address)).toEqual(to.map((entry) => entry.address));
+    for (const id of [...references, inReplyTo]) {
+      expect(parsed.references, id).toContain(id);
+    }
   });
 });
 

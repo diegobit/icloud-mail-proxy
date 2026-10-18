@@ -179,6 +179,8 @@ describe("sending mail end to end", () => {
     expect(anonymous.res.status).toBe(200);
     expect(anonymous.html).toContain("Approve a draft");
     expect(anonymous.html).not.toContain("Pranzo");
+    // No dedicated approval token in this deployment: the page says so.
+    expect(anonymous.html).toContain("SEND_APPROVAL_TOKEN");
     expect(anonymous.res.headers.get("cache-control")).toBe("private, no-store");
 
     const wrong = await signIn(current.base, first.draftId, "not-the-token");
@@ -448,6 +450,8 @@ describe("dedicated approval token", () => {
     const anonymous = await openDraft(current.base, draft.draftId);
     expect(anonymous.html).toContain("Approve a draft");
     expect(anonymous.html).not.toContain("ciao");
+    // With the dedicated secret configured there is no fallback warning.
+    expect(anonymous.html).not.toContain("SEND_APPROVAL_TOKEN");
 
     // The owner's separate token can, and the send goes through.
     const owner = await signInAndOpen(current.base, draft.draftId, "owner-approval-token-1234567890");

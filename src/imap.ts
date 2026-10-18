@@ -354,24 +354,26 @@ export class ImapSession {
    * mailbox, and optionally filing a sent copy. Flags are restricted by
    * buildAppend; the literal is the exact serialized message.
    *
-   * The literal is synchronizing (`{n}`): when the server has not advertised
-   * LITERAL+ the client waits for the `+` continuation before sending the
-   * bytes, as RFC 3501 requires; with LITERAL+ the bytes follow immediately,
-   * because such a server must not send the continuation.
+   * The literal is synchronizing (`{n}`) unless the server advertises
+   * LITERAL+, in which case it is sent as the non-synchronizing `{n+}`: with
+   * `{n}` the client must wait for the `+` continuation before the bytes,
+   * and with `{n+}` it must not (RFC 2088) — getting this backwards either
+   * writes the message before the server accepts it or deadlocks.
    */
   async append(mailbox: string, flags: string[], raw: Uint8Array): Promise<void> {
-    let command: string;
-    try {
-      command = buildAppend(mailbox, flags, raw.byteLength);
-    } catch (e) {
-      throw toImapError(e);
-    }
     let nonSynchronizing = false;
     try {
       nonSynchronizing = (await this.capability()).has("LITERAL+");
     } catch {
       // Treat an unreadable capability list as "no LITERAL+".
       nonSynchronizing = false;
+    }
+
+    let command: string;
+    try {
+      command = buildAppend(mailbox, flags, raw.byteLength, { nonSynchronizing });
+    } catch (e) {
+      throw toImapError(e);
     }
 
     const tag = this.nextTag();
