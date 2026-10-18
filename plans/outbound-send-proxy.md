@@ -1,5 +1,14 @@
 # Outbound send proxy
 
+> **Superseded 2026-10-18 by [`plans/email-send.md`](email-send.md).** The
+> owner decided to build sending into this Worker, always on for
+> authenticated callers, with a draft-first flow where only the owner's
+> approval on the Worker's own page can send. The separate-Worker,
+> separate-password, allowlist sketch below is kept as history: the
+> guarantee it protected ("cannot send even if compromised") is knowingly
+> dropped, and the approval page replaces the allowlist as the safety
+> control.
+
 **What**: A way for an agent to send mail through the same iCloud account.
 
 **Why deferred**: Deliberately, not just for lack of time. This repo's core
