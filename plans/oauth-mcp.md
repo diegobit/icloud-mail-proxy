@@ -1,10 +1,11 @@
 # OAuth 2.1 for /mcp
 
-Status: implemented on branch `oauth-mcp` (worktree), steps 1–7 committed with
-tests green and independent review findings addressed; step 8 (live connector
-acceptance) is owner-run and still pending. Design checked against
-`@cloudflare/workers-oauth-provider` 1.2.x docs and `dist/oauth-provider.js`,
-reviewed by Claude Opus 5.5 (Oct 2026).
+Status: shipped. Steps 1–7 and four review rounds are merged to `main`, and the
+first live acceptance ran against production on 2026-10-18: ChatGPT connects
+over OAuth; claude.ai and the rotation rehearsal are not tried yet. Design
+checked against `@cloudflare/workers-oauth-provider` 1.2.x docs and
+`dist/oauth-provider.js`, reviewed by Claude Opus 5.5 and GPT-6-Astra (Oct
+2026).
 
 ## Outcome and scope
 
@@ -424,7 +425,9 @@ and a claude.ai account with custom connectors.
 
 All seven code steps and all four review rounds are committed on `oauth-mcp`
 (base `dev` @ `e6e38d2`); `npm test` (17 files, 259 tests), `npm run typecheck`
-and both bundle dry-runs are green.
+and both bundle dry-runs are green. Merged as PR #1 (`oauth-mcp` → `dev`) and
+PR #2 (`dev` → `main`), then deployed with `npm run deploy:production`
+(version `6a1489d5`; the first real deploy provisioned `OAUTH_KV`).
 
 | Step | Commit | What landed |
 | --- | --- | --- |
@@ -527,16 +530,24 @@ then 429).
   (`apiRoute` runs before `defaultHandler`) with
   `Bearer realm="OAuth", resource_metadata="…", scope="mail:read"`.
 
-### Live acceptance (step 8, owner-run)
+### Live acceptance (step 8)
 
-- [ ] `npm run dev` with `PUBLIC_ORIGIN` set to a `cloudflared tunnel --url
-      http://localhost:8787` hostname.
-- [ ] ChatGPT (developer mode) connects: sign-in page, `list_mailboxes`, one
-      `search_mail`.
-- [ ] claude.ai connects: same two tools.
-- [ ] Rotate `API_TOKEN` in `.dev.vars` and confirm both connectors are forced
-      to reconnect.
-- [ ] One `npm run setup` rerun against a test Worker with OAuth checks
-      passing live.
-- [ ] Record both connectors' callback hosts here if anything needed
-      allowlisting.
+Run against production on 2026-10-18, not locally: the owner skipped the
+`wrangler dev` + tunnel rehearsal and validated the deployed Worker instead.
+
+- [x] Discovery live on `https://icloud-mail.diegobit.com`: protected-resource
+      and authorization-server metadata (correct issuer, S256 only, `iss`
+      supported); anonymous `POST /mcp` → 401 challenge with
+      `resource_metadata`; the bearer paths still answer 401 without a token
+      and 200 with the current `API_TOKEN`.
+- [x] ChatGPT (developer mode) connected through the sign-in and consent
+      pages and calls the tools. Confirmed by the owner on 2026-10-18.
+- [ ] claude.ai: not tried yet.
+- [ ] Rotation rehearsal: skipped by the owner's choice; the current
+      `API_TOKEN` stays in use, so no connector has been through the forced
+      reconnect yet. Rotation remains the documented way to revoke them all.
+- [ ] `npm run setup` rerun against a test Worker: pending. Until the
+      Cloudflare Workers Builds deploy command changes to
+      `npm run deploy:production` (DEPLOY.md), builds on `main` fail at the
+      deploy step and production is updated with `npm run deploy:production`.
+- [x] Allowlisting: nothing needed for ChatGPT.
