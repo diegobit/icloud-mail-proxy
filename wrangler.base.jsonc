@@ -21,6 +21,13 @@
   // 4.45 provisions the namespace on the first non-interactive deploy (guided
   // setup and Workers Builds alike) and keeps it linked to the Worker.
   "kv_namespaces": [{ "binding": "OAUTH_KV" }],
+  // Outgoing mail (plans/email-send.md): drafts, UTC quota counters and the
+  // audit trail live in one SQLite-backed Durable Object per deployment. The
+  // class is exported from src/index.ts.
+  "durable_objects": {
+    "bindings": [{ "name": "SEND_LEDGER", "class_name": "SendLedger" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["SendLedger"] }],
   // Per-IP rate limiters for the unauthenticated OAuth endpoints that write to
   // OAUTH_KV (free tier: 1,000 writes/day): /oauth/register and /oauth/token
   // (the latter caches CIMD client-assertion replay markers per request).
@@ -45,6 +52,15 @@
     "MAX_MESSAGE_BYTES": "3145728",
     "MAX_SEARCH_DAYS": "90",
     "ALLOWED_ATTACHMENT_TYPES": "application/pdf,image/,text/",
-    "MAX_ATTACHMENT_BYTES": "2097152"
+    "MAX_ATTACHMENT_BYTES": "2097152",
+    // Sending (plans/email-send.md). These are non-personal defaults; the
+    // hard maxima live in src/send-policy.ts and cannot be exceeded here.
+    // SEND_MAX_PER_DAY=0 refuses every send (the kill switch).
+    "SEND_MAX_PER_DAY": "20",
+    "SEND_MAX_RCPTS_PER_DAY": "50",
+    "SEND_MAX_RCPTS_PER_MESSAGE": "5",
+    "SEND_MAX_BODY_BYTES": "65536",
+    "SEND_DRAFT_TTL_SECONDS": "3600",
+    "SEND_MAX_OPEN_DRAFTS": "20"
   }
 }

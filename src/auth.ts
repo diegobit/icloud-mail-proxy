@@ -107,3 +107,60 @@ export async function epochMatches(epoch: unknown, apiToken: string): Promise<bo
 export function hasPkcePolicy(props: Record<string, unknown> | undefined): boolean {
   return props?.pkce === true;
 }
+
+// ---- owner approval session cookie (plans/email-send.md, step 6) ----------
+
+export const SEND_COOKIE_NAME = "__Host-send";
+export const SEND_COOKIE_MAX_AGE_SECONDS = 900;
+
+const SEND_COOKIE_MESSAGE = "send-approval-v1";
+
+/**
+ * The cookie value for a sign-in that expires at `expiry` (epoch ms):
+ * `<expiry>.<HMAC(API_TOKEN, "send-approval-v1|<expiry>")>`. Keyed on the API
+ * token, so rotating it invalidates every live approval session.
+ */
+export async function sendCookieValue(apiToken: string, expiry: number): Promise<string> {
+  const key = await crypto.subtle.importKey(
+    "raw",
+    encoder.encode(apiToken),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const signature = await crypto.subtle.sign("HMAC", key, encoder.encode(`${SEND_COOKIE_MESSAGE}|${expiry}`));
+  return `${expiry}.${base64Url(new Uint8Array(signature))}`;
+}
+
+/** The raw `__Host-send` cookie from a Cookie header, or null. */
+export function sendCookieFrom(header: string | null): string | null {
+  if (!header) return null;
+  for (const part of header.split(";")) {
+    const [name, ...rest] = part.trim().split("=");
+    if (name === SEND_COOKIE_NAME && rest.length > 0) return rest.join("=");
+  }
+  return null;
+}
+
+/**
+ * Whether a request carries a valid, unexpired approval session. The
+ * signature is compared in constant time against a fresh HMAC, so a tampered
+ * or expired value fails without revealing which part was wrong.
+ */
+export async function hasSendSession(request: Request, apiToken: string, now = Date.now()): Promise<boolean> {
+  const value = sendCookieFrom(request.headers.get("Cookie"));
+  if (!value) return false;
+  const dot = value.indexOf(".");
+  if (dot <= 0) return false;
+  const expiry = Number(value.slice(0, dot));
+  if (!Number.isSafeInteger(expiry) || now >= expiry) return false;
+  const expected = await sendCookieValue(apiToken, expiry);
+  return tokenMatches(value, expected);
+}
+
+/** The Set-Cookie header value for a fresh approval session. */
+export async function sendSessionCookie(apiToken: string, now = Date.now()): Promise<string> {
+  const expiry = now + SEND_COOKIE_MAX_AGE_SECONDS * 1000;
+  const value = await sendCookieValue(apiToken, expiry);
+  return `${SEND_COOKIE_NAME}=${value}; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=${SEND_COOKIE_MAX_AGE_SECONDS}`;
+}

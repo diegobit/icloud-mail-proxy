@@ -1,5 +1,17 @@
 import { describe, expect, it } from "vitest";
-import { epochMatches, extractBearer, grantEpoch, hasPkcePolicy, isAuthorized, tokenMatches } from "../src/auth";
+import {
+  epochMatches,
+  extractBearer,
+  grantEpoch,
+  hasPkcePolicy,
+  hasSendSession,
+  isAuthorized,
+  sendCookieFrom,
+  sendCookieValue,
+  sendSessionCookie,
+  SEND_COOKIE_NAME,
+  tokenMatches,
+} from "../src/auth";
 
 const TOKEN = "s3cret-deployment-token-abcdefghijklmnop";
 const OTHER = "another-deployment-token-abcdefghijklmn";
@@ -81,5 +93,57 @@ describe("hasPkcePolicy", () => {
     expect(hasPkcePolicy({ pkce: "true" })).toBe(false);
     expect(hasPkcePolicy({ pkce: false })).toBe(false);
     expect(hasPkcePolicy(undefined)).toBe(false);
+  });
+});
+
+describe("send approval session", () => {
+  const NOW = 1_800_000_000_000;
+
+  function requestWithCookie(cookie?: string): Request {
+    return new Request("https://mail.example.com/send/approve?d=abc", {
+      headers: cookie === undefined ? {} : { Cookie: cookie },
+    });
+  }
+
+  it("mints and verifies a session cookie keyed on the API token", async () => {
+    const value = await sendCookieValue(TOKEN, NOW + 60_000);
+    expect(value).toMatch(/^\d+\.[A-Za-z0-9_-]+$/);
+    expect(await hasSendSession(requestWithCookie(`${SEND_COOKIE_NAME}=${value}`), TOKEN, NOW)).toBe(true);
+    expect(await hasSendSession(requestWithCookie(`${SEND_COOKIE_NAME}=${value}`), OTHER, NOW)).toBe(false);
+  });
+
+  it("rejects tampered, malformed, expired and missing values", async () => {
+    const value = await sendCookieValue(TOKEN, NOW + 60_000);
+    const tampered = `${value.split(".")[0]}.${value.split(".")[1].slice(0, -1)}x`;
+    for (const cookie of [
+      undefined,
+      "",
+      "other=1",
+      `${SEND_COOKIE_NAME}=`,
+      `${SEND_COOKIE_NAME}=abc`,
+      `${SEND_COOKIE_NAME}=notanumber.sig`,
+      `${SEND_COOKIE_NAME}=${tampered}`,
+    ]) {
+      expect(await hasSendSession(requestWithCookie(cookie), TOKEN, NOW), String(cookie)).toBe(false);
+    }
+    // Expired even though the signature is genuine.
+    expect(await hasSendSession(requestWithCookie(`${SEND_COOKIE_NAME}=${value}`), TOKEN, NOW + 60_001)).toBe(false);
+  });
+
+  it("parses the cookie out of a multi-cookie header", () => {
+    expect(sendCookieFrom("a=1; __Host-send=x.y; b=2")).toBe("x.y");
+    expect(sendCookieFrom("a=1")).toBeNull();
+    expect(sendCookieFrom(null)).toBeNull();
+  });
+
+  it("sets the hardened cookie attributes", async () => {
+    const header = await sendSessionCookie(TOKEN, NOW);
+    expect(header.startsWith(`${SEND_COOKIE_NAME}=`)).toBe(true);
+    expect(header).toContain("Path=/");
+    expect(header).toContain("Secure");
+    expect(header).toContain("HttpOnly");
+    expect(header).toContain("SameSite=Strict");
+    expect(header).toContain("Max-Age=900");
+    expect(await hasSendSession(requestWithCookie(header.split(";")[0]), TOKEN, NOW + 899_000)).toBe(true);
   });
 });

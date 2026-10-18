@@ -11,6 +11,7 @@ import type { Address as PMAddress, Email as PMEmail } from "postal-mime";
 import { ImapError, ImapSession } from "./imap";
 import { ImapParseError } from "./imap-parse";
 import { htmlToText } from "./html-text";
+import { splitReferences } from "./mime-build";
 import { selectPage } from "./paging";
 import {
   isAttachmentPart,
@@ -382,6 +383,108 @@ export async function getMessage(
         untrustedEmailContent: { text, textSource },
         attachments,
         truncated,
+      };
+    } finally {
+      await session.logout();
+    }
+  });
+}
+
+/**
+ * Fetch the parent message of a reply or a forward (plans/email-send.md,
+ * step 5): the headers needed for threading (message id, references,
+ * subject, display from), the text body a forward quotes, and the names of
+ * attachments a v1 forward does not carry. Same mailbox allowlist and
+ * UIDVALIDITY checks as the read tools.
+ */
+export interface CompositionParent {
+  messageId: string | null;
+  references: string[];
+  subject: string | null;
+  fromDisplay: string | null;
+  date: string | null;
+  text: string | null;
+  attachmentNames: string[];
+}
+
+export async function fetchParentForComposition(
+  env: Env,
+  mailbox: string,
+  uidValidity: number,
+  uid: number,
+): Promise<CompositionParent> {
+  assertMailboxAllowed(env, mailbox);
+  if (!Number.isSafeInteger(uidValidity) || uidValidity <= 0) {
+    throw new ApiError(400, "invalid_uidvalidity", "uidValidity must be a positive integer");
+  }
+  if (!Number.isSafeInteger(uid) || uid <= 0) {
+    throw new ApiError(400, "invalid_uid", "uid must be a positive integer");
+  }
+  const maxBytes = intEnv(env.MAX_MESSAGE_BYTES, 3_145_728);
+
+  return withRetryOnce(async () => {
+    const session = await ImapSession.open(env.ICLOUD_USER, env.ICLOUD_APP_PASSWORD);
+    try {
+      const examined = await session.examine(mailbox);
+      if (examined.uidValidity !== uidValidity) {
+        throw new ApiError(
+          409,
+          "uidvalidity_mismatch",
+          `UIDVALIDITY changed (now ${examined.uidValidity}); re-run the search to get fresh ids`,
+        );
+      }
+      let size: number;
+      try {
+        size = await session.fetchSize(uid);
+      } catch (e) {
+        const code = (e as { code?: string }).code;
+        if (code === "PARSE" || code === "NO") {
+          throw new ApiError(404, "message_not_found", `no message with uid ${uid}`);
+        }
+        throw e;
+      }
+      const truncated = size > maxBytes;
+      const raw = truncated
+        ? await session.fetchRawPartial(uid, maxBytes)
+        : await session.fetchRaw(uid, maxBytes);
+
+      const empty: CompositionParent = {
+        messageId: null,
+        references: [],
+        subject: null,
+        fromDisplay: null,
+        date: null,
+        text: null,
+        attachmentNames: [],
+      };
+      let parsed: PMEmail;
+      try {
+        parsed = await parseEmail(raw);
+      } catch (e) {
+        if (!truncated) throw e;
+        return empty;
+      }
+
+      const from = mapAddresses(parsed.from)[0] ?? null;
+      const fromDisplay = from
+        ? from.name && from.address
+          ? `${from.name} <${from.address}>`
+          : from.address
+        : null;
+      const attachmentNames = parsed.attachments
+        .filter((att) => isAttachmentPart(att.mimeType ?? "", att.disposition ?? null, att.filename ?? null))
+        .map((att) => att.filename ?? "unnamed attachment");
+      let text: string | null = parsed.text ?? null;
+      if (text === null && parsed.html) text = htmlToText(parsed.html);
+
+      return {
+        messageId: parsed.messageId ?? null,
+        references: splitReferences(parsed.references),
+        subject: parsed.subject ?? null,
+        fromDisplay,
+        date: parsed.date ?? null,
+        text,
+        attachmentNames,
       };
     } finally {
       await session.logout();

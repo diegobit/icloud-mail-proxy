@@ -1,4 +1,5 @@
 import type { OAuthHelpers } from "@cloudflare/workers-oauth-provider";
+import type { SendLedger } from "./send-ledger";
 
 export interface Env {
   ICLOUD_USER: string;
@@ -25,6 +26,22 @@ export interface Env {
   // Public origin to advertise when the request URL is not the origin clients
   // reach (tunnels, proxies). Unset in normal deployments.
   PUBLIC_ORIGIN?: string;
+  // Outgoing mail (plans/email-send.md). Caps are base vars clamped by
+  // send-policy.ts; the From identity is optional; SMTP_HOST/SMTP_PORT are a
+  // test-only loopback override that production ignores. SEND_LEDGER holds
+  // drafts, UTC quota counters and the audit trail.
+  SEND_MAX_PER_DAY: string;
+  SEND_MAX_RCPTS_PER_DAY: string;
+  SEND_MAX_RCPTS_PER_MESSAGE: string;
+  SEND_MAX_BODY_BYTES: string;
+  SEND_DRAFT_TTL_SECONDS: string;
+  SEND_MAX_OPEN_DRAFTS: string;
+  SEND_FROM?: string;
+  SEND_FROM_NAME?: string;
+  SEND_SENT_COPY?: string;
+  SMTP_HOST?: string;
+  SMTP_PORT?: string;
+  SEND_LEDGER: DurableObjectNamespace<SendLedger>;
 }
 
 export interface Address {

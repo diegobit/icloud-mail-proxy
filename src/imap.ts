@@ -5,6 +5,7 @@
 // and never held at module scope.
 
 import { connect } from "cloudflare:sockets";
+import { buildAppend } from "./imap-append";
 import {
   ImapParseError,
   ImapTokenizer,
@@ -318,6 +319,36 @@ export class ImapSession {
     return body;
   }
 
+  /**
+   * APPEND a message literal to a mailbox (plans/email-send.md, step 8). The
+   * one write command this proxy issues: used to save a draft into iCloud's
+   * Drafts mailbox, and optionally to file a sent copy. Flags are restricted
+   * by buildAppend; the literal is the exact serialized message.
+   */
+  async append(mailbox: string, flags: string[], raw: Uint8Array): Promise<void> {
+    let head: string;
+    try {
+      head = buildAppend(mailbox, flags, raw);
+    } catch (e) {
+      throw toImapError(e);
+    }
+    const tag = head.slice(0, head.indexOf(" "));
+    await this.write(head);
+    await this.writeBytes(raw);
+    await this.write("\r\n");
+    for (;;) {
+      const tok = await this.nextToken();
+      if (tok.kind === "line" && tok.text.startsWith(`${tag} `)) {
+        this.checkTagged(tok.text, "APPEND");
+        return;
+      }
+      if (tok.kind === "line" && tok.text.startsWith("* BYE")) {
+        await this.destroy();
+        throw new ImapError("BYE", tok.text);
+      }
+    }
+  }
+
   /** Best-effort LOGOUT then socket close. Never throws. */
   async logout(): Promise<void> {
     try {
@@ -353,6 +384,10 @@ export class ImapSession {
 
   private async write(line: string): Promise<void> {
     await this.writer.write(encoder.encode(line));
+  }
+
+  private async writeBytes(bytes: Uint8Array): Promise<void> {
+    await this.writer.write(bytes);
   }
 
   /**

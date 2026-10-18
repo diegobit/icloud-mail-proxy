@@ -3,6 +3,7 @@
 //   /mcp                 -> MCP handler, behind an OAuth access token or the static bearer
 //   /authorize           -> sign-in and consent pages (defaultFetch -> oauth-authorize)
 //   /authorize/consent
+//   /send/approve        -> owner approval page for outgoing drafts (only path that sends)
 //   /oauth/token         -> implemented by the provider (token issuance,
 //                           revocation), rate-limited here first
 //   /oauth/register      -> dynamic client registration, rate-limited here first
@@ -15,7 +16,12 @@ import { epochMatches, grantEpoch, hasPkcePolicy, isAuthorized, json, tokenMatch
 import { createMailMcpHandler } from "./mcp";
 import { handleAuthorize } from "./oauth-authorize";
 import { handleRest } from "./rest";
+import { handleApprove } from "./send-approve";
 import type { Env } from "./types";
+
+// The Durable Object class must be exported from the entry module so the
+// `SEND_LEDGER` binding can resolve it (wrangler.base.jsonc).
+export { SendLedger } from "./send-ledger";
 
 /** Props the provider puts on ctx for both grant tokens and the static bearer. */
 interface GrantProps {
@@ -54,7 +60,12 @@ const mcpApiHandler = {
           `error="invalid_token", scope="mail:read"`,
       });
     }
-    return createMailMcpHandler(env)(request, env, ctx);
+    // Drafts are bound to the calling client: an OAuth grant's clientId, or
+    // the shared static bearer. Another client cannot see or act on them.
+    const auth = (ctx as { auth?: { clientId?: unknown } }).auth;
+    const principal =
+      typeof auth?.clientId === "string" && auth.clientId !== "" ? `oauth:${auth.clientId}` : "bearer";
+    return createMailMcpHandler(env, principal)(request, env, ctx);
   },
 };
 
@@ -116,6 +127,9 @@ const defaultFetch = {
     const url = new URL(request.url);
     if (url.pathname === "/authorize" || url.pathname === "/authorize/consent") {
       return handleAuthorize(request, env);
+    }
+    if (url.pathname === "/send/approve") {
+      return handleApprove(request, env);
     }
     if (url.pathname.startsWith("/.well-known/")) {
       return json({ error: { code: "not_found", message: "not found" } }, 404);
