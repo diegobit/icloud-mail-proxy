@@ -115,20 +115,42 @@ export const SEND_COOKIE_MAX_AGE_SECONDS = 900;
 
 const SEND_COOKIE_MESSAGE = "send-approval-v1";
 
+/** What the approval page accepts, and can mint sessions with. */
+export interface ApprovalEnv {
+  API_TOKEN: string;
+  SEND_APPROVAL_TOKEN?: string;
+}
+
+/**
+ * The credential the approval page asks for: `SEND_APPROVAL_TOKEN` when the
+ * owner set one, else `API_TOKEN`. A deployment where agents hold `API_TOKEN`
+ * (they all do — it is the MCP bearer) should set the dedicated secret, or a
+ * shell-capable agent could approve its own drafts and the human gate would
+ * be decorative.
+ */
+export function approvalSecret(env: ApprovalEnv): string {
+  return (env.SEND_APPROVAL_TOKEN ?? "").trim() || env.API_TOKEN;
+}
+
 /**
  * The cookie value for a sign-in that expires at `expiry` (epoch ms):
- * `<expiry>.<HMAC(API_TOKEN, "send-approval-v1|<expiry>")>`. Keyed on the API
- * token, so rotating it invalidates every live approval session.
+ * `<expiry>.<HMAC(secret, "send-approval-v1|<API_TOKEN>|<expiry>")>`. The
+ * message carries the API token too, so rotating either credential
+ * invalidates every live approval session.
  */
-export async function sendCookieValue(apiToken: string, expiry: number): Promise<string> {
+export async function sendCookieValue(secret: string, apiToken: string, expiry: number): Promise<string> {
   const key = await crypto.subtle.importKey(
     "raw",
-    encoder.encode(apiToken),
+    encoder.encode(secret),
     { name: "HMAC", hash: "SHA-256" },
     false,
     ["sign"],
   );
-  const signature = await crypto.subtle.sign("HMAC", key, encoder.encode(`${SEND_COOKIE_MESSAGE}|${expiry}`));
+  const signature = await crypto.subtle.sign(
+    "HMAC",
+    key,
+    encoder.encode(`${SEND_COOKIE_MESSAGE}|${apiToken}|${expiry}`),
+  );
   return `${expiry}.${base64Url(new Uint8Array(signature))}`;
 }
 
@@ -147,20 +169,20 @@ export function sendCookieFrom(header: string | null): string | null {
  * signature is compared in constant time against a fresh HMAC, so a tampered
  * or expired value fails without revealing which part was wrong.
  */
-export async function hasSendSession(request: Request, apiToken: string, now = Date.now()): Promise<boolean> {
+export async function hasSendSession(request: Request, env: ApprovalEnv, now = Date.now()): Promise<boolean> {
   const value = sendCookieFrom(request.headers.get("Cookie"));
   if (!value) return false;
   const dot = value.indexOf(".");
   if (dot <= 0) return false;
   const expiry = Number(value.slice(0, dot));
   if (!Number.isSafeInteger(expiry) || now >= expiry) return false;
-  const expected = await sendCookieValue(apiToken, expiry);
+  const expected = await sendCookieValue(approvalSecret(env), env.API_TOKEN, expiry);
   return tokenMatches(value, expected);
 }
 
 /** The Set-Cookie header value for a fresh approval session. */
-export async function sendSessionCookie(apiToken: string, now = Date.now()): Promise<string> {
+export async function sendSessionCookie(env: ApprovalEnv, now = Date.now()): Promise<string> {
   const expiry = now + SEND_COOKIE_MAX_AGE_SECONDS * 1000;
-  const value = await sendCookieValue(apiToken, expiry);
+  const value = await sendCookieValue(approvalSecret(env), env.API_TOKEN, expiry);
   return `${SEND_COOKIE_NAME}=${value}; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=${SEND_COOKIE_MAX_AGE_SECONDS}`;
 }

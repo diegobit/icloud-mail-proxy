@@ -389,8 +389,10 @@ export class SendLedger extends DurableObject<Env> {
 
   async alarm(): Promise<void> {
     this.core.sweep(Date.now());
-    const next = this.store.minExpiresAt();
-    if (next !== null) this.ctx.storage.setAlarm(next + 60_000);
+    // Re-arm even when no drafts remain: the 90-day audit prune must still
+    // run on an idle deployment, so fall back to a daily maintenance sweep.
+    const next = this.store.minExpiresAt() ?? Date.now() + 86_400_000;
+    this.ctx.storage.setAlarm(next + 60_000);
   }
 
   private async appendToMailbox(mailbox: string, flags: string[], raw: Uint8Array): Promise<void> {

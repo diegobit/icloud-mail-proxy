@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import PostalMime from "postal-mime";
 import {
   buildMessage,
   buildReferences,
@@ -101,6 +102,14 @@ function decodeBase64Utf8(base64: string): string {
   return new TextDecoder().decode(bytes);
 }
 
+/** Decode a header made of RFC 2047 B-encoded words (test-only reverse). */
+function decodeEncodedWords(value: string): string {
+  return value
+    .split("\r\n ")
+    .map((word) => decodeBase64Utf8(word.slice("=?UTF-8?B?".length, -2)))
+    .join("");
+}
+
 describe("encodeWords", () => {
   it("encodes each word as short base64 and never splits a code point", () => {
     const value = "caffè 🚀 pranzo 😀😀😀 e Unicode: àèìòù ".repeat(3);
@@ -125,6 +134,14 @@ describe("encodeWords", () => {
 describe("encodeSubject", () => {
   it("keeps short ASCII subjects readable", () => {
     expect(encodeSubject("Pranzo domani")).toBe("Pranzo domani");
+  });
+
+  it("encodes a subject that would otherwise be decoded as an encoded-word", () => {
+    const literal = "=?UTF-8?B?UGF5bWVudCBhcHByb3ZlZA==?=";
+    const encoded = encodeSubject(literal);
+    expect(encoded).toContain("=?UTF-8?B?");
+    expect(encoded).not.toBe(literal);
+    expect(decodeEncodedWords(encoded)).toBe(literal);
   });
 
   it("encodes non-ASCII, long or tabbed subjects", () => {
@@ -319,8 +336,55 @@ describe("buildMessage", () => {
   });
 });
 
-describe("forwardQuote", () => {
-  it("builds the quoted block and collapses hostile header values", () => {
+describe("delivery round-trip (PostalMime)", () => {
+  const base = {
+    from: { name: "Diego", address: "diego@example.com" },
+    to: [{ name: "Marco", address: "marco@example.org" }],
+    cc: [],
+    bcc: [],
+    subject: "Pranzo",
+    text: "Ciao",
+    date: new Date("2026-10-18T14:03:00Z"),
+    messageId: "<11111111-2222-3333-4444-555555555555@example.com>",
+    maxBodyBytes: 65_536,
+  };
+
+  it("decodes to what the approval page showed, encoded-word subjects included", async () => {
+    const literalSubject = "=?UTF-8?B?UGF5bWVudCBhcHByb3ZlZA==?=";
+    const built = buildMessage({ ...base, subject: literalSubject });
+    const parsed = await new PostalMime().parse(built.raw);
+    expect(parsed.subject).toBe(literalSubject);
+    expect(parsed.text?.trim()).toBe("Ciao");
+
+    const unicode = buildMessage({ ...base, subject: "Caffè ☕", text: "venerdì" });
+    const reparsed = await new PostalMime().parse(unicode.raw);
+    expect(reparsed.subject).toBe("Caffè ☕");
+    expect(reparsed.text?.trim()).toBe("venerdì");
+  });
+
+  it("folds long recipient lists and reference chains without over-long lines", () => {
+    const to = Array.from({ length: 5 }, (_, index) => ({
+      name: "N".repeat(60) + index,
+      address: `user${index}@example.com`,
+    }));
+    const references = Array.from({ length: 9 }, (_, index) => `<${"a".repeat(90)}${index}@example.com>`);
+    const built = buildMessage({
+      ...base,
+      to,
+      cc: to,
+      references,
+      inReplyTo: `<${"a".repeat(90)}9@example.com>`,
+    });
+    const text = new TextDecoder().decode(built.raw);
+    for (const line of text.split("\r\n")) {
+      expect(line.length).toBeLessThanOrEqual(998);
+    }
+    expect(text).toContain("\r\n ");
+    expect(built.recipients).toHaveLength(5);
+  });
+});
+
+describe("forwardQuote", () => {  it("builds the quoted block and collapses hostile header values", () => {
     const quote = forwardQuote(
       { from: "Marco <marco@example.org>", date: "Sun, 18 Oct 2026 12:00:00 +0000", subject: "Q3\r\nBcc: evil@x.co" },
       "corpo originale",

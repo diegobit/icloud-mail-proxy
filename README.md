@@ -437,10 +437,10 @@ Any authenticated client can *draft*. Only the owner can *send*:
    stores the exact bytes in the `SendLedger` Durable Object. Nothing touches
    SMTP; the draft expires after `SEND_DRAFT_TTL_SECONDS` (default one hour).
 2. The agent shows the returned approval URL.
-3. The owner opens it, signs in with `API_TOKEN` (a 15-minute `__Host-send`
-   session cookie), reads the message exactly as it will be sent, and presses
-   **Send now** — or **Save in Drafts** to finish it from any mail app, or
-   **Delete**.
+3. The owner opens it, signs in with the approval token (a 15-minute
+   `__Host-send` session cookie), reads the message exactly as it will be
+   sent, and presses **Send now** — or **Save in Drafts** to finish it from
+   any mail app, or **Delete**.
 4. Only that click starts the SMTP submission. The draft flips to `sending`
    before the first byte leaves, so a double click can never send twice.
 
@@ -450,9 +450,28 @@ Configuration: caps live in `wrangler.base.jsonc` — `SEND_MAX_PER_DAY`
 `SEND_DRAFT_TTL_SECONDS` (3600) and `SEND_MAX_OPEN_DRAFTS` (20) — and are
 clamped to hard maxima in `src/send-policy.ts`. Optional secrets: `SEND_FROM`
 (default `ICLOUD_USER`; must be an address the account owns),
-`SEND_FROM_NAME`, and `SEND_SENT_COPY=1` to append a `\Seen` copy of each sent
+`SEND_FROM_NAME`, `SEND_SENT_COPY=1` to append a `\Seen` copy of each sent
 message to `Sent Messages` (off by default; iCloud may already file SMTP
-submissions, in which case leave it off to avoid a duplicate).
+submissions, in which case leave it off to avoid a duplicate), and
+`SEND_APPROVAL_TOKEN`, the credential the approval page asks for instead of
+`API_TOKEN`.
+
+**Set `SEND_APPROVAL_TOKEN`** whenever the agents holding `API_TOKEN` run
+with shell access (Claude Code, opencode, Codex CLI). Without it, the
+approval page accepts `API_TOKEN`, so an agent that can make arbitrary HTTPS
+requests could approve its own drafts and the human step would be
+decorative. With it, only whoever knows the approval token — the owner — can
+press Send. Mint one with `openssl rand -base64 32` and store it in your
+password manager as well as the Worker:
+
+```
+openssl rand -base64 32 | tee /dev/stderr | npx wrangler secret put SEND_APPROVAL_TOKEN --name <worker>
+```
+
+The honest boundary: this gate defeats model-driven and prompt-injected
+sends. A compromised machine or Cloudflare account can deploy code that
+bypasses any in-Worker check, and the app password itself can send mail from
+anywhere.
 
 Outgoing messages are plain text only: no attachments, no HTML, ASCII-only
 addresses. A forward quotes the original text and names the attachments it
@@ -475,14 +494,16 @@ the recipient or `Sent Messages` first. Sends are logged as metadata only
   and `LOGOUT`. No command can mark a message as read or delete anything.
 - **Sending is decided by a human, not by the model.** An agent can create
   drafts; the only code path that reaches SMTP runs behind the approval page,
-  which shows the exact stored message and requires the `API_TOKEN` sign-in
-  plus a one-time nonce. No client setting can bypass it, and an email that
-  instructs the agent to send something can at most cause a draft to exist.
-  The trade-off is deliberate: this project no longer pretends that SMTP code
-  is absent, so a compromised Worker — or the app password itself, which
-  Apple issues for full-account access, SMTP included — could send mail. The
-  approval gate defeats model mistakes and prompt injection, not a
-  compromised deployment.
+  which shows the exact stored message and requires the approval credential —
+  a one-time nonce, a `__Host-send` session cookie, and either a dedicated
+  `SEND_APPROVAL_TOKEN` or, if none is set, `API_TOKEN`. Because agents hold
+  `API_TOKEN`, setting the dedicated secret is what keeps a shell-capable
+  agent from approving its own drafts; the honest boundary is that a
+  compromised machine or Cloudflare account can bypass any in-Worker check.
+  Inside those limits, an email that instructs the agent to send something
+  can at most cause a draft to exist. The project no longer pretends that
+  SMTP code is absent, so the app password itself — which Apple issues for
+  full-account access, SMTP included — could still send mail.
 - **The Apple app-specific password is not read-only.** Nothing about the
   password itself restricts it to reading mail: it is an account credential.
   Use a password created specifically for this proxy (e.g. named

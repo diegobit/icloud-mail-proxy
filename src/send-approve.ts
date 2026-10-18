@@ -9,7 +9,7 @@
 // Every response is HTML with the same CSP as the OAuth pages; the outer
 // dispatch adds `private, no-store`.
 
-import { hasSendSession, sendSessionCookie, tokenMatches } from "./auth";
+import { approvalSecret, hasSendSession, sendSessionCookie, tokenMatches } from "./auth";
 import { approveDraftPage, approveLoginPage, approveResultPage } from "./approve-page";
 import { errorPage, htmlHeaders } from "./oauth-pages";
 import { approveDraft, discardDraftFromPage, draftForApproval, saveDraftFromPage } from "./send";
@@ -37,7 +37,7 @@ async function handleGet(request: Request, env: Env): Promise<Response> {
   if (!DRAFT_ID_RE.test(draftId)) {
     return htmlResponse(errorPage("Missing or invalid draft id.", 404), 404);
   }
-  if (!(await hasSendSession(request, env.API_TOKEN))) {
+  if (!(await hasSendSession(request, env))) {
     return htmlResponse(approveLoginPage({ draftId }), 200);
   }
   const draft = await draftForApproval(env, draftId);
@@ -50,13 +50,13 @@ async function handleGet(request: Request, env: Env): Promise<Response> {
 async function handleLogin(form: FormData, env: Env): Promise<Response> {
   const draftId = formValue(form, "d");
   const token = formValue(form, "token");
-  if (!(await tokenMatches(token, env.API_TOKEN))) {
+  if (!(await tokenMatches(token, approvalSecret(env)))) {
     return htmlResponse(
       approveLoginPage({ draftId, error: "That token does not match this deployment." }),
       401,
     );
   }
-  const cookie = await sendSessionCookie(env.API_TOKEN);
+  const cookie = await sendSessionCookie(env);
   return new Response(null, {
     status: 303,
     headers: {
@@ -169,7 +169,7 @@ async function handlePost(request: Request, env: Env): Promise<Response> {
   if (!DRAFT_ID_RE.test(draftId)) {
     return htmlResponse(errorPage("Missing or invalid draft id.", 404), 404);
   }
-  if (!(await hasSendSession(request, env.API_TOKEN))) {
+  if (!(await hasSendSession(request, env))) {
     return htmlResponse(approveLoginPage({ draftId, error: "Sign in to continue." }), 401);
   }
   const nonce = formValue(form, "nonce");

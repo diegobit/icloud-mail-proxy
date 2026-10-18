@@ -14,6 +14,10 @@ API_TOKEN=change-me
 # SEND_FROM_NAME=Your Name
 # Optional: append a copy of every sent message to "Sent Messages".
 # SEND_SENT_COPY=0
+# Optional but recommended: a credential for the approval page that agents do
+# not hold. Without it the page accepts API_TOKEN, so an agent with shell
+# access could approve its own drafts.
+# SEND_APPROVAL_TOKEN=change-me
 # Test-only: a loopback SMTP server for integration tests. Any other host is
 # ignored (production always uses smtp.mail.me.com:587 with STARTTLS).
 # SMTP_HOST=127.0.0.1

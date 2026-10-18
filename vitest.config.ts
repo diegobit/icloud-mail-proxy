@@ -1,6 +1,17 @@
 import { defineConfig } from "vitest/config";
 
 export default defineConfig({
+  resolve: {
+    alias: [
+      // Workers-only runtime module. Unit tests inject their own socket
+      // factories, so a stub is enough to make the importing modules load
+      // under Node; it throws if anything actually calls connect().
+      {
+        find: /^cloudflare:sockets$/,
+        replacement: new URL("./test/support/sockets-stub.ts", import.meta.url).pathname,
+      },
+    ],
+  },
   test: {
     // Installs crypto.subtle.timingSafeEqual under Node (Workers has it).
     setupFiles: ["test/support/workers-crypto.ts"],

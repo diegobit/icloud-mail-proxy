@@ -180,8 +180,12 @@ describe("approval send flow", () => {
     core.finishSend("d1", { status: "ready", code: "smtp_unavailable", durationMs: 1 }, NOW);
     expect(store.getUsage(usageDay(NOW))).toEqual({ messages: 0, recipients: 0 });
     expect(store.getDraft("d1")?.status).toBe("ready");
-    // Retry succeeds, then fails permanently: quota released again.
-    expect(core.beginSend("d1", "nonce-d1", NOW + 1, CAPS).ok).toBe(true);
+    // The failure rotated the nonce: the stale form cannot retry, the fresh
+    // one can.
+    const rotated = store.getDraft("d1")!.nonce;
+    expect(rotated).not.toBe("nonce-d1");
+    expect(core.beginSend("d1", "nonce-d1", NOW + 1, CAPS)).toMatchObject({ ok: false, code: "invalid_nonce" });
+    expect(core.beginSend("d1", rotated, NOW + 1, CAPS).ok).toBe(true);
     core.finishSend("d1", { status: "failed", code: "smtp_recipient_rejected", durationMs: 1 }, NOW + 2);
     expect(store.getDraft("d1")?.status).toBe("failed");
     expect(store.getUsage(usageDay(NOW))).toEqual({ messages: 0, recipients: 0 });
@@ -267,14 +271,17 @@ describe("save flow", () => {
     expect(core.beginSave("d1", { principal: "bearer" }, NOW + 2)).toMatchObject({ ok: false, code: "already_saved" });
   });
 
-  it("reverts to ready when the append fails and refuses other principals", () => {
+  it("reverts to ready with a fresh nonce when the append fails and refuses other principals", () => {
     const { store, core } = setup();
     core.createDraft(newDraft("d1"), CAPS);
     expect(core.beginSave("d1", { principal: "oauth:other" }, NOW)).toMatchObject({ ok: false, code: "draft_not_found" });
     expect(core.beginSave("d1", { principal: "bearer" }, NOW).ok).toBe(true);
     core.finishSave("d1", false, NOW + 1);
     expect(store.getDraft("d1")?.status).toBe("ready");
-    expect(core.beginSend("d1", "nonce-d1", NOW + 2, CAPS).ok).toBe(true);
+    const rotated = store.getDraft("d1")!.nonce;
+    expect(rotated).not.toBe("nonce-d1");
+    expect(core.beginSend("d1", "nonce-d1", NOW + 2, CAPS)).toMatchObject({ ok: false, code: "invalid_nonce" });
+    expect(core.beginSend("d1", rotated, NOW + 2, CAPS).ok).toBe(true);
   });
 });
 

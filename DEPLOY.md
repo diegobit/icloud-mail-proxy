@@ -59,7 +59,11 @@ The send path adds one binding and a set of caps:
   base vars, clamped to hard maxima in `src/send-policy.ts`; `SEND_MAX_PER_DAY=0`
   is the kill switch. Details in README's "Sending mail".
 - Optional secrets: `SEND_FROM` (an address the account owns),
-  `SEND_FROM_NAME`, `SEND_SENT_COPY=1` (append a copy to `Sent Messages`).
+  `SEND_FROM_NAME`, `SEND_SENT_COPY=1` (append a copy to `Sent Messages`),
+  and `SEND_APPROVAL_TOKEN` — the credential the approval page asks for.
+  **Set it** wherever agents hold `API_TOKEN` with shell access: without it
+  the page accepts `API_TOKEN` itself, and an agent could approve its own
+  drafts. Mint one with `openssl rand -base64 32`.
 - **Test-only:** `SMTP_HOST`/`SMTP_PORT` are honoured only for the literal
   `127.0.0.1` or `localhost`, and only then is TLS skipped. Any other value is
   ignored in favour of `smtp.mail.me.com:587` with mandatory STARTTLS, so a
@@ -160,9 +164,10 @@ generate a new token, because that would break every existing client.
   across the rotation is refused at approval time, so it cannot mint a fresh
   grant from the old token. That is also the supported way to revoke a
   connector's access without touching the others beyond one reconnect.
-  Approval sessions stop too: the `__Host-send` cookie is an HMAC of
-  `API_TOKEN`, so a rotation invalidates every live one. Drafts themselves
-  survive in the ledger until they expire.
+  Approval sessions stop too: the `__Host-send` cookie is an HMAC of the
+  approval secret (`SEND_APPROVAL_TOKEN` when set, else `API_TOKEN`) over a
+  message that includes `API_TOKEN`, so rotating either invalidates every
+  live one. Drafts themselves survive in the ledger until they expire.
 - **Upgrade across the PKCE requirement:** grants minted by a build that did
   not require PKCE carry no marker, so their authorization code and refresh
   token are refused with `invalid_grant` (the grant is revoked) and the

@@ -413,6 +413,51 @@ describe("draft expiry", () => {
   }, 60_000);
 });
 
+describe("dedicated approval token", () => {
+  let dir;
+  let current;
+  let smtp;
+
+  beforeAll(async () => {
+    smtp = await startFakeSmtp();
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), "icloud-send-owner-"));
+    current = await startWorker(TOKEN_A, path.join(dir, "state"), await freePort(), {
+      SMTP_HOST: { type: "plain_text", value: "127.0.0.1" },
+      SMTP_PORT: { type: "plain_text", value: String(smtp.port) },
+      SEND_APPROVAL_TOKEN: { type: "plain_text", value: "owner-approval-token-1234567890" },
+    });
+  }, 180_000);
+
+  afterAll(async () => {
+    await current?.worker.dispose();
+    await smtp?.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }, 120_000);
+
+  it("refuses the agent's API_TOKEN and accepts only the owner's approval token", async () => {
+    const draft = await createDraft(current.base, TOKEN_A, {
+      to: ["marco@example.org"],
+      subject: "Separato",
+      text: "ciao",
+    });
+
+    // The agent credential (which the model can hold) cannot sign in.
+    const agentLogin = await signIn(current.base, draft.draftId, TOKEN_A);
+    expect(agentLogin.status).toBe(401);
+    expect(agentLogin.headers.get("set-cookie")).toBeNull();
+    const anonymous = await openDraft(current.base, draft.draftId);
+    expect(anonymous.html).toContain("Approve a draft");
+    expect(anonymous.html).not.toContain("ciao");
+
+    // The owner's separate token can, and the send goes through.
+    const owner = await signInAndOpen(current.base, draft.draftId, "owner-approval-token-1234567890");
+    expect(owner.login.status).toBe(303);
+    const sent = await sendDraft(current.base, draft.draftId, owner.nonce, owner.cookie);
+    expect(await sent.text()).toContain("Message sent");
+    expect(smtp.state.connections).toBe(1);
+  }, 120_000);
+});
+
 describe("rotation revokes approval sessions", () => {
   let dir;
   let current;

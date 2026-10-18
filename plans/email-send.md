@@ -1,9 +1,10 @@
 # Sending mail (draft-first, owner-approved)
 
-Status: implemented on branch `email-send` (steps 1–9 committed with tests
-green); step 10 (live acceptance) is owner-run and still pending. Design
-input: a Claude Opus 5.5 brief (2026-10-18), adapted to the owner's decisions
-recorded below. This file supersedes `plans/outbound-send-proxy.md`.
+Status: implemented on branch `email-send` (steps 1–9 committed, review round
+1 applied, tests green); step 10 (live acceptance) is owner-run and still
+pending. Design input: a Claude Opus 5.5 brief (2026-10-18), adapted to the
+owner's decisions recorded below. This file supersedes
+`plans/outbound-send-proxy.md`.
 
 ## Decisions (owner, 2026-10-18)
 
@@ -157,12 +158,13 @@ save_draft_to_icloud { draftId } → { saved: true, mailbox: "Drafts" }   // ste
 - Same HTML/CSP/no-store conventions as `src/oauth-pages.ts`
   (`escapeHtml`, `htmlHeaders`, no inline scripts beyond none at all, form
   POST only).
-- Sign-in: the token-entry form posts `API_TOKEN` (timing-safe compare via
-  `tokenMatches`); success sets `__Host-send` =
-  `<expiry>.<HMAC(API_TOKEN, "send-approval-v1|<expiry>")>`, `HttpOnly`,
-  `Secure`, `SameSite=Strict`, `Path=/`, 15 minutes, so approving several
-  drafts is one sign-in per session. Rotating `API_TOKEN` invalidates every
-  live approval session.
+- Sign-in: the token-entry form posts the approval credential — a timing-safe
+  compare via `tokenMatches` — which is `SEND_APPROVAL_TOKEN` when that secret
+  is set and `API_TOKEN` otherwise (review round 1, finding 1: agents hold
+  `API_TOKEN`, so the dedicated secret is what makes the human gate real for
+  shell-capable agents). Success sets `__Host-send` = a 15-minute HMAC over
+  the API token and the expiry, keyed on the approval secret, so rotating
+  either credential invalidates every session.
 - The READ page shows: status, expiry, From/To/Cc/Bcc as text, Subject, the
   body verbatim (escaped), and the buttons **Invia**, **Salva in Bozze**
   (step 8), **Elimina**. No HTML rendering of the body, no remote resources.
@@ -275,7 +277,9 @@ raise them past sane limits):
 | `SEND_MAX_OPEN_DRAFTS` | 20 | 100 |
 
 Optional secrets: `SEND_FROM` (default `ICLOUD_USER`; must be an address the
-account owns — alias behaviour checked live), `SEND_FROM_NAME`.
+account owns — alias behaviour checked live), `SEND_FROM_NAME`,
+`SEND_APPROVAL_TOKEN` (the owner-only credential the approval page asks for;
+see the approve-page design) and `SEND_SENT_COPY`.
 
 Enforcement order, each failing before the next runs; nothing touches SMTP
 until the last line:
@@ -535,7 +539,7 @@ L: about 5 developer days plus half a day of live acceptance.
 ### Delivered
 
 Steps 1–9 are committed on branch `email-send` (base `main` @ `b13c34b`);
-`npm test` (24 files, 349 tests), `npm run typecheck`, `npm run check:bundle`
+`npm test` (24 files, 362 tests), `npm run typecheck`, `npm run check:bundle`
 and `npm run deploy:production -- --dry-run` are green.
 
 | Step | What landed |
@@ -574,6 +578,22 @@ and `npm run deploy:production -- --dry-run` are green.
   `oauth:<clientId>` or `bearer`.
 - Loopback TCP and `startTls()` were validated locally by the design brief;
   the integration suite now drives the same client against the fake server.
+
+### Review round 1 (codex, gpt-6.1-sol, medium)
+
+Nine findings, two of them High; all are addressed and covered by tests.
+
+| # | Severity | Finding | Fix |
+| --- | --- | --- | --- |
+| 1 | High | A bearer-holding agent could approve its own draft: the page accepted the same `API_TOKEN` the agent holds, so the human gate was decorative for shell-capable agents. | New optional `SEND_APPROVAL_TOKEN`: when set, the page verifies it instead of `API_TOKEN` and the session HMAC covers both, so rotating either kills sessions. The `dedicated approval token` integration test proves `API_TOKEN` is refused. README/DEPLOY tell the owner to set it (and state the residual boundary: a compromised machine or Cloudflare account bypasses any in-Worker check). |
+| 2 | High | Production STARTTLS always failed: `connect()` used `secureTransport: "off"`, and Cloudflare only allows `startTls()` on a socket created with `"starttls"`. | `socketOptionsFor()` picks `"starttls"` for iCloud and `"off"` only for the loopback fake; `src/smtp-socket.ts` uses it and a unit test pins the mapping. |
+| 3 | Medium | `APPEND` was sent without a command tag, and the literal was written without waiting for the `+` continuation. | The session allocates a real tag, reads `CAPABILITY`, waits for `+` unless the server advertises `LITERAL+`, then writes the literal; session-level tests drive all three paths over an in-memory duplex (`ImapSession.open` gained a test-only socket factory, and vitest aliases `cloudflare:sockets`). |
+| 4 | Medium | A malformed reply after the final dot was classified `smtp_protocol`, which the ledger retries — a possible duplicate. | `data-final` protocol errors become `send_status_unknown` (quota kept, never retried), with a regression test. |
+| 5 | Medium | The approval nonce survived a retryable failure, so a stale form could retry without a new review. | `finishSend` (on `ready`) and `finishSave` (on failure) rotate the nonce; the ledger tests assert the stale nonce is rejected. |
+| 6 | Medium | An ASCII subject that looked like an encoded-word was passed through and decoded by the receiving client, so delivery differed from the preview. | `encodeSubject` encodes any subject containing `=?`; a PostalMime round-trip test asserts preview equals delivery. |
+| 7 | Medium | Writes had no timeout: backpressure could hang an approval indefinitely. | Every write is wrapped in the same per-step deadline, and a `data-final` write timeout is classified unknown; a stuck-socket test covers it. |
+| 8 | Low | Ten long valid message ids overflowed the `References` line instead of folding. | `foldHeaderValue` folds To/Cc and References at their separators; a long-chain test asserts the result. |
+| 9 | Low | Once no drafts remained no alarm was scheduled, so the 90-day audit prune never ran on an idle deployment. | `alarm()` always re-arms, falling back to a daily maintenance sweep. |
 
 ### Live acceptance (step 10, owner-run)
 

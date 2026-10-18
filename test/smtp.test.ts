@@ -4,6 +4,7 @@ import {
   resolveSmtpTarget,
   sendMail,
   SmtpError,
+  socketOptionsFor,
   type SmtpSocket,
   type SmtpSocketFactory,
   type SmtpTarget,
@@ -228,6 +229,22 @@ describe("resolveSmtpTarget", () => {
   });
 });
 
+describe("socketOptionsFor", () => {
+  it("requires the starttls socket mode Cloudflare needs for startTls()", () => {
+    // Cloudflare only allows startTls() on a socket created with
+    // secureTransport: "starttls"; "off" would make every production send
+    // throw before AUTH.
+    expect(socketOptionsFor({ host: "smtp.mail.me.com", port: 587, mode: "starttls" })).toEqual({
+      secureTransport: "starttls",
+      allowHalfOpen: false,
+    });
+    expect(socketOptionsFor({ host: "127.0.0.1", port: 2525, mode: "plaintext" })).toEqual({
+      secureTransport: "off",
+      allowHalfOpen: false,
+    });
+  });
+});
+
 describe("sendMail (plaintext loopback)", () => {
   it("submits the message with AUTH PLAIN, SIZE, every recipient and QUIT", async () => {
     const fake = startFake();
@@ -298,6 +315,44 @@ describe("sendMail (plaintext loopback)", () => {
     const fake = startFake({ dropAfterData: true });
     const failure = await codeOf(sendMail(mail({ connectSocket: fake.factory })));
     expect(failure.code).toBe("send_status_unknown");
+  });
+
+  it("treats an unreadable reply after the final dot as unknown, never a retry", async () => {
+    const fake = startFake({ finalReply: "this is not an SMTP reply" });
+    const failure = await codeOf(sendMail(mail({ connectSocket: fake.factory })));
+    expect(failure.code).toBe("send_status_unknown");
+  });
+
+  it("times out a write that never completes instead of hanging the approval", async () => {
+    const c2s = new TransformStream<Uint8Array, Uint8Array>();
+    const s2c = new TransformStream<Uint8Array, Uint8Array>();
+    const writer = s2c.writable.getWriter();
+    const reader = c2s.readable.getReader();
+    // Greet, then consume everything while the client's writes hang. The
+    // write is not awaited: a TransformStream's write resolves only once a
+    // reader attaches.
+    void writer.write(ENC.encode("220 fake ESMTP\r\n"));
+    const drain = (async () => {
+      for (;;) {
+        const { done } = await reader.read();
+        if (done) return;
+      }
+    })().catch(() => {});
+    const stuck: SmtpSocket = {
+      readable: s2c.readable,
+      writable: new WritableStream<Uint8Array>({
+        write: () => new Promise(() => {
+          /* never resolves */
+        }),
+      }),
+      startTls: () => stuck,
+      close: async () => {},
+    };
+    const failure = await codeOf(
+      sendMail(mail({ connectSocket: () => stuck, timeoutMs: 50, dataTimeoutMs: 50 })),
+    );
+    expect(failure.code).toBe("smtp_unavailable");
+    void drain;
   });
 
   it("rejects the message when the connection drops before DATA is accepted", async () => {

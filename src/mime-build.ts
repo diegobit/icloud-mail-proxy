@@ -175,8 +175,35 @@ export function encodeSubject(subject: string): string {
   if (subject.length > SUBJECT_MAX) {
     throw new MimeBuildError("invalid_value", `subject is longer than ${SUBJECT_MAX} characters`);
   }
-  if (isPrintableAscii(subject) && subject.length <= 70 && !subject.includes("  ")) return subject;
+  // `=?` would make a receiving client decode the literal text as an
+  // encoded-word, so a subject that looks like one is encoded itself: the
+  // owner then sees the same characters on the approval page and on delivery.
+  if (isPrintableAscii(subject) && subject.length <= 70 && !subject.includes("  ") && !subject.includes("=?")) {
+    return subject;
+  }
   return encodeWords(subject);
+}
+
+/**
+ * Join atoms into one header value, folding at the separators so no physical
+ * line runs past 78 columns where the atoms allow it. `glue` is `", "` for
+ * address lists and `" "` for message-id chains; a fold keeps whatever
+ * separator belongs at the end of the line (a comma stays put).
+ */
+function foldHeaderValue(prefix: string, atoms: string[], glue: string): string {
+  let out = "";
+  let lineLength = prefix.length;
+  for (const atom of atoms) {
+    const pending = out === "" ? "" : glue;
+    if (out !== "" && lineLength + pending.length + atom.length > 78) {
+      out += `${glue.trimEnd()}\r\n `;
+      lineLength = 1 + atom.length;
+    } else {
+      out += pending + atom;
+      lineLength += pending.length + atom.length;
+    }
+  }
+  return out;
 }
 
 /**
@@ -379,16 +406,20 @@ export function buildMessage(input: DraftMessageInput): BuiltMessage {
 
   const headers: string[] = [
     `From: ${formatMailbox(input.from)}`,
-    `To: ${input.to.map(formatMailbox).join(", ")}`,
+    `To: ${foldHeaderValue("To: ", input.to.map(formatMailbox), ", ")}`,
   ];
-  if (input.cc.length > 0) headers.push(`Cc: ${input.cc.map(formatMailbox).join(", ")}`);
+  if (input.cc.length > 0) {
+    headers.push(`Cc: ${foldHeaderValue("Cc: ", input.cc.map(formatMailbox), ", ")}`);
+  }
   // Never a Bcc header: Bcc recipients exist only in the SMTP envelope.
   headers.push(`Subject: ${encodeSubject(input.subject)}`);
   headers.push(`Date: ${rfc5322Date(input.date)}`);
   headers.push(`Message-ID: ${input.messageId}`);
   if (isMessageId(input.inReplyTo)) headers.push(`In-Reply-To: ${input.inReplyTo}`);
   const references = buildReferences(input.references ?? [], input.inReplyTo ?? null);
-  if (references.length > 0) headers.push(`References: ${references.join(" ")}`);
+  if (references.length > 0) {
+    headers.push(`References: ${foldHeaderValue("References: ", references, " ")}`);
+  }
   headers.push("MIME-Version: 1.0");
   headers.push("Content-Type: text/plain; charset=utf-8");
   headers.push("Content-Transfer-Encoding: quoted-printable");

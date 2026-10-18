@@ -4,6 +4,7 @@
 
 import { connect } from "cloudflare:sockets";
 import type { SmtpSocket, SmtpSocketFactory } from "./smtp";
+import { socketOptionsFor } from "./smtp";
 
 /**
  * Plain `connect` with TLS left off at the socket level: the SMTP client
@@ -14,5 +15,5 @@ import type { SmtpSocket, SmtpSocketFactory } from "./smtp";
 export const cloudflareSocketFactory: SmtpSocketFactory = (target) =>
   connect(
     { hostname: target.host, port: target.port },
-    { secureTransport: "off", allowHalfOpen: false },
+    socketOptionsFor(target),
   ) as unknown as SmtpSocket;

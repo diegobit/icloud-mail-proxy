@@ -7,20 +7,21 @@ import { ImapParseError, quoteImapString } from "./imap-parse";
 const ALLOWED_FLAGS = new Set(["\\Draft", "\\Seen"]);
 
 /**
- * The command line that introduces an APPEND literal:
- * `A1 APPEND "Drafts" (\Draft) {1234}` followed by CRLF. The caller then
- * writes exactly `bytes.byteLength` octets plus a terminating CRLF.
+ * The command text that introduces an APPEND literal, without the tag or the
+ * trailing CRLF (the session composes `A<n> <command>\r\n`):
+ * `APPEND "Drafts" (\Draft) {1234}`. The caller then writes exactly
+ * `byteLength` octets plus a terminating CRLF.
  */
-export function buildAppend(mailbox: string, flags: string[], bytes: Uint8Array): string {
+export function buildAppend(mailbox: string, flags: string[], byteLength: number): string {
   if (!Array.isArray(flags)) throw new ImapParseError("flags must be an array");
   for (const flag of flags) {
     if (!ALLOWED_FLAGS.has(flag)) throw new ImapParseError(`flag not allowed: ${flag}`);
   }
-  if (!Number.isSafeInteger(bytes.byteLength) || bytes.byteLength <= 0) {
+  if (!Number.isSafeInteger(byteLength) || byteLength <= 0) {
     throw new ImapParseError("cannot append an empty message");
   }
   const parts = ["APPEND", quoteImapString(mailbox)];
   if (flags.length > 0) parts.push(`(${flags.join(" ")})`);
-  parts.push(`{${bytes.byteLength}}`);
-  return `${parts.join(" ")}\r\n`;
+  parts.push(`{${byteLength}}`);
+  return parts.join(" ");
 }

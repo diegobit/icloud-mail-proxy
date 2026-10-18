@@ -19,12 +19,12 @@ export function approveLoginPage(options: { draftId: string; error?: string }): 
   return page(
     "Approve a draft",
     `<h1>Approve a draft</h1>
-<p>A connected app created a draft message for this mailbox. Sign in with the API token to review it. Nothing is sent without this step.</p>
+<p>A connected app created a draft message for this mailbox. Sign in with the approval token to review it. Nothing is sent without this step.</p>
 ${errorHtml(options.error)}
 <form method="post" action="/send/approve">
 <input type="hidden" name="d" value="${escapeHtml(options.draftId)}">
 <input type="hidden" name="action" value="login">
-<label for="token">API token</label>
+<label for="token">Approval token</label>
 <input type="password" id="token" name="token" autocomplete="off" spellcheck="false" required>
 <button type="submit" class="primary">Continue</button>
 </form>`,

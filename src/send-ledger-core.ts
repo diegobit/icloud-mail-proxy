@@ -163,6 +163,15 @@ export type SendOutcome =
   | { status: "sent"; smtpCode: string; durationMs: number }
   | { status: "ready" | "failed" | "unknown"; code: string; durationMs: number };
 
+/** A fresh 128-bit base64url token for draft ids and approval nonces. */
+export function randomToken(byteLength = 16): string {
+  const bytes = new Uint8Array(byteLength);
+  crypto.getRandomValues(bytes);
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
+}
+
 export class SendLedgerCore {
   constructor(
     private readonly store: LedgerStore,
@@ -303,7 +312,9 @@ export class SendLedgerCore {
       });
       return;
     }
-    this.store.updateDraft(id, { status: "ready", updatedAt: now });
+    // A failed save reopens the draft with a fresh nonce, so a stale form
+    // cannot retry without a new review.
+    this.store.updateDraft(id, { status: "ready", updatedAt: now, nonce: randomToken() });
   }
 
   /**
@@ -386,11 +397,12 @@ export class SendLedgerCore {
     if (outcome.status !== "sent" && outcome.status !== "unknown") {
       this.releaseQuota(row);
     }
-    // A retryable failure goes back to `ready` with its bytes intact; the
-    // terminal outcomes drop the message body.
+    // A retryable failure goes back to `ready` with its bytes intact and a
+    // fresh nonce — the previous form is stale, so a retry is a new review —
+    // while the terminal outcomes drop the message body.
     const patch: Partial<DraftRow> =
       outcome.status === "ready"
-        ? { status: "ready", updatedAt: now }
+        ? { status: "ready", updatedAt: now, nonce: randomToken() }
         : { status: outcome.status, updatedAt: now, rawB64: null };
     this.store.updateDraft(id, patch);
     this.audit({

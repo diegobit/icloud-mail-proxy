@@ -69,6 +69,22 @@ export interface SmtpSocket {
 
 export type SmtpSocketFactory = (target: SmtpTarget) => SmtpSocket;
 
+/**
+ * The `connect()` options for a target. Cloudflare only allows `startTls()`
+ * when the socket was created with `secureTransport: "starttls"` — the plain
+ * `"off"` used to make every production upgrade throw before AUTH. The
+ * loopback test override deliberately uses `"off"` and never upgrades.
+ */
+export function socketOptionsFor(target: SmtpTarget): {
+  secureTransport: "off" | "starttls";
+  allowHalfOpen: boolean;
+} {
+  return {
+    secureTransport: target.mode === "starttls" ? "starttls" : "off",
+    allowHalfOpen: false,
+  };
+}
+
 const DEFAULT_TIMEOUT_MS = 30_000;
 const DATA_TIMEOUT_MS = 60_000;
 const QUIT_TIMEOUT_MS = 3_000;
@@ -225,30 +241,24 @@ export async function sendMail(options: SendMailOptions): Promise<SendMailResult
   let reader: LineReader | null = null;
   let writer: WritableStreamDefaultWriter<Uint8Array> | null = null;
 
-  const writeLine = async (line: string, phase: string): Promise<void> => {
+  const writeBytes = async (bytes: Uint8Array, phase: string): Promise<void> => {
     if (!writer) throw new SmtpError("smtp_protocol", phase, "no connection");
+    const budget = phase === "data-final" ? dataTimeoutMs : timeoutMs;
     try {
-      await writer.write(encoder.encode(`${line}\r\n`));
-    } catch (e) {
-      const message = `write failed: ${messageOf(e)}`;
-      if (phase === "tls" || phase === "starttls") throw new SmtpError("smtp_tls_failed", phase, message);
-      if (phase === "data-final") throw new SmtpError("send_status_unknown", phase, message);
-      throw new SmtpError("smtp_unavailable", phase, message);
-    }
-  };
-
-  const writeRaw = async (bytes: Uint8Array, phase: string): Promise<void> => {
-    if (!writer) throw new SmtpError("smtp_protocol", phase, "no connection");
-    try {
-      await writer.write(bytes);
+      await withTimeout(writer.write(bytes), budget, () => new DisconnectError("write timed out"));
     } catch (e) {
       const message = `write failed: ${messageOf(e)}`;
       // A failure while (or after) writing the terminating dot is ambiguous:
       // the message may already have been submitted, so it is never retried.
       if (phase === "data-final") throw new SmtpError("send_status_unknown", phase, message);
+      if (phase === "tls" || phase === "starttls") throw new SmtpError("smtp_tls_failed", phase, message);
       throw new SmtpError("smtp_unavailable", phase, message);
     }
   };
+
+  const writeLine = (line: string, phase: string): Promise<void> => writeBytes(encoder.encode(`${line}\r\n`), phase);
+
+  const writeRaw = writeBytes;
 
   const expect = async (phase: string, expected: number[]): Promise<Reply> => {
     if (!reader) throw new SmtpError("smtp_protocol", phase, "no connection");
@@ -256,7 +266,14 @@ export async function sendMail(options: SendMailOptions): Promise<SendMailResult
     try {
       reply = await readReply(reader, phase === "data-final" ? dataTimeoutMs : timeoutMs);
     } catch (e) {
-      if (e instanceof SmtpError) throw e;
+      if (e instanceof SmtpError) {
+        // After the final dot a reply we cannot parse says nothing about
+        // whether the message was accepted, so it is never retried.
+        if (phase === "data-final" && e.code === "smtp_protocol") {
+          throw new SmtpError("send_status_unknown", phase, "unreadable reply after the message was submitted");
+        }
+        throw e;
+      }
       if (e instanceof DisconnectError) {
         if (phase === "data-final") {
           throw new SmtpError("send_status_unknown", phase, "connection lost after the message was submitted");
