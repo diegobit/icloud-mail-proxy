@@ -15,8 +15,6 @@ export interface SendCaps {
   maxRcptsPerDay: number;
   maxRcptsPerMessage: number;
   maxBodyBytes: number;
-  draftTtlSeconds: number;
-  maxOpenDrafts: number;
 }
 
 export interface SendConfig {
@@ -33,8 +31,6 @@ export const SEND_HARD_MAXIMA: SendCaps = {
   maxRcptsPerDay: 200,
   maxRcptsPerMessage: 20,
   maxBodyBytes: 262_144,
-  draftTtlSeconds: 86_400,
-  maxOpenDrafts: 100,
 };
 
 const DEFAULTS: SendCaps = {
@@ -42,8 +38,6 @@ const DEFAULTS: SendCaps = {
   maxRcptsPerDay: 50,
   maxRcptsPerMessage: 5,
   maxBodyBytes: 65_536,
-  draftTtlSeconds: 3_600,
-  maxOpenDrafts: 20,
 };
 
 /**
@@ -91,8 +85,6 @@ export function readSendConfig(env: Env): { ok: true; config: SendConfig } | { o
         }),
         maxRcptsPerMessage: intVar(env.SEND_MAX_RCPTS_PER_MESSAGE, DEFAULTS.maxRcptsPerMessage, SEND_HARD_MAXIMA.maxRcptsPerMessage),
         maxBodyBytes: intVar(env.SEND_MAX_BODY_BYTES, DEFAULTS.maxBodyBytes, SEND_HARD_MAXIMA.maxBodyBytes),
-        draftTtlSeconds: intVar(env.SEND_DRAFT_TTL_SECONDS, DEFAULTS.draftTtlSeconds, SEND_HARD_MAXIMA.draftTtlSeconds),
-        maxOpenDrafts: intVar(env.SEND_MAX_OPEN_DRAFTS, DEFAULTS.maxOpenDrafts, SEND_HARD_MAXIMA.maxOpenDrafts),
       },
       sentCopy,
     },

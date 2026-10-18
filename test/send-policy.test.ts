@@ -23,27 +23,21 @@ describe("readSendConfig", () => {
       maxRcptsPerDay: 50,
       maxRcptsPerMessage: 5,
       maxBodyBytes: 65_536,
-      draftTtlSeconds: 3_600,
-      maxOpenDrafts: 20,
     });
   });
 
-  it("reads explicit values and allows a one-second draft TTL for tests", () => {
+  it("reads explicit values", () => {
     const { caps } = config({
       SEND_MAX_PER_DAY: "3",
       SEND_MAX_RCPTS_PER_DAY: "9",
       SEND_MAX_RCPTS_PER_MESSAGE: "2",
       SEND_MAX_BODY_BYTES: "1024",
-      SEND_DRAFT_TTL_SECONDS: "1",
-      SEND_MAX_OPEN_DRAFTS: "4",
     });
     expect(caps).toEqual({
       maxPerDay: 3,
       maxRcptsPerDay: 9,
       maxRcptsPerMessage: 2,
       maxBodyBytes: 1024,
-      draftTtlSeconds: 1,
-      maxOpenDrafts: 4,
     });
   });
 
@@ -53,15 +47,11 @@ describe("readSendConfig", () => {
       SEND_MAX_RCPTS_PER_DAY: "-2",
       SEND_MAX_RCPTS_PER_MESSAGE: "abc",
       SEND_MAX_BODY_BYTES: "999999999",
-      SEND_DRAFT_TTL_SECONDS: "999999999",
-      SEND_MAX_OPEN_DRAFTS: " ",
     });
     expect(caps.maxPerDay).toBe(SEND_HARD_MAXIMA.maxPerDay);
     expect(caps.maxRcptsPerDay).toBe(50);
     expect(caps.maxRcptsPerMessage).toBe(5);
     expect(caps.maxBodyBytes).toBe(SEND_HARD_MAXIMA.maxBodyBytes);
-    expect(caps.draftTtlSeconds).toBe(SEND_HARD_MAXIMA.draftTtlSeconds);
-    expect(caps.maxOpenDrafts).toBe(20);
   });
 
   it("treats a zero daily cap as the kill switch and refuses zero elsewhere", () => {

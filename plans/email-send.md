@@ -1,12 +1,13 @@
 # Sending mail (draft-first, owner-approved)
 
-Status: implemented and deployed; a **revision the owner asked for after
-using it** ("direct send, no approval page") is planned below and supersedes
-the approval-page parts of this document — see "Owner revision". Step 10
-(live acceptance) is partly done: the deploy and the read path are verified
-in production, the first real send is pending. Design input: a Claude Opus
-5.5 brief (2026-10-18), adapted to the owner's decisions recorded below.
-This file supersedes `plans/outbound-send-proxy.md`.
+Status: the original approval-page design was implemented, deployed and then
+**replaced by the owner's revision** ("direct send, no approval page"), which
+is implemented on branch `direct-send` and pending its review round. The
+revision section below records what changed and why. Step 10 (live
+acceptance) is partly done: the first design's deploy and read path were
+verified in production; the direct-send acceptance is pending. Design input:
+a Claude Opus 5.5 brief (2026-10-18), adapted to the owner's decisions. This
+file supersedes `plans/outbound-send-proxy.md`.
 
 ## Owner revision (2026-10-18, after the first deploy): direct send
 
@@ -62,29 +63,30 @@ APPEND — stands and is reused.
 
 ### Steps (each leaves the repo green)
 
+Implemented on branch `direct-send` (commit pending review), with one
+deviation found while testing: the duplicate window hashes the *content*
+(recipient list, subject, body, parent id), not the serialized bytes — the
+Date and Message-ID headers are generated per attempt, so a byte hash would
+never have matched a retry.
+
 1. **Tools.** Replace the draft tools in `src/mcp.ts` with `send_mail` and
    `save_draft`, sharing the composition validation from `src/send.ts`;
    update the server instructions. `save_draft` returns the mailbox it wrote
    to; `send_mail` returns the SMTP outcome.
 2. **Ledger.** Reduce `src/send-ledger-core.ts` to quota reservation/release
-   plus audit, add the duplicate-hash window, and drop the draft/nonce/state
-   code; `src/send-ledger.ts` runs `sendMail` or the APPEND directly and
-   purges leftover draft rows. Unit tests shrink accordingly and gain the
-   duplicate-guard cases.
+   plus audit, add the duplicate window, and drop the draft/nonce/state
+   code; `src/send-ledger.ts` runs `sendMail` or the APPEND directly and drops
+   the leftover `drafts` table on first start.
 3. **Delete the approval path.** `src/send-approve.ts`, `src/approve-page.ts`,
    the cookie helpers in `src/auth.ts`, the `/send/approve` route in
    `src/index.ts`, `SEND_APPROVAL_TOKEN` from types/docs, and their tests.
 4. **Integration suite.** Rewrite `test/send.integration.test.mjs`: `send_mail`
-   against the fake SMTP server (success, rejection, unknown, caps, duplicate
-   guard, principal isolation of the audit trail), and `save_draft` tool
-   presence (the APPEND itself cannot be exercised without a fake IMAP
-   server; it keeps its session-level tests).
-5. **Docs.** README ("MCP", "Sending mail", "Security model" — the human-gate
-   paragraph becomes the honest residual-risk paragraph), DEPLOY (caps,
-   kill switch, no approval token, duplicate guard, sent copy),
-   `.dev.vars.example`.
-6. **Review round** with codex `gpt-6.1-sol` (medium) on the diff, as with the
-   previous rounds.
+   against the fake SMTP server (success, rejection and retry, unknown plus
+   blind-retry refusal, the duplicate window, caps, validation, OAuth), and
+   `save_draft` validation (its APPEND keeps the session-level tests).
+5. **Docs.** README ("MCP", "Sending mail", "Security model"), DEPLOY (caps,
+   kill switch, duplicate window, sent copy), `.dev.vars.example`.
+6. **Review round** with codex `gpt-6.1-sol` (high) on the diff.
 7. **Live acceptance.** One `send_mail` each from ChatGPT/claude.ai, Claude
    Code/opencode and curl; one `save_draft` visible in Apple Mail's Drafts (or
    the documented fallback: send-only if iCloud refuses APPEND); then decide
