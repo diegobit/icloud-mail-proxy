@@ -103,7 +103,7 @@ export function tokenEntryPage(options: { client: ClientFacts; authQuery: string
     "Connect iCloud Mail",
     `<h1>Connect iCloud Mail</h1>
 ${clientFactsHtml(client)}
-<p>Signing in grants read-only access to the mailbox folders this proxy exposes.</p>
+<p>Signing in grants this app access to the mailbox folders this proxy exposes, and lets it send mail and save drafts from this address.</p>
 ${errorHtml}
 <form method="post" action="/authorize">
 <input type="hidden" name="authQuery" value="${escapeHtml(authQuery)}">
@@ -124,7 +124,7 @@ export function consentPage(options: { client: ClientFacts; handle: string; epoc
     `<h1>Approve access</h1>
 ${clientFactsHtml(client)}
 <p class="fact">This app will be able to:</p>
-<p class="fact"><strong>Read mail (mail:read)</strong> — list folders, search messages, read message bodies and download allowed attachments. It cannot send, move, flag, or delete anything.</p>
+<p class="fact"><strong>Read mail (mail:read)</strong> — list folders, search messages, read message bodies and download allowed attachments. It can also <strong>send mail and save drafts</strong> as this address; it cannot move, flag, or delete anything in the mailbox.</p>
 <form method="post" action="/authorize/consent">
 <input type="hidden" name="handle" value="${escapeHtml(handle)}">
 <input type="hidden" name="epoch" value="${escapeHtml(epoch)}">

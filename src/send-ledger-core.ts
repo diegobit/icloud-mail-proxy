@@ -4,9 +4,10 @@
 // Pure and Node-testable: the store is an injected synchronous interface —
 // the SendLedger Durable Object backs it with SQLite, tests with a Map. The
 // reservation is committed before the caller ever awaits SMTP, so a
-// concurrent attempt sees the consumed quota, and the duplicate window is
-// claimed at the same moment (it is released again when the attempt fails
-// before delivery, so a legitimate retry is not mistaken for a double send).
+// concurrent attempt sees the consumed quota, and each attempt claims its
+// message hash: an identical attempt in flight is refused outright, and a
+// failed attempt gives the claim back *without* erasing an earlier
+// successful send's window.
 
 import type { SendCaps } from "./send-policy";
 
@@ -26,10 +27,14 @@ export interface LedgerStore {
   setUsage(day: string, messages: number, recipients: number): void;
   addAudit(entry: AuditEntry): void;
   pruneAudit(before: number): void;
-  /** When this exact message was last submitted, or null. */
+  /** Claim the in-flight slot for this hash: "busy" means one is running. */
+  claimSend(hash: string, ts: number): "claimed" | "busy";
+  /** When this exact message last completed as sent or unknown, or null. */
   lastSendAt(hash: string): number | null;
-  recordSend(hash: string, ts: number): void;
-  forgetSend(hash: string): void;
+  keepSend(hash: string, ts: number): void;
+  /** Give the in-flight slot back; the completed-send time stays. */
+  releaseSend(hash: string): void;
+  /** Drop rows older than `before`, and free claims abandoned by a crash. */
   pruneSends(before: number): void;
 }
 
@@ -40,8 +45,8 @@ export type LedgerResult<T> = { ok: true; value: T } | { ok: false; code: Ledger
 /** How long an identical serialized message counts as a duplicate. */
 export const DUPLICATE_WINDOW_MS = 60_000;
 
-/** How long claimed hashes are kept around for the window and pruning. */
-const DUPLICATE_RETENTION_MS = 10 * 60_000;
+/** Claims older than this were abandoned by a crash and are freed. */
+export const CLAIM_TIMEOUT_MS = 10 * 60_000;
 
 export function usageDay(now: number): string {
   return new Date(now).toISOString().slice(0, 10);
@@ -60,9 +65,10 @@ export class SendLedgerCore {
   }
 
   /**
-   * Claim the attempt: refuse a recent identical message (unless the caller
-   * explicitly allows it), check the daily caps, then reserve the quota and
-   * record the hash in one synchronous step.
+   * Claim the attempt: refuse an identical message that is already in flight
+   * or was completed inside the window (unless the caller explicitly allows a
+   * resend), check the daily caps, then reserve the quota and the claim in
+   * one synchronous step. Every refusal releases the claim it just made.
    */
   beginSend(
     now: number,
@@ -71,9 +77,17 @@ export class SendLedgerCore {
     allowDuplicate: boolean,
     caps: SendCaps,
   ): LedgerResult<{ day: string }> {
+    if (this.store.claimSend(hash, now) === "busy") {
+      return {
+        ok: false,
+        code: "duplicate_send",
+        message: "an identical message is already being submitted",
+      };
+    }
     if (!allowDuplicate) {
       const last = this.store.lastSendAt(hash);
       if (last !== null && now - last < DUPLICATE_WINDOW_MS) {
+        this.store.releaseSend(hash);
         return {
           ok: false,
           code: "duplicate_send",
@@ -85,9 +99,11 @@ export class SendLedgerCore {
     const day = usageDay(now);
     const usage = this.store.getUsage(day) ?? { messages: 0, recipients: 0 };
     if (caps.maxPerDay === 0 || usage.messages + 1 > caps.maxPerDay) {
+      this.store.releaseSend(hash);
       return { ok: false, code: "daily_limit_reached", message: `daily send limit reached (${caps.maxPerDay}/day)` };
     }
     if (caps.maxRcptsPerDay === 0 || usage.recipients + recipients > caps.maxRcptsPerDay) {
+      this.store.releaseSend(hash);
       return {
         ok: false,
         code: "daily_limit_reached",
@@ -95,29 +111,28 @@ export class SendLedgerCore {
       };
     }
     this.store.setUsage(day, usage.messages + 1, usage.recipients + recipients);
-    this.store.recordSend(hash, now);
-    this.store.pruneSends(now - DUPLICATE_RETENTION_MS);
+    this.store.pruneSends(now - CLAIM_TIMEOUT_MS);
     return { ok: true, value: { day } };
   }
 
-  /** Give back what a failed attempt reserved, and release its hash. */
+  /** Give back what a failed attempt reserved, and free its claim. */
   release(day: string, recipients: number, hash: string): void {
     const usage = this.store.getUsage(day);
     if (usage) {
       this.store.setUsage(day, Math.max(0, usage.messages - 1), Math.max(0, usage.recipients - recipients));
     }
-    this.store.forgetSend(hash);
+    this.store.releaseSend(hash);
   }
 
-  /** Keep the hash after a successful (or unknown) submission. */
+  /** Mark the attempt complete (sent or unknown): the window starts now. */
   keep(hash: string, now: number): void {
-    this.store.recordSend(hash, now);
+    this.store.keepSend(hash, now);
   }
 
-  /** Prune audit rows and stale duplicate-window claims. */
+  /** Prune audit rows and stale claims. */
   sweep(now: number): void {
     this.store.pruneAudit(now - 90 * 86_400_000);
-    this.store.pruneSends(now - DUPLICATE_RETENTION_MS);
+    this.store.pruneSends(now - CLAIM_TIMEOUT_MS);
   }
 }
 

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  CLAIM_TIMEOUT_MS,
   DUPLICATE_WINDOW_MS,
   SendLedgerCore,
   usageDay,
@@ -11,7 +12,7 @@ import type { SendCaps } from "../src/send-policy";
 class MemoryLedgerStore implements LedgerStore {
   usage = new Map<string, { messages: number; recipients: number }>();
   audit: AuditEntry[] = [];
-  sends = new Map<string, number>();
+  claims = new Map<string, { ts: number; inflight: boolean; claimedAt: number }>();
 
   getUsage(day: string) {
     return this.usage.get(day) ?? null;
@@ -25,18 +26,29 @@ class MemoryLedgerStore implements LedgerStore {
   pruneAudit(before: number): void {
     this.audit = this.audit.filter((entry) => entry.ts >= before);
   }
+  claimSend(hash: string, ts: number): "claimed" | "busy" {
+    const row = this.claims.get(hash);
+    if (row?.inflight) return "busy";
+    this.claims.set(hash, { ts: row?.ts ?? 0, inflight: true, claimedAt: ts });
+    return "claimed";
+  }
   lastSendAt(hash: string): number | null {
-    return this.sends.get(hash) ?? null;
+    const ts = this.claims.get(hash)?.ts ?? 0;
+    return ts > 0 ? ts : null;
   }
-  recordSend(hash: string, ts: number): void {
-    this.sends.set(hash, ts);
+  keepSend(hash: string, ts: number): void {
+    this.claims.set(hash, { ts, inflight: false, claimedAt: 0 });
   }
-  forgetSend(hash: string): void {
-    this.sends.delete(hash);
+  releaseSend(hash: string): void {
+    const row = this.claims.get(hash);
+    if (row) this.claims.set(hash, { ...row, inflight: false });
   }
   pruneSends(before: number): void {
-    for (const [hash, ts] of this.sends) {
-      if (ts < before) this.sends.delete(hash);
+    for (const [hash, row] of this.claims) {
+      if (row.inflight && row.claimedAt < before) this.claims.set(hash, { ...row, inflight: false });
+    }
+    for (const [hash, row] of this.claims) {
+      if (!row.inflight && row.ts < before) this.claims.delete(hash);
     }
   }
 }
@@ -62,7 +74,6 @@ describe("quota", () => {
     const { store, core } = setup();
     expect(core.beginSend(NOW, 2, "h1", false, CAPS).ok).toBe(true);
     expect(core.beginSend(NOW, 2, "h2", false, CAPS).ok).toBe(true);
-    // Third message with two recipients: 3 messages is the cap, 4+2 = 6 > 5 recipients.
     const byMessages = core.beginSend(NOW, 2, "h3", false, { ...CAPS, maxPerDay: 2 });
     expect(byMessages).toMatchObject({ ok: false, code: "daily_limit_reached" });
     const byRecipients = core.beginSend(NOW, 2, "h4", false, { ...CAPS, maxRcptsPerDay: 4 });
@@ -71,8 +82,9 @@ describe("quota", () => {
       ok: false,
       code: "daily_limit_reached",
     });
-    // Nothing was consumed by the refusals.
+    // Nothing was consumed by the refusals, and their claims were given back.
     expect(store.getUsage(usageDay(NOW))).toEqual({ messages: 2, recipients: 4 });
+    expect(store.claims.get("h3")?.inflight).toBe(false);
   });
 
   it("gives the reservation back on release, never below zero", () => {
@@ -96,38 +108,75 @@ describe("quota", () => {
 });
 
 describe("duplicate window", () => {
-  it("refuses an identical message inside the window and allows it once released", () => {
+  it("refuses an identical in-flight or recently completed message, letting a failed one retry", () => {
     const { core } = setup();
+    // First attempt, still in flight.
     expect(core.beginSend(NOW, 1, "hash-a", false, CAPS).ok).toBe(true);
-    const again = core.beginSend(NOW + 5_000, 1, "hash-a", false, CAPS);
-    expect(again).toMatchObject({ ok: false, code: "duplicate_send" });
-    // A failure before delivery releases the claim, so the retry goes through.
+    expect(core.beginSend(NOW + 5_000, 1, "hash-a", false, CAPS)).toMatchObject({ ok: false, code: "duplicate_send" });
+    // It failed before delivery: the retry is allowed.
     core.release(usageDay(NOW), 1, "hash-a");
     expect(core.beginSend(NOW + 6_000, 1, "hash-a", false, CAPS).ok).toBe(true);
+    // It completed as sent: the window applies from now on.
+    core.keep("hash-a", NOW + 6_000);
+    expect(core.beginSend(NOW + 7_000, 1, "hash-a", false, CAPS)).toMatchObject({ ok: false, code: "duplicate_send" });
     // A different message is never a duplicate.
-    expect(core.beginSend(NOW + 6_000, 1, "hash-b", false, CAPS).ok).toBe(true);
+    expect(core.beginSend(NOW + 7_000, 1, "hash-b", false, CAPS).ok).toBe(true);
+  });
+
+  it("keeps an earlier send's window when a forced resend fails", () => {
+    const { core } = setup();
+    expect(core.beginSend(NOW, 1, "hash-a", false, CAPS).ok).toBe(true);
+    core.keep("hash-a", NOW);
+    // A deliberate resend is claimed, then fails before delivery.
+    expect(core.beginSend(NOW + 1_000, 1, "hash-a", true, CAPS).ok).toBe(true);
+    core.release(usageDay(NOW), 1, "hash-a");
+    // The original window must still be there: a third attempt is a duplicate.
+    expect(core.beginSend(NOW + 2_000, 1, "hash-a", false, CAPS)).toMatchObject({
+      ok: false,
+      code: "duplicate_send",
+    });
+  });
+
+  it("refuses an identical message that is already in flight, whatever the flags", () => {
+    const { store, core } = setup();
+    expect(core.beginSend(NOW, 1, "hash-a", false, CAPS).ok).toBe(true);
+    const concurrent = core.beginSend(NOW, 1, "hash-a", true, CAPS);
+    expect(concurrent).toMatchObject({ ok: false, code: "duplicate_send" });
+    expect(concurrent.ok === false && concurrent.message).toContain("already being submitted");
+    expect(store.getUsage(usageDay(NOW))).toEqual({ messages: 1, recipients: 1 });
   });
 
   it("allows the same message after the window or with allowDuplicate", () => {
     const { core } = setup();
     expect(core.beginSend(NOW, 1, "hash-a", false, CAPS).ok).toBe(true);
+    core.keep("hash-a", NOW);
     expect(core.beginSend(NOW + DUPLICATE_WINDOW_MS + 1, 1, "hash-a", false, CAPS).ok).toBe(true);
+    core.release(usageDay(NOW), 1, "hash-a");
     expect(core.beginSend(NOW + DUPLICATE_WINDOW_MS + 2, 1, "hash-a", true, CAPS).ok).toBe(true);
   });
 
   it("does not spend quota on a refused duplicate", () => {
     const { store, core } = setup();
     core.beginSend(NOW, 1, "hash-a", false, CAPS);
+    core.keep("hash-a", NOW);
     core.beginSend(NOW + 1, 1, "hash-a", false, CAPS);
     expect(store.getUsage(usageDay(NOW))).toEqual({ messages: 1, recipients: 1 });
   });
 
-  it("prunes stale claims at begin and at sweep", () => {
+  it("frees a claim abandoned by a crash and prunes completed windows", () => {
     const { store, core } = setup();
+    // A claim never completed (the isolate died mid-send) blocks a resend...
     expect(core.beginSend(NOW, 1, "hash-a", false, CAPS).ok).toBe(true);
-    core.sweep(NOW + 11 * 60_000);
-    expect(store.lastSendAt("hash-a")).toBeNull();
-    expect(core.beginSend(NOW + 12 * 60_000, 1, "hash-a", false, CAPS).ok).toBe(true);
+    expect(core.beginSend(NOW + 1_000, 1, "hash-a", true, CAPS)).toMatchObject({ ok: false, code: "duplicate_send" });
+    // ...until the timeout sweep frees it; with no completed send to remember,
+    // the row goes away entirely.
+    core.sweep(NOW + CLAIM_TIMEOUT_MS + 1);
+    expect(store.claims.has("hash-a")).toBe(false);
+    expect(core.beginSend(NOW + CLAIM_TIMEOUT_MS + 2, 1, "hash-a", false, CAPS).ok).toBe(true);
+    // A completed window older than the timeout is dropped entirely.
+    core.keep("hash-a", NOW + CLAIM_TIMEOUT_MS + 2);
+    core.sweep(NOW + 2 * CLAIM_TIMEOUT_MS + 3);
+    expect(store.claims.has("hash-a")).toBe(false);
   });
 });
 

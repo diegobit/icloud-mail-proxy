@@ -75,12 +75,15 @@ const SCHEMA = [
      duration_ms INTEGER
    )`,
   `CREATE INDEX IF NOT EXISTS audit_ts ON audit(ts)`,
-  `CREATE TABLE IF NOT EXISTS recent_sends (
+  `CREATE TABLE IF NOT EXISTS send_claims (
      hash TEXT PRIMARY KEY,
-     ts INTEGER NOT NULL
+     ts INTEGER NOT NULL DEFAULT 0,
+     inflight INTEGER NOT NULL DEFAULT 0,
+     claimed_at INTEGER NOT NULL DEFAULT 0
    )`,
   // The revision removed server-side drafts; drop what the old schema left.
   `DROP TABLE IF EXISTS drafts`,
+  `DROP TABLE IF EXISTS recent_sends`,
 ];
 
 type SqlRow = Record<string, SqlStorageValue>;
@@ -127,26 +130,46 @@ class SqliteLedgerStore implements LedgerStore {
     this.sql.exec("DELETE FROM audit WHERE ts < ?", before);
   }
 
-  lastSendAt(hash: string): number | null {
-    const row = this.rows("SELECT ts FROM recent_sends WHERE hash = ?", hash)[0];
-    return row ? Number(row.ts) : null;
+  claimSend(hash: string, ts: number): "claimed" | "busy" {
+    const row = this.rows("SELECT inflight FROM send_claims WHERE hash = ?", hash)[0];
+    if (row && Number(row.inflight) > 0) return "busy";
+    this.sql.exec(
+      `INSERT INTO send_claims (hash, ts, inflight, claimed_at) VALUES (?, 0, 1, ?)
+       ON CONFLICT(hash) DO UPDATE SET inflight = 1, claimed_at = excluded.claimed_at`,
+      hash,
+      ts,
+    );
+    return "claimed";
   }
 
-  recordSend(hash: string, ts: number): void {
+  lastSendAt(hash: string): number | null {
+    const row = this.rows("SELECT ts FROM send_claims WHERE hash = ?", hash)[0];
+    if (!row) return null;
+    const ts = Number(row.ts);
+    return ts > 0 ? ts : null;
+  }
+
+  keepSend(hash: string, ts: number): void {
     this.sql.exec(
-      `INSERT INTO recent_sends (hash, ts) VALUES (?, ?)
-       ON CONFLICT(hash) DO UPDATE SET ts = excluded.ts`,
+      `INSERT INTO send_claims (hash, ts, inflight, claimed_at) VALUES (?, ?, 0, 0)
+       ON CONFLICT(hash) DO UPDATE SET ts = excluded.ts, inflight = 0, claimed_at = 0`,
       hash,
       ts,
     );
   }
 
-  forgetSend(hash: string): void {
-    this.sql.exec("DELETE FROM recent_sends WHERE hash = ?", hash);
+  releaseSend(hash: string): void {
+    this.sql.exec("UPDATE send_claims SET inflight = 0 WHERE hash = ?", hash);
   }
 
   pruneSends(before: number): void {
-    this.sql.exec("DELETE FROM recent_sends WHERE ts < ?", before);
+    // An in-flight claim older than the timeout belonged to a crashed
+    // attempt: free it, then drop rows with nothing left to remember.
+    this.sql.exec(
+      "UPDATE send_claims SET inflight = 0 WHERE inflight = 1 AND claimed_at < ?",
+      before,
+    );
+    this.sql.exec("DELETE FROM send_claims WHERE ts < ? AND inflight = 0", before);
   }
 }
 
@@ -159,6 +182,14 @@ export class SendLedger extends DurableObject<Env> {
     this.core = new SendLedgerCore(new SqliteLedgerStore(ctx.storage.sql), (entry) => {
       // Metadata only: never the subject, the body or address local parts.
       console.log("send_event", JSON.stringify(entry));
+    });
+    // A fresh instance has no alarm of its own: schedule the daily
+    // maintenance sweep (audit prune and stale-claim cleanup) without
+    // disturbing one that already exists.
+    ctx.blockConcurrencyWhile(async () => {
+      if ((await ctx.storage.getAlarm()) === null) {
+        await ctx.storage.setAlarm(Date.now() + 86_400_000);
+      }
     });
   }
 

@@ -433,7 +433,9 @@ Any authenticated client can send. Two tools do it:
   error carrying a stable code.
 - **`save_draft`** builds the same message and APPENDs it to iCloud's `Drafts`
   mailbox, where it shows up in Apple Mail and on the iPhone. Nothing is sent;
-  finishing it later is a normal action in the mail client.
+  finishing it later is a normal action in the mail client. A draft keeps its
+  `Bcc:` header (there is no SMTP envelope to carry it), while a submission
+  never has one.
 
 Replies (`inReplyTo`) get `In-Reply-To`/`References` from the parent message;
 forwards (`forwardOf`) quote its text and name the attachments they do not

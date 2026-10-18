@@ -276,17 +276,29 @@ describe("daily cap and From identity", () => {
     fs.rmSync(dir, { recursive: true, force: true });
   }, 120_000);
 
-  it("uses the configured From and refuses past the daily cap", async () => {
-    const first = await sendMail(current.base, TOKEN_A, { subject: "Uno", text: "prima" });
-    expect(first.isError, first.text).toBe(false);
+  it("uses the configured From and refuses past the daily cap, releasing a failed attempt", async () => {
+    const args = { to: ["marco@example.org"], subject: "Uno", text: "prima" };
+
+    // With a cap of one message, a failed attempt must give the quota back...
+    smtp.state.mode = "rcptFail";
+    const rejected = await sendMail(current.base, TOKEN_A, args);
+    expect(rejected.isError).toBe(true);
+    expect(rejected.text).toContain("smtp_recipient_rejected");
     expect(smtp.state.connections).toBe(1);
+
+    // ...so the retry of the very same message goes through, using the alias.
+    smtp.state.mode = "ok";
+    const first = await sendMail(current.base, TOKEN_A, args);
+    expect(first.isError, first.text).toBe(false);
+    expect(smtp.state.connections).toBe(2);
     const session = smtp.last();
     expect(session.mailFrom).toMatch(/^MAIL FROM:<alias@icloud\.com>( SIZE=\d+)?$/);
     expect(session.data.join("\r\n")).toContain('From: "Diego" <alias@icloud.com>');
 
+    // The cap is now genuinely consumed: a different message is refused.
     const blocked = await sendMail(current.base, TOKEN_A, { subject: "Due", text: "seconda" });
     expect(blocked.isError).toBe(true);
     expect(blocked.text).toContain("daily_limit_reached");
-    expect(smtp.state.connections).toBe(1);
+    expect(smtp.state.connections).toBe(2);
   }, 60_000);
 });

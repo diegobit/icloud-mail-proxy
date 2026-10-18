@@ -702,6 +702,18 @@ Also: on deployments without `SEND_APPROVAL_TOKEN` the approval login page now
 says so — the fallback to `API_TOKEN` remains (the owner chose no extra
 activation step), but it is no longer silent.
 
+### Review round 2 (direct send, codex gpt-6.1-sol high)
+
+Five Medium findings, all fixed:
+
+| # | Finding | Fix |
+| --- | --- | --- |
+| 1 | A failed forced resend erased the hash, dropping the protection of an earlier successful send; concurrent attempts shared one claim. | Claims are per attempt: `claimSend` refuses an identical message already in flight (whatever the flags), `releaseSend` frees only the attempt's slot, and the completed window's timestamp is untouched. A stuck claim is freed after ten minutes. |
+| 2 | A saved draft silently lost Bcc recipients: the builder strips `Bcc` for SMTP, and a draft has no envelope. | `buildMessage` gained `includeBcc`; `save_draft` sets it, `send_mail` never does. Unit test parses the draft back with PostalMime. |
+| 3 | The sign-in and consent pages still promised read-only access and "It cannot send". | Both pages now disclose sending and draft saving; the page tests assert the new wording. |
+| 4 | The duplicate hash flattened the envelope, so `cc: B` and `bcc: B` hashed alike. | The hash is a structured canonical (from, to, cc, bcc, subject, body, parent), still ignoring Date and Message-ID; a compose unit test proves role differences produce different hashes and a retry the same one. |
+| 5 | A fresh ledger never started the audit-prune alarm (the old schedule came from draft creation). | The Durable Object's constructor schedules the daily maintenance alarm through `blockConcurrencyWhile` when none exists. |
+
 ### Live acceptance (step 10, owner-run)
 
 Still pending: STARTTLS against `smtp.mail.me.com`, the Sent mailbox

@@ -100,9 +100,14 @@ interface ComposedMessage {
 
 /**
  * Validate the request, pull in whatever a reply or a forward needs, and
- * serialize the final message. Nothing here talks to SMTP.
+ * serialize the final message. Nothing here talks to SMTP. `includeBcc` is
+ * set for drafts, which have no SMTP envelope to carry Bcc recipients.
  */
-async function composeMessage(env: Env, input: ComposeRequest): Promise<ComposedMessage> {
+export async function composeMessage(
+  env: Env,
+  input: ComposeRequest,
+  options: { includeBcc?: boolean } = {},
+): Promise<ComposedMessage> {
   try {
     const config = readSendConfig(env);
     if (!config.ok) throw new ApiError(500, "send_not_configured", config.error);
@@ -179,12 +184,23 @@ async function composeMessage(env: Env, input: ComposeRequest): Promise<Composed
       inReplyTo,
       references,
       maxBodyBytes: caps.maxBodyBytes,
+      includeBcc: options.includeBcc === true,
     });
+    // The duplicate window hashes the message *content* — recipient roles,
+    // subject, body and parent — never Date or Message-ID, which change on
+    // every attempt, and never a flattened recipient list, which would make
+    // "to: B" and "bcc: B" look identical.
     const hash = await sha256Hex(
       new TextEncoder().encode(
-        [built.recipients.map((address) => address.toLowerCase()).join(","), subject, built.text, inReplyTo ?? ""].join(
-          "\u0000",
-        ),
+        JSON.stringify({
+          from: from.address.toLowerCase(),
+          to: to.map((mailbox) => mailbox.address.toLowerCase()),
+          cc: cc.map((mailbox) => mailbox.address.toLowerCase()),
+          bcc: bcc.map((mailbox) => mailbox.address.toLowerCase()),
+          subject,
+          text: built.text,
+          inReplyTo: inReplyTo ?? null,
+        }),
       ),
     );
     return {
@@ -248,7 +264,9 @@ export interface SaveDraftResult {
 
 /** Compose and put the message into iCloud's real Drafts mailbox. */
 export async function saveDraftFromTool(env: Env, principal: string, input: ComposeRequest): Promise<SaveDraftResult> {
-  const composed = await composeMessage(env, input);
+  // A draft has no SMTP envelope, so Bcc recipients are kept in the message
+  // itself; sending it later from a mail client uses that header.
+  const composed = await composeMessage(env, input, { includeBcc: true });
   const report: SaveDraftReport = await ledgerStub(env).saveDraft({
     rawB64: bytesToBase64(composed.raw),
     recipientCount: composed.recipients.length,
