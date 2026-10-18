@@ -77,6 +77,11 @@ export class SendLedgerCore {
     allowDuplicate: boolean,
     caps: SendCaps,
   ): LedgerResult<{ day: string }> {
+    // Free claims abandoned by a crashed attempt first: otherwise a retry of
+    // that very message would be refused as in-flight until some other send
+    // happened to prune the row.
+    this.store.pruneSends(now - CLAIM_TIMEOUT_MS);
+
     if (this.store.claimSend(hash, now) === "busy") {
       return {
         ok: false,
@@ -111,7 +116,6 @@ export class SendLedgerCore {
       };
     }
     this.store.setUsage(day, usage.messages + 1, usage.recipients + recipients);
-    this.store.pruneSends(now - CLAIM_TIMEOUT_MS);
     return { ok: true, value: { day } };
   }
 

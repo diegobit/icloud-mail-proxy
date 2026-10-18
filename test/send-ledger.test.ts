@@ -84,7 +84,7 @@ describe("quota", () => {
     });
     // Nothing was consumed by the refusals, and their claims were given back.
     expect(store.getUsage(usageDay(NOW))).toEqual({ messages: 2, recipients: 4 });
-    expect(store.claims.get("h3")?.inflight).toBe(false);
+    expect(store.claims.get("h3")?.inflight ?? false).toBe(false);
   });
 
   it("gives the reservation back on release, never below zero", () => {
@@ -163,18 +163,17 @@ describe("duplicate window", () => {
     expect(store.getUsage(usageDay(NOW))).toEqual({ messages: 1, recipients: 1 });
   });
 
-  it("frees a claim abandoned by a crash and prunes completed windows", () => {
+  it("frees a claim abandoned by a crash at the next retry, and prunes completed windows", () => {
     const { store, core } = setup();
     // A claim never completed (the isolate died mid-send) blocks a resend...
     expect(core.beginSend(NOW, 1, "hash-a", false, CAPS).ok).toBe(true);
     expect(core.beginSend(NOW + 1_000, 1, "hash-a", true, CAPS)).toMatchObject({ ok: false, code: "duplicate_send" });
-    // ...until the timeout sweep frees it; with no completed send to remember,
-    // the row goes away entirely.
-    core.sweep(NOW + CLAIM_TIMEOUT_MS + 1);
-    expect(store.claims.has("hash-a")).toBe(false);
-    expect(core.beginSend(NOW + CLAIM_TIMEOUT_MS + 2, 1, "hash-a", false, CAPS).ok).toBe(true);
+    // ...and the retry itself frees it once the timeout has passed: no sweep
+    // or unrelated send is needed.
+    expect(core.beginSend(NOW + CLAIM_TIMEOUT_MS + 1, 1, "hash-a", false, CAPS).ok).toBe(true);
+    expect(store.claims.get("hash-a")?.inflight).toBe(true);
     // A completed window older than the timeout is dropped entirely.
-    core.keep("hash-a", NOW + CLAIM_TIMEOUT_MS + 2);
+    core.keep("hash-a", NOW + CLAIM_TIMEOUT_MS + 1);
     core.sweep(NOW + 2 * CLAIM_TIMEOUT_MS + 3);
     expect(store.claims.has("hash-a")).toBe(false);
   });

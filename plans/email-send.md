@@ -713,6 +713,7 @@ Five Medium findings, all fixed:
 | 3 | The sign-in and consent pages still promised read-only access and "It cannot send". | Both pages now disclose sending and draft saving; the page tests assert the new wording. |
 | 4 | The duplicate hash flattened the envelope, so `cc: B` and `bcc: B` hashed alike. | The hash is a structured canonical (from, to, cc, bcc, subject, body, parent), still ignoring Date and Message-ID; a compose unit test proves role differences produce different hashes and a retry the same one. |
 | 5 | A fresh ledger never started the audit-prune alarm (the old schedule came from draft creation). | The Durable Object's constructor schedules the daily maintenance alarm through `blockConcurrencyWhile` when none exists. |
+| 6 | The claim timeout was only checked by an unrelated prune, so a crashed attempt blocked its own retry for up to a day. | `beginSend` prunes expired claims *before* claiming, so a retry after ten minutes frees the abandoned claim itself; the test no longer calls `sweep()` to unblock it. |
 
 ### Live acceptance (step 10, owner-run)
 
