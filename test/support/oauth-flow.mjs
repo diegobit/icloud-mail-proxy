@@ -116,6 +116,12 @@ export async function mcpToolsList(base, token) {
   return (result.tools ?? []).map((tool) => tool.name);
 }
 
+/** The full tool descriptors, annotations included. */
+export async function mcpToolsListDetailed(base, token) {
+  const result = await mcpRpc(base, token, 2, "tools/list", {});
+  return result.tools ?? [];
+}
+
 /**
  * Call one MCP tool. Returns `{ isError, text, json }`, where `json` is the
  * parsed text payload when it is JSON.
