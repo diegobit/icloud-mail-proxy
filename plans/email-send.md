@@ -717,7 +717,24 @@ Five Medium findings, all fixed:
 
 ### Live acceptance (step 10, owner-run)
 
-Still pending: STARTTLS against `smtp.mail.me.com`, the Sent mailbox
-behaviour (which decides `SEND_SENT_COPY`), aliases as `SEND_FROM`, a real
-message from ChatGPT and from claude.ai through the approval page, and the
-production smoke test.
+Verified in production:
+
+- the deploy and both authentication paths: the static bearer and a full
+  OAuth flow (the path ChatGPT uses) received byte-identical `tools/list`
+  responses with all six tools (annotations included), `private, no-store`,
+  and no caching layer in between;
+- the read path stayed healthy (`/healthz` 200 through every deploy);
+- **direct send from ChatGPT works** (owner's report, 2026-10-19): the
+  connector sent a real message through iCloud SMTP. The stale four-tool list
+  ChatGPT initially showed was its own cached inventory — a codex
+  `gpt-6-astra` investigation verified the server on both paths before the
+  connector was refreshed/recreated.
+
+Still open:
+
+- `save_draft` against real iCloud (the APPEND): if Apple refuses it, the tool
+  is removed and only direct send remains;
+- the `Sent` mailbox behaviour, which decides `SEND_SENT_COPY` (off by
+  default);
+- an alias as `SEND_FROM` (the default is `ICLOUD_USER`);
+- a send from claude.ai or a CLI client, for breadth.
