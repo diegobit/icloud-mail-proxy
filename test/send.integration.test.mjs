@@ -9,7 +9,14 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { freePort, mcpToolCall, mcpToolsList, oauthExchange, startWorker, TOKEN_A } from "./support/oauth-flow.mjs";
+import {
+  freePort,
+  mcpToolCall,
+  mcpToolsListDetailed,
+  oauthExchange,
+  startWorker,
+  TOKEN_A,
+} from "./support/oauth-flow.mjs";
 
 /** A scripted SMTP server: enough of the protocol to drive every path. */
 function startFakeSmtp() {
@@ -119,11 +126,26 @@ describe("direct send end to end", () => {
   }, 120_000);
 
   it("exposes send_mail and save_draft, and none of the approval tools", async () => {
-    const tools = await mcpToolsList(current.base, TOKEN_A);
+    const listed = await mcpToolsListDetailed(current.base, TOKEN_A);
+    const tools = listed.map((tool) => tool.name);
     expect(tools).toContain("send_mail");
     expect(tools).toContain("save_draft");
     for (const name of APPROVAL_TOOLS) expect(tools).not.toContain(name);
     expect(smtp.state.connections).toBe(0);
+
+    // Clients rely on the annotations to decide how to prompt: the read tools
+    // must be marked read-only, the sending ones explicitly not.
+    const byName = new Map(listed.map((tool) => [tool.name, tool]));
+    for (const readTool of ["list_mailboxes", "search_mail", "get_mail_message", "get_mail_attachment"]) {
+      expect(byName.get(readTool)?.annotations?.readOnlyHint, readTool).toBe(true);
+    }
+    const send = byName.get("send_mail")?.annotations;
+    expect(send?.readOnlyHint).toBe(false);
+    expect(send?.openWorldHint).toBe(true);
+    expect(send?.idempotentHint).toBe(false);
+    const save = byName.get("save_draft")?.annotations;
+    expect(save?.readOnlyHint).toBe(false);
+    expect(save?.openWorldHint).toBe(false);
   }, 60_000);
 
   it("sends immediately, once, with every envelope recipient and no Bcc header", async () => {

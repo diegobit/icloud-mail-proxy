@@ -61,6 +61,7 @@ function buildServer(env: Env, principal: string): McpServer {
       description:
         "List the mailboxes this proxy is allowed to read. Returns { mailboxes: string[] }.",
       inputSchema: {},
+      annotations: { readOnlyHint: true, idempotentHint: true },
     },
     async () => textResult({ mailboxes: listMailboxes(env) }),
   );
@@ -94,6 +95,7 @@ function buildServer(env: Env, principal: string): McpServer {
           .optional()
           .describe("Pass nextBeforeUid from the previous page to get older results"),
       },
+      annotations: { readOnlyHint: true, idempotentHint: true },
     },
     async (args) =>
       guard(() =>
@@ -129,6 +131,7 @@ function buildServer(env: Env, principal: string): McpServer {
         uidValidity: z.number().int().positive().describe("uidValidity from the search result"),
         uid: z.number().int().positive().describe("uid of the message from the search result"),
       },
+      annotations: { readOnlyHint: true, idempotentHint: true },
     },
     async (args) =>
       guard(() => getMessage(env, args.mailbox, args.uidValidity, args.uid)),
@@ -158,6 +161,7 @@ function buildServer(env: Env, principal: string): McpServer {
           .nonnegative()
           .describe("0-based index into the message's attachments array from get_mail_message"),
       },
+      annotations: { readOnlyHint: true, idempotentHint: true },
     },
     async (args) =>
       guard(async () => {
@@ -214,6 +218,9 @@ function buildServer(env: Env, principal: string): McpServer {
           .optional()
           .describe("Set true only when the user explicitly wants the same message sent again straight away"),
       },
+      // It submits a real message (not read-only) but only adds to the world;
+      // it is irreversible and leaves the proxy, so clients should confirm it.
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
     },
     async (args) => guard(() => sendMailFromTool(env, principal, args)),
   );
@@ -227,6 +234,9 @@ function buildServer(env: Env, principal: string): McpServer {
         "mail app. Nothing is sent by this call. Use it when the user wants to review the " +
         "message first or finish it later.",
       inputSchema: { ...composeFields },
+      // It appends a new draft to the mailbox: additive, but not read-only and
+      // not idempotent (calling it twice leaves two drafts).
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     },
     async (args) => guard(() => saveDraftFromTool(env, principal, args)),
   );
