@@ -505,11 +505,16 @@ and `.../trash` over REST. Both take the id from a search result
   EXPUNGE` when the server advertises `UIDPLUS`. If the server advertises
   neither, the call fails with `502 unsupported_move` rather than issuing a
   plain `EXPUNGE`, which would purge every `\Deleted` message in the mailbox.
-- **Re-running is safe.** A uid that is no longer in the source mailbox returns
-  `404 message_not_found`; an expired id returns `409 uidvalidity_mismatch`
-  (re-run the search first). After a dropped connection the move may already
-  have happened, so calling once more and treating `message_not_found` as
-  success is the expected recovery — the tool descriptions say so.
+  iCloud does not advertise `MOVE` (probed 2026-10-20), so the `UIDPLUS`
+  fallback is the path in production.
+- **Re-running after a success or a 404 is safe.** A uid that is no longer in
+  the source mailbox returns `404 message_not_found`; an expired id returns
+  `409 uidvalidity_mismatch` (re-run the search first). A connection that drops
+  after the move has started is different: the call returns `502
+  mutation_state_unknown` instead of retrying, because the COPY fallback is not
+  atomic — the copy may already be in the destination while the source still
+  holds the message, and a blind retry would file a second one. Check both
+  mailboxes before acting.
 - **Audit is live only.** Each mutation logs one structured `mail_mutation`
   line (principal, action, mailbox, uid, destination — no subject, no body) that
   `wrangler tail` shows. There is no durable mutation history; the `SEND_LEDGER`

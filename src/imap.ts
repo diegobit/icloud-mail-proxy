@@ -28,7 +28,15 @@ import {
 
 export type { Envelope };
 
-export type ImapErrorCode = "NO" | "BAD" | "BYE" | "PARSE" | "TIMEOUT" | "LIMIT" | "UNSUPPORTED";
+export type ImapErrorCode =
+  | "NO"
+  | "BAD"
+  | "BYE"
+  | "PARSE"
+  | "TIMEOUT"
+  | "LIMIT"
+  | "UNSUPPORTED"
+  | "UNKNOWN";
 
 export class ImapError extends Error {
   code: ImapErrorCode;
@@ -181,6 +189,7 @@ export class ImapSession {
     }
     const strategy = chooseMoveStrategy(capabilities);
 
+    let fallbackStarted = false;
     try {
       if (strategy === "unsupported") {
         throw new ImapError(
@@ -192,11 +201,25 @@ export class ImapSession {
         await this.command(buildMove(uid, destination), "UID MOVE");
         return;
       }
+      // The UIDPLUS fallback is three commands, not one atomic MOVE. If the
+      // connection drops after the first one, the state is genuinely unknown:
+      // the copy may be in the destination while the message is still in the
+      // source, so a blind retry would file a second copy. Surface that as
+      // UNKNOWN (not BYE, which the caller retries) and let it check both
+      // mailboxes.
+      fallbackStarted = true;
       await this.command(buildCopy(uid, destination), "UID COPY");
       await this.command(buildStoreDeleted(uid), "UID STORE");
       await this.command(buildUidExpunge(uid), "UID EXPUNGE");
     } catch (e) {
-      throw toImapError(e);
+      const error = toImapError(e);
+      if (fallbackStarted && error.code === "BYE") {
+        throw new ImapError(
+          "UNKNOWN",
+          `connection dropped during the move; the message may already be filed: ${error.message}`,
+        );
+      }
+      throw error;
     }
   }
 

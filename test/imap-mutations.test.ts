@@ -138,6 +138,26 @@ describe("ImapSession.uidMove", () => {
     expect(server.received).not.toMatch(/\r\nA\d+ EXPUNGE\b/);
   });
 
+  it("reports UNKNOWN, not BYE, when the fallback connection drops", async () => {
+    const { socket, server } = fakeSocket();
+    const script = (async () => {
+      await login(server);
+      expect(await server.line()).toBe("A2 CAPABILITY");
+      await server.send("* CAPABILITY IMAP4rev1 UIDPLUS\r\n");
+      await server.send("A2 OK done\r\n");
+      expect(await server.line()).toBe('A3 UID COPY 42 "Archive"');
+      await server.send("* BYE server shutting down\r\n");
+    })().catch(() => {});
+
+    const session = await ImapSession.open("owner@example.com", "app-pass", {
+      connectSocket: () => socket,
+      timeoutMs: 500,
+    });
+    // A blind BYE retry would COPY a second time: the fallback is not atomic.
+    await expect(session.uidMove(42, "Archive")).rejects.toMatchObject({ code: "UNKNOWN" });
+    await script;
+  });
+
   it("refuses with UNSUPPORTED when neither MOVE nor UIDPLUS is advertised", async () => {
     const { socket, server } = fakeSocket();
     const script = (async () => {

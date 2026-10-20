@@ -18,9 +18,8 @@ read; it must not become a way to rearrange a mailbox.
 1. **Archive destination.** `ALLOWED_ARCHIVE_MAILBOX`, default `Archive`
    (already in the default `ALLOWED_MAILBOXES`).
 2. **Delete destination.** `ALLOWED_TRASH_MAILBOX`, default `Deleted Messages`
-   (iCloud's own trash; confirm the exact name with `LIST "" "Deleted*"` on the
-   live account before shipping — spaces matter, this repo's setup already
-   validates folder names).
+   (iCloud's own trash; confirmed on 2026-10-20 with `LIST "" "*"` — the
+   mailbox carries the `\Trash` flag).
 3. **Delete means trash, not expunge.** `delete_mail` issues a `MOVE` into
    `Deleted Messages`; the message stays recoverable for iCloud's retention
    window (30 days). Permanent removal stays the owner's action in a mail
@@ -135,12 +134,29 @@ plan.
    trash from a mail client; re-run both on the same uid and confirm
    `message_not_found`; confirm the audit lines in `wrangler tail`.
 
+## Verification (2026-10-20)
+
+Probed the live account with `LIST "" "*"` and `CAPABILITY` (read-only; nothing
+moved):
+
+- **`MOVE` is not advertised.** `CAPABILITY` lists `UIDPLUS` but not `MOVE`, so
+  the COPY + STORE + UID EXPUNGE fallback is the path production takes. Those
+  three commands are not atomic: a dropped connection can leave the copy in the
+  destination while the source still holds the message, and a blind retry would
+  file a second copy. The session therefore reports that case as
+  `mutation_state_unknown` (502) instead of letting `withRetryOnce` retry it.
+- **Trash name confirmed.** `Deleted Messages` is the mailbox carrying the
+  `\Trash` flag — exactly the configured default.
+- **Archive carries no special-use flag.** It exists as a plain folder named
+  `Archive` (no `\Archive` attribute), so it stays configured by name rather
+  than discovered from LIST flags.
+
 ## Open items and risks
 
-- **Does `imap.mail.me.com` advertise `MOVE`?** Unknown until probed. The
-  fallback path exists precisely because it may not. Probe first — it decides
-  whether the fallback needs to be right on day one.
-- **`SELECT` cost.** Mutations need a read-write select, which can be slow on a
+- **~~Does `imap.mail.me.com` advertise `MOVE`?~~** Resolved: no; the UIDPLUS
+  fallback runs in production (see Verification above), with the non-atomic
+  retry caveat handled as `mutation_state_unknown`.
+- **SELECT cost.** Mutations need a read-write select, which can be slow on a
   large INBOX and makes the server update its own state. Acceptable per
   single-uid call; do not batch.
 - **Trash vs archive semantics differ per client.** Apple Mail's own "Archive"
