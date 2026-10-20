@@ -1,9 +1,18 @@
-// REST surface for the proxy. Small hand-rolled router (three routes) with a
-// single error-mapping helper. Bodies are validated with zod v4 before any
-// IMAP work happens.
+// REST surface for the proxy. Small hand-rolled router with a single
+// error-mapping helper. Bodies are validated with zod v4 before any IMAP work
+// happens.
 
 import { z } from "zod";
-import { ApiError, getAttachment, getMessage, healthCheck, listMailboxes, searchMail } from "./core";
+import {
+  ApiError,
+  getAttachment,
+  getMessage,
+  healthCheck,
+  listMailboxes,
+  mutateMessage,
+  searchMail,
+  type MutationAction,
+} from "./core";
 import { ImapError } from "./imap";
 import type { Env, SearchParams } from "./types";
 
@@ -146,6 +155,32 @@ async function handleGetAttachment(
 }
 
 /**
+ * POST /v1/messages/:mailbox/:uidValidity/:uid/{archive,trash}: file one
+ * message into the fixed archive or trash mailbox. The destination is
+ * configured server-side and never read from the request.
+ */
+async function handleMutation(
+  segments: string[],
+  action: MutationAction,
+  env: Env,
+): Promise<Response> {
+  const [mailboxEnc, uidValidityStr, uidStr] = segments;
+  let mailbox: string;
+  try {
+    mailbox = decodeURIComponent(mailboxEnc);
+  } catch {
+    return errorBody("invalid_request", "mailbox path segment is not valid", 400);
+  }
+  if (!/^\d+$/.test(uidValidityStr) || !/^\d+$/.test(uidStr)) {
+    return errorBody("invalid_request", "uidValidity and uid must be integers", 400);
+  }
+  const result = await mutateMessage(env, action, mailbox, Number(uidValidityStr), Number(uidStr), {
+    principal: "bearer",
+  });
+  return json(result);
+}
+
+/**
  * GET /healthz: prove the Worker can actually reach and authenticate to
  * imap.mail.me.com right now (LOGIN + LOGOUT, no EXAMINE, nothing else). An
  * ImapError here is a known "the mail server is having trouble" state, so it
@@ -192,6 +227,17 @@ export async function handleRest(request: Request, env: Env): Promise<Response> 
       segments[1] === "search"
     ) {
       return await handleSearch(request, env);
+    }
+
+    // POST /v1/messages/:mailbox/:uidValidity/:uid/archive | .../trash
+    if (
+      request.method === "POST" &&
+      segments.length === 6 &&
+      segments[0] === "v1" &&
+      segments[1] === "messages" &&
+      (segments[5] === "archive" || segments[5] === "trash")
+    ) {
+      return await handleMutation(segments.slice(2), segments[5], env);
     }
 
     // GET /v1/messages/:mailbox/:uidValidity/:uid/attachments/:index

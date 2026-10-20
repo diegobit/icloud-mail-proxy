@@ -15,6 +15,11 @@ export interface Env {
   ALLOWED_ATTACHMENT_TYPES: string;
   // Cap on the encoded size of a single downloadable attachment, in bytes.
   MAX_ATTACHMENT_BYTES: string;
+  // Mutations (plans/mailbox-mutations.md): the two fixed destinations for
+  // archive_mail / delete_mail. Configuration only, never request input; the
+  // defaults are "Archive" and "Deleted Messages".
+  ALLOWED_ARCHIVE_MAILBOX?: string;
+  ALLOWED_TRASH_MAILBOX?: string;
   // OAuth on /mcp (plans/oauth-mcp.md). OAUTH_KV stores grants, tokens and
   // consent handles; the limiters guard the unauthenticated registration and
   // token endpoints; OAUTH_PROVIDER is injected by

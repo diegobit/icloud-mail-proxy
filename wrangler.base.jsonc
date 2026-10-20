@@ -53,6 +53,13 @@
     "MAX_SEARCH_DAYS": "90",
     "ALLOWED_ATTACHMENT_TYPES": "application/pdf,image/,text/",
     "MAX_ATTACHMENT_BYTES": "2097152",
+    // The two fixed destinations for archive_mail / delete_mail
+    // (plans/mailbox-mutations.md). They are config, never request input, and
+    // need not appear in ALLOWED_MAILBOXES (the trash is normally unreadable
+    // through this proxy). Confirm the exact folder names in the account
+    // before relying on the defaults; see DEPLOY.md.
+    "ALLOWED_ARCHIVE_MAILBOX": "Archive",
+    "ALLOWED_TRASH_MAILBOX": "Deleted Messages",
     // Sending (plans/email-send.md). These are non-personal defaults; the
     // hard maxima live in src/send-policy.ts and cannot be exceeded here.
     // SEND_MAX_PER_DAY=0 refuses every send (the kill switch).

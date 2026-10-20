@@ -5,7 +5,8 @@ mailbox (list mailboxes, search, fetch a message) over HTTP or MCP without
 running anything locally, keeping the Apple credentials on the Worker rather
 than on whatever machine the agent runs on — and it can send mail: new
 messages, replies and forwards, plus saving a message into the real Drafts
-folder so it can be finished from any mail app.
+folder so it can be finished from any mail app. It can also file mail: archive
+a message or move it to iCloud's trash, one message at a time.
 
 One deployment serves one iCloud account and lives in its owner's Cloudflare
 account. The examples in this README use the author's instance at
@@ -196,7 +197,7 @@ rollback, automated deploys: [DEPLOY.md](DEPLOY.md).
 
 ```
 Agent  --HTTPS (REST /v1 or MCP /mcp)-->  Cloudflare Worker  --IMAPS:993-->        imap.mail.me.com
-       <-- JSON -----------------------                    <-- LOGIN/EXAMINE/UID SEARCH/UID FETCH BODY.PEEK/APPEND/LOGOUT --
+       <-- JSON -----------------------                    <-- LOGIN/EXAMINE/SELECT/UID SEARCH/UID FETCH BODY.PEEK/APPEND/UID MOVE/LOGOUT --
                                                           --SMTP STARTTLS:587-->  smtp.mail.me.com
 ```
 
@@ -204,9 +205,12 @@ The Worker speaks a small, hand-rolled IMAP client (`src/imap.ts`) directly
 over a TLS socket (`cloudflare:sockets`) to `imap.mail.me.com:993`. Reads only
 ever issue `LOGIN`, `EXAMINE`, `UID SEARCH`, `UID FETCH` (always
 `BODY.PEEK[...]`, never `BODY[...]`) and `LOGOUT`, so no command can mark a
-message as read. The one write it can issue is `APPEND`: saving a draft into
-the `Drafts` mailbox, and (when `SEND_SENT_COPY` is enabled) a copy of a sent
-message into `Sent Messages`.
+message as read. Writes are narrow: `APPEND` saves a draft into the `Drafts`
+mailbox (and, when `SEND_SENT_COPY` is enabled, a copy of a sent message into
+`Sent Messages`), and a mutation issues a read-write `SELECT` followed by
+`UID MOVE`, or by `UID COPY` + `\Deleted` + `UID EXPUNGE` when the server
+advertises `UIDPLUS` but not `MOVE`. A mutation files exactly one message into
+a fixed, configured destination. See [Filing and deleting](#filing-and-deleting).
 
 Sending is a separate client (`src/smtp.ts`) to `smtp.mail.me.com:587`
 (STARTTLS, `AUTH PLAIN`), reachable only through the `send_mail` tool. The
@@ -357,6 +361,26 @@ mailbox was reset or reorganized server-side), this returns `409` with code
 `uidvalidity_mismatch`. Treat this as "the id is stale": re-run `/v1/search`
 to get fresh `(uidValidity, uid)` pairs before retrying.
 
+### `POST /v1/messages/:mailbox/:uidValidity/:uid/archive` and `.../trash`
+
+File one message into the account's archive or trash. There is no request body:
+the destination is configured server-side, never taken from the caller (see
+[Filing and deleting](#filing-and-deleting)).
+
+```
+curl -X POST -H "Authorization: Bearer $API_TOKEN" \
+  "https://icloud-mail.diegobit.com/v1/messages/INBOX/1699999999/4821/archive"
+```
+
+```json
+{ "ok": true, "action": "archive", "mailbox": "INBOX", "uid": 4821, "destination": "Archive" }
+```
+
+`trash` moves the message to `Deleted Messages`; it never deletes anything
+permanently. `409 uidvalidity_mismatch` and `400 mailbox_not_allowed` mean the
+same as on the read endpoints, and a uid that is no longer in the source
+mailbox returns `404 message_not_found`, which makes the call safe to re-run.
+
 ### `GET /v1/messages/:mailbox/:uidValidity/:uid/attachments/:index`
 
 Download one attachment's content. `index` is the 0-based position of the
@@ -402,11 +426,11 @@ A stateless Streamable HTTP MCP server is served at `/mcp`, exposing four read
 tools that mirror the REST endpoints — `list_mailboxes`, `search_mail`,
 `get_mail_message`, and `get_mail_attachment` (returns
 `{ filename, mimeType, size, contentBase64 }`, base64 of the decoded content,
-subject to the same type allowlist and size cap) — plus two sending tools:
-`send_mail` (a new message, a reply or a forward, submitted immediately) and
-`save_draft` (the same message put into iCloud's `Drafts` folder, to be
-finished from any mail app). A fresh `McpServer` is built per request; no
-session state is held between calls.
+subject to the same type allowlist and size cap) — plus two filing tools,
+`archive_mail` and `delete_mail`, and two sending tools: `send_mail` (a new
+message, a reply or a forward, submitted immediately) and `save_draft` (the same
+message put into iCloud's `Drafts` folder, to be finished from any mail app). A
+fresh `McpServer` is built per request; no session state is held between calls.
 
 `/mcp` accepts two credentials: the static bearer token (Claude Code, opencode,
 Codex CLI, curl) and OAuth 2.1 access tokens issued by this Worker for
@@ -460,13 +484,51 @@ caller passes `allowDuplicate: true`: that is what keeps a client that retries
 after a timeout from sending twice. Sends are logged as metadata only
 (principal, recipient count and domains, SMTP code, duration), never content.
 
+## Filing and deleting
+
+Any authenticated client can file one message at a time: `archive_mail` and
+`delete_mail` over MCP, or `POST /v1/messages/:mailbox/:uidValidity/:uid/archive`
+and `.../trash` over REST. Both take the id from a search result
+(`mailbox`, `uidValidity`, `uid`).
+
+- **Two fixed destinations, chosen by configuration, never by the caller.**
+  `archive_mail` files into `ALLOWED_ARCHIVE_MAILBOX` (default `Archive`) and
+  `delete_mail` into `ALLOWED_TRASH_MAILBOX` (default `Deleted Messages`).
+  Requests cannot name a mailbox, set flags, or create/delete folders.
+- **`delete_mail` means trash, not expunge.** The message is moved into iCloud's
+  trash, where it stays recoverable for Apple's retention window (about 30
+  days). This proxy has no permanent-delete command: emptying the trash stays
+  the owner's action in a mail client.
+- **It files the message, and only that message.** The source mailbox must be
+  in `ALLOWED_MAILBOXES`. The server uses `UID MOVE` (RFC 6851) when it
+  advertises `MOVE`; otherwise it falls back to `UID COPY` + `\Deleted` + `UID
+  EXPUNGE` when the server advertises `UIDPLUS`. If the server advertises
+  neither, the call fails with `502 unsupported_move` rather than issuing a
+  plain `EXPUNGE`, which would purge every `\Deleted` message in the mailbox.
+- **Re-running is safe.** A uid that is no longer in the source mailbox returns
+  `404 message_not_found`; an expired id returns `409 uidvalidity_mismatch`
+  (re-run the search first). After a dropped connection the move may already
+  have happened, so calling once more and treating `message_not_found` as
+  success is the expected recovery — the tool descriptions say so.
+- **Audit is live only.** Each mutation logs one structured `mail_mutation`
+  line (principal, action, mailbox, uid, destination — no subject, no body) that
+  `wrangler tail` shows. There is no durable mutation history; the `SEND_LEDGER`
+  audit trail covers sends only.
+
+Unlike sending, filing is reversible from a mail client: archive a message back
+to the INBOX or restore it from the trash by hand.
+
 ## Security model
 
-- **Reads are read-only.** The IMAP client only ever sends `LOGIN`,
-  `EXAMINE` (the read-only form of `SELECT`), `UID SEARCH`, `UID FETCH`
-  with `BODY.PEEK[...]` (never `BODY[...]`, which would set `\Seen`), the one
-  write command `APPEND` (a draft into `Drafts`, or the optional sent copy),
-  and `LOGOUT`. No command can mark a message as read or delete anything.
+- **Reads are read-only; writes are narrow.** Reading sends `EXAMINE` (the
+  read-only form of `SELECT`), `UID SEARCH`, `UID FETCH` with `BODY.PEEK[...]`
+  (never `BODY[...]`, which would set `\Seen`), and `LOGOUT`. The only writes
+  are `APPEND` (a draft into `Drafts`, or the optional sent copy) and the two
+  mutations, which use `SELECT` and then `UID MOVE`, or `UID COPY` + `UID
+  STORE` with exactly `\Deleted` + `UID EXPUNGE` on the same uid when only
+  `UIDPLUS` is available. There is no bare `EXPUNGE`, no `STORE` of any other
+  flag, no `CREATE`/`DELETE` of a mailbox, and no permanent delete. Nothing can
+  mark a message read.
 - **Sending is direct, by the owner's decision.** The agent sends; there is no
   approval step. An email whose content instructs the agent to send something
   can therefore produce a real message, bounded only by the caps above and
@@ -511,11 +573,13 @@ after a timeout from sending twice. Sends are logged as metadata only
   the user or the system. Agents consuming this proxy must not treat that
   text as instructions to act on — the MCP tool description and server
   instructions both call this out explicitly. An injected instruction can make
-  the agent send real mail; the caps bound the volume and the audit trail shows
-  what happened, and nothing else stands in the way (see
-  [Sending mail](#sending-mail)).
+  the agent send real mail, archive a message, or move it to the trash; the
+  send caps bound the volume, the mutation destinations are fixed, and the
+  audit output shows what happened, but nothing else stands in the way (see
+  [Sending mail](#sending-mail) and [Filing and deleting](#filing-and-deleting)).
 - **Hard caps everywhere.** Only mailboxes in `ALLOWED_MAILBOXES` can be
-  read; `MAX_RESULTS` caps how many summaries a search returns;
+  read, and a mutation can only move one uid into one of its two configured
+  destinations; `MAX_RESULTS` caps how many summaries a search returns;
   `MAX_SEARCH_DAYS` caps how far back a search can look (an explicit `after`
   can only narrow this window, never widen it); `MAX_MESSAGE_BYTES` caps how
   many bytes of a message are ever fetched (larger messages are returned
