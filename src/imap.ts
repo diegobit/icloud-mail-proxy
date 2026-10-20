@@ -1,10 +1,18 @@
-// Read-only IMAP session over a direct-TLS Cloudflare socket.
+// IMAP session over a direct-TLS Cloudflare socket.
 //
-// The proxy only ever issues LOGIN, EXAMINE, UID SEARCH, UID FETCH (always
-// BODY.PEEK, never BODY[]) and LOGOUT. Sockets are created per call to open()
-// and never held at module scope.
+// The proxy only ever issues LOGIN, EXAMINE, SELECT (mutations only), UID
+// SEARCH, UID FETCH (always BODY.PEEK, never BODY[]), APPEND, the mutation
+// commands framed in imap-mutations.ts and LOGOUT. Sockets are created per call
+// to open() and never held at module scope.
 
 import { buildAppend } from "./imap-append";
+import {
+  buildCopy,
+  buildMove,
+  buildStoreDeleted,
+  buildUidExpunge,
+  chooseMoveStrategy,
+} from "./imap-mutations";
 import { defaultImapSocketFactory } from "./imap-socket";
 import {
   ImapParseError,
@@ -20,7 +28,15 @@ import {
 
 export type { Envelope };
 
-export type ImapErrorCode = "NO" | "BAD" | "BYE" | "PARSE" | "TIMEOUT" | "LIMIT";
+export type ImapErrorCode =
+  | "NO"
+  | "BAD"
+  | "BYE"
+  | "PARSE"
+  | "TIMEOUT"
+  | "LIMIT"
+  | "UNSUPPORTED"
+  | "UNKNOWN";
 
 export class ImapError extends Error {
   code: ImapErrorCode;
@@ -132,6 +148,78 @@ export class ImapSession {
       return parseExamineResponse(textLines(untagged));
     } catch (e) {
       throw toImapError(e);
+    }
+  }
+
+  /**
+   * SELECT (read-write), needed before a mutation. The untagged responses are
+   * the same as EXAMINE's, so they share the parser.
+   */
+  async select(mailbox: string): Promise<{ uidValidity: number; exists: number }> {
+    try {
+      const untagged = await this.command(`SELECT ${quoteImapString(mailbox)}`, "SELECT");
+      return parseExamineResponse(textLines(untagged));
+    } catch (e) {
+      throw toImapError(e);
+    }
+  }
+
+  /**
+   * File one message into `destination` (a fixed, configured mailbox — never
+   * request input): `UID MOVE` when the server advertises MOVE, otherwise
+   * COPY + `\Deleted` + `UID EXPUNGE` when it advertises UIDPLUS.
+   *
+   * Without either capability this throws ImapError "UNSUPPORTED" instead of
+   * falling back to a plain EXPUNGE, which would remove every `\Deleted`
+   * message in the mailbox rather than just this uid. The caller selects the
+   * mailbox first; this method issues no SELECT of its own.
+   */
+  async uidMove(uid: number, destination: string): Promise<void> {
+    assertUid(uid);
+    let capabilities: Set<string>;
+    try {
+      capabilities = await this.capability();
+    } catch (e) {
+      // A dropped connection must reach the caller's BYE retry: reporting it
+      // as "unsupported" would hide a transient failure. Any other unreadable
+      // capability list means "no MOVE and no UIDPLUS": the conservative
+      // branch below refuses rather than guessing.
+      if (e instanceof ImapError && e.code === "BYE") throw e;
+      capabilities = new Set();
+    }
+    const strategy = chooseMoveStrategy(capabilities);
+
+    let fallbackStarted = false;
+    try {
+      if (strategy === "unsupported") {
+        throw new ImapError(
+          "UNSUPPORTED",
+          "server advertises neither MOVE nor UIDPLUS; refusing to EXPUNGE the whole mailbox",
+        );
+      }
+      if (strategy === "move") {
+        await this.command(buildMove(uid, destination), "UID MOVE");
+        return;
+      }
+      // The UIDPLUS fallback is three commands, not one atomic MOVE. If the
+      // connection drops after the first one, the state is genuinely unknown:
+      // the copy may be in the destination while the message is still in the
+      // source, so a blind retry would file a second copy. Surface that as
+      // UNKNOWN (not BYE, which the caller retries) and let it check both
+      // mailboxes.
+      fallbackStarted = true;
+      await this.command(buildCopy(uid, destination), "UID COPY");
+      await this.command(buildStoreDeleted(uid), "UID STORE");
+      await this.command(buildUidExpunge(uid), "UID EXPUNGE");
+    } catch (e) {
+      const error = toImapError(e);
+      if (fallbackStarted && error.code === "BYE") {
+        throw new ImapError(
+          "UNKNOWN",
+          `connection dropped during the move; the message may already be filed: ${error.message}`,
+        );
+      }
+      throw error;
     }
   }
 
@@ -349,10 +437,10 @@ export class ImapSession {
   }
 
   /**
-   * APPEND a message literal to a mailbox (plans/email-send.md, step 8). The
-   * one write command this proxy issues: saving a draft into iCloud's Drafts
-   * mailbox, and optionally filing a sent copy. Flags are restricted by
-   * buildAppend; the literal is the exact serialized message.
+   * APPEND a message literal to a mailbox (plans/email-send.md, step 8):
+   * saving a draft into iCloud's Drafts mailbox, and optionally filing a sent
+   * copy. Flags are restricted by buildAppend; the literal is the exact
+   * serialized message.
    *
    * The literal is synchronizing (`{n}`) unless the server advertises
    * LITERAL+, in which case it is sent as the non-synchronizing `{n+}`: with

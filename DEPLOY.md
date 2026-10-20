@@ -64,6 +64,23 @@ The send path adds one binding and a set of caps:
   ignored in favour of `smtp.mail.me.com:587` with mandatory STARTTLS, so a
   stray binding cannot redirect production mail or downgrade it.
 
+Filing mail adds two base vars, both destinations and never request input:
+
+- `ALLOWED_ARCHIVE_MAILBOX` (default `Archive`) — where `archive_mail` and
+  `POST .../archive` file a message. Point it at the same folder Apple Mail's
+  Archive button uses, or the account ends up with two archives.
+- `ALLOWED_TRASH_MAILBOX` (default `Deleted Messages`) — where `delete_mail`
+  and `POST .../trash` move a message. **Confirm the exact name first**, spaces
+  included: from a mail client, ask the server for its trash
+  (`LIST "" "Deleted*"`, or look at the folder Apple Mail moves deleted mail
+  into). If the account uses a different name, set it here and deploy.
+  Probed on a live account on 2026-10-20: the mailbox is exactly
+  `Deleted Messages` and carries the `\Trash` flag; `Archive` exists under that
+  name but has no special-use flag, so it must stay configured by name.
+- Neither folder needs to be in `ALLOWED_MAILBOXES` (the trash is normally not
+  readable through this proxy), and a destination equal to the source mailbox
+  is refused at runtime.
+
 ## Migrating the production deployment
 
 The tracked config no longer carries the `icloud-mail.diegobit.com` route: it
@@ -193,6 +210,30 @@ generate a new token, because that would break every existing client.
 - **"Duplicate send":** the same message was submitted less than a minute ago;
   pass `allowDuplicate: true` only when the user really wants it sent twice.
 - **Rate-limit sending further:** tighten the `SEND_*` caps.
+
+## Filing operations
+
+- **Confirm both destinations before relying on them:** `ALLOWED_ARCHIVE_MAILBOX`
+  and `ALLOWED_TRASH_MAILBOX` are configuration only, and must match the
+  account's real folder names (spaces included). The defaults are `Archive` and
+  `Deleted Messages`; see [Configuration and targets](#configuration-and-targets).
+- **Inspect what happened:** `wrangler tail` shows one `mail_mutation` line per
+  call — principal, action, source mailbox, uid and destination; never the
+  subject or body. Unlike sends, mutations have no durable audit trail.
+- **"unsupported_move":** iCloud advertised neither `MOVE` nor `UIDPLUS`, so
+  the proxy refused instead of risking a mailbox-wide `EXPUNGE`. File the
+  message from a mail client; there is no safe fallback left.
+- **"message_not_found":** the uid is no longer in the source mailbox; treat
+  it as success when the message is gone from the source.
+- **"mutation_state_unknown":** the connection dropped after the move started.
+  iCloud has no `MOVE`, so the proxy runs `COPY` + `STORE \Deleted` + `UID
+  EXPUNGE`; those steps are not atomic, and the copy may already be in the
+  destination while the source still holds the message. Do not retry blindly —
+  a second copy would be filed. Check both mailboxes first.
+- **"uidvalidity_mismatch":** the mailbox was reorganized; re-run the search
+  and use the fresh ids. Nothing was moved.
+- **Restoring mail:** move the message back from `Archive` or the trash in a
+  mail client. This proxy has no restore tool and never empties the trash.
 
 ## Recovering an interrupted setup
 

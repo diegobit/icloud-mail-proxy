@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { buildAppend } from "../src/imap-append";
-import { ImapError, ImapSession, type ImapSocketLike } from "../src/imap";
+import { ImapError, ImapSession } from "../src/imap";
 import { ImapParseError } from "../src/imap-parse";
+import { fakeSocket, login, type ScriptedServer } from "./support/scripted-imap";
 
 const bytes = new Uint8Array([1, 2, 3, 4, 5]);
 
@@ -38,64 +39,11 @@ describe("buildAppend", () => {
   });
 });
 
-/** Scripted IMAP server over an in-memory duplex. */
-class ScriptedServer {
-  private buffer = "";
-  received = "";
-  constructor(
-    private reader: ReadableStreamDefaultReader<Uint8Array>,
-    private writer: WritableStreamDefaultWriter<Uint8Array>,
-  ) {}
-
-  async send(text: string): Promise<void> {
-    await this.writer.write(new TextEncoder().encode(text));
-  }
-
-  async line(): Promise<string> {
-    for (;;) {
-      const index = this.buffer.indexOf("\r\n");
-      if (index >= 0) {
-        const line = this.buffer.slice(0, index);
-        this.buffer = this.buffer.slice(index + 2);
-        this.received += `${line}\r\n`;
-        return line;
-      }
-      const { value, done } = await this.reader.read();
-      if (done) throw new Error("client closed the connection");
-      if (value) this.buffer += new TextDecoder("latin1").decode(value);
-    }
-  }
-
-  async bytes(count: number): Promise<string> {
-    while (this.buffer.length < count) {
-      const { value, done } = await this.reader.read();
-      if (done) throw new Error("client closed the connection");
-      if (value) this.buffer += new TextDecoder("latin1").decode(value);
-    }
-    const out = this.buffer.slice(0, count);
-    this.buffer = this.buffer.slice(count);
-    this.received += out;
-    return out;
-  }
-}
-
-function fakeSocket(): { socket: ImapSocketLike; server: ScriptedServer } {
-  const c2s = new TransformStream<Uint8Array, Uint8Array>();
-  const s2c = new TransformStream<Uint8Array, Uint8Array>();
-  const server = new ScriptedServer(c2s.readable.getReader(), s2c.writable.getWriter());
-  return {
-    socket: { readable: s2c.readable, writable: c2s.writable, close: async () => {} },
-    server,
-  };
-}
-
 const RAW = new TextEncoder().encode("Subject: x\r\n\r\nCiao\r\n");
 
 /** Greeting + LOGIN + CAPABILITY exchange shared by the append tests. */
 async function handshake(server: ScriptedServer, capabilities: string): Promise<void> {
-  await server.send("* OK [CAPABILITY IMAP4rev1] ready\r\n");
-  expect(await server.line()).toBe('A1 LOGIN "owner@example.com" "app-pass"');
-  await server.send("A1 OK logged in\r\n");
+  await login(server);
   expect(await server.line()).toBe("A2 CAPABILITY");
   await server.send(`* CAPABILITY ${capabilities}\r\n`);
   await server.send("A2 OK done\r\n");

@@ -390,6 +390,146 @@ export async function getMessage(
   });
 }
 
+/** The two mailbox mutations this proxy performs (plans/mailbox-mutations.md). */
+export type MutationAction = "archive" | "trash";
+
+/** Destinations used when the corresponding env var is unset or blank. */
+const DEFAULT_MUTATION_DESTINATION: Record<MutationAction, string> = {
+  archive: "Archive",
+  trash: "Deleted Messages",
+};
+
+export interface MutationResult {
+  ok: true;
+  action: MutationAction;
+  mailbox: string;
+  uid: number;
+  destination: string;
+}
+
+/**
+ * Resolve an action's one fixed destination from configuration. The request
+ * never names it: the worst a prompt-injected caller can do is file a message
+ * into one of these two mailboxes, where the owner can still see it.
+ */
+function mutationDestination(env: Env, action: MutationAction): string {
+  const configured =
+    action === "archive" ? env.ALLOWED_ARCHIVE_MAILBOX : env.ALLOWED_TRASH_MAILBOX;
+  const trimmed = (configured ?? "").trim();
+  const destination = trimmed.length > 0 ? trimmed : DEFAULT_MUTATION_DESTINATION[action];
+  try {
+    // The same guard the session applies: printable ASCII, no CR/LF/NUL.
+    quoteImapString(destination);
+  } catch {
+    throw new ApiError(
+      500,
+      "invalid_mutation_destination",
+      `the configured ${action} mailbox is not a valid IMAP mailbox name`,
+    );
+  }
+  return destination;
+}
+
+/**
+ * File one message into a fixed destination: `archive` -> ALLOWED_ARCHIVE_MAILBOX,
+ * `trash` -> ALLOWED_TRASH_MAILBOX. This is the only write beyond APPEND, and
+ * it can never expunge permanently: trashing moves the message into iCloud's
+ * trash, where it stays recoverable for the server's retention window.
+ *
+ * Re-running is safe: a uid that is no longer in the source mailbox is a 404
+ * message_not_found, and after a "BYE" retry the message may already have moved.
+ */
+export async function mutateMessage(
+  env: Env,
+  action: MutationAction,
+  mailbox: string,
+  uidValidity: number,
+  uid: number,
+  options: { principal?: string } = {},
+): Promise<MutationResult> {
+  assertMailboxAllowed(env, mailbox);
+  if (!Number.isSafeInteger(uidValidity) || uidValidity <= 0) {
+    throw new ApiError(400, "invalid_uidvalidity", "uidValidity must be a positive integer");
+  }
+  if (!Number.isSafeInteger(uid) || uid <= 0) {
+    throw new ApiError(400, "invalid_uid", "uid must be a positive integer");
+  }
+  const destination = mutationDestination(env, action);
+  if (mailbox === destination) {
+    throw new ApiError(
+      400,
+      "destination_is_source",
+      `mailbox ${JSON.stringify(mailbox)} is already the ${action} destination`,
+    );
+  }
+
+  return withRetryOnce(async () => {
+    const session = await ImapSession.open(env.ICLOUD_USER, env.ICLOUD_APP_PASSWORD);
+    try {
+      const selected = await session.select(mailbox);
+      if (selected.uidValidity !== uidValidity) {
+        throw new ApiError(
+          409,
+          "uidvalidity_mismatch",
+          `UIDVALIDITY changed (now ${selected.uidValidity}); re-run the search to get fresh ids`,
+        );
+      }
+
+      // RFC 6851 lets a server answer a UID MOVE of a missing uid with OK, so
+      // the message is proven to exist first: a stale id must not look like a
+      // successful move.
+      try {
+        await session.fetchSize(uid);
+      } catch (e) {
+        const code = (e as { code?: string }).code;
+        if (code === "PARSE" || code === "NO") {
+          throw new ApiError(404, "message_not_found", `no message with uid ${uid}`);
+        }
+        throw e;
+      }
+
+      try {
+        await session.uidMove(uid, destination);
+      } catch (e) {
+        if (e instanceof ImapError && e.code === "UNSUPPORTED") {
+          throw new ApiError(
+            502,
+            "unsupported_move",
+            "the mail server supports neither MOVE nor UIDPLUS, so the message cannot be filed safely",
+          );
+        }
+        if (e instanceof ImapError && e.code === "UNKNOWN") {
+          // The COPY fallback is not atomic: a drop can leave the copy in the
+          // destination and the message still in the source. Never retry this
+          // automatically — that is how a message gets filed twice.
+          throw new ApiError(
+            502,
+            "mutation_state_unknown",
+            "the connection dropped after the move started; the message may already be in the destination, possibly with the source still present. Check both mailboxes before acting — re-running can file a duplicate.",
+          );
+        }
+        throw e;
+      }
+
+      // Metadata only, and no durable trail: wrangler tail shows the line.
+      console.log(
+        "mail_mutation",
+        JSON.stringify({
+          principal: options.principal ?? "unknown",
+          action,
+          mailbox,
+          uid,
+          destination,
+        }),
+      );
+
+      return { ok: true as const, action, mailbox, uid, destination };
+    } finally {
+      await session.logout();
+    }
+  });
+}
+
 /**
  * Fetch the parent message of a reply or a forward (plans/email-send.md,
  * step 5): the headers needed for threading (message id, references,
