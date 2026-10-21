@@ -3,10 +3,12 @@ import {
   DEFAULT_TIME_ZONE,
   calendarConfig,
   calendarLimits,
+  calendarWritesEnabled,
   calendarsEnabled,
   enabledResourceScopes,
   parseAllowlist,
   reminderListsEnabled,
+  reminderWritesEnabled,
   requiredScopes,
   scopeProfile,
   supportedScopes,
@@ -70,6 +72,15 @@ describe("calendarConfig", () => {
     expect(calendarConfig(makeEnv({ CALENDAR_WRITE: "true" })).calendarWrite).toBe(false);
     expect(calendarConfig(makeEnv({ CALENDAR_WRITE: "0" })).calendarWrite).toBe(false);
     expect(calendarConfig(makeEnv({ REMINDERS_WRITE: "1" })).remindersWrite).toBe(true);
+  });
+
+  it("runs writes only when the domain is enabled and its flag is on", () => {
+    expect(calendarWritesEnabled(makeEnv({ ALLOWED_CALENDARS: "*", CALENDAR_WRITE: "1" }))).toBe(true);
+    expect(calendarWritesEnabled(makeEnv({ ALLOWED_CALENDARS: "", CALENDAR_WRITE: "1" }))).toBe(false);
+    expect(calendarWritesEnabled(makeEnv({ ALLOWED_CALENDARS: "*", CALENDAR_WRITE: "0" }))).toBe(false);
+    expect(reminderWritesEnabled(makeEnv({ ALLOWED_REMINDER_LISTS: "*", REMINDERS_WRITE: "1" }))).toBe(true);
+    expect(reminderWritesEnabled(makeEnv({ ALLOWED_REMINDER_LISTS: "", REMINDERS_WRITE: "1" }))).toBe(false);
+    expect(reminderWritesEnabled(makeEnv({ ALLOWED_REMINDER_LISTS: "*", REMINDERS_WRITE: "0" }))).toBe(false);
   });
 
   it("passes a malformed allowlist through as a configuration error", () => {

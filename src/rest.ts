@@ -4,10 +4,15 @@
 
 import { z } from "zod";
 import { CalDavError } from "./caldav";
-import { calendarsEnabled, reminderListsEnabled } from "./calendar-config";
+import {
+  calendarWritesEnabled,
+  calendarsEnabled,
+  reminderListsEnabled,
+} from "./calendar-config";
 import { listCollections, type CollectionKind } from "./calendar-core";
 import { getEvent, listEvents } from "./calendar-events";
 import { getReminder, listReminders } from "./calendar-reminders";
+import { createEvent, updateEvent } from "./calendar-write";
 import {
   ApiError,
   getAttachment,
@@ -45,6 +50,53 @@ const searchSchema = z
     beforeUid: z.number().int().positive().optional(),
   })
   .strict();
+
+const createEventBodySchema = z
+  .object({
+    id: z.string().min(1).optional(),
+    summary: z.string().min(1),
+    start: z.string().min(1),
+    end: z.string().min(1),
+    timeZone: z.string().min(1).optional(),
+    allDay: z.boolean().optional(),
+    location: z.string().nullable().optional(),
+    description: z.string().nullable().optional(),
+  })
+  .strict();
+
+const updateEventBodySchema = z
+  .object({
+    etag: z.string().min(1),
+    summary: z.string().min(1).optional(),
+    start: z.string().min(1).optional(),
+    end: z.string().min(1).optional(),
+    timeZone: z.string().min(1).optional(),
+    allDay: z.boolean().optional(),
+    location: z.string().nullable().optional(),
+    description: z.string().nullable().optional(),
+  })
+  .strict();
+
+const CREATE_EVENT_FIELDS = new Set([
+  "id",
+  "summary",
+  "start",
+  "end",
+  "timeZone",
+  "allDay",
+  "location",
+  "description",
+]);
+const UPDATE_EVENT_FIELDS = new Set([
+  "etag",
+  "summary",
+  "start",
+  "end",
+  "timeZone",
+  "allDay",
+  "location",
+  "description",
+]);
 
 /** Translate any thrown value into a JSON error Response. */
 function mapError(e: unknown): Response {
@@ -292,6 +344,86 @@ async function handleGetEvent(
   return json(await getEvent(env, { calendar, id, from: queryValue(url, "from") }));
 }
 
+async function readJsonBody(request: Request): Promise<unknown> {
+  try {
+    return await request.json();
+  } catch {
+    throw new SyntaxError("request body is not valid JSON");
+  }
+}
+
+/** Any key outside the structured schema is an unsupported field, not a typo to ignore. */
+function assertKnownFields(raw: unknown, allowed: ReadonlySet<string>, tool: string): void {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return;
+  const unknown = Object.keys(raw).filter((key) => !allowed.has(key));
+  if (unknown.length === 0) return;
+  throw new ApiError(
+    400,
+    "unsupported_field",
+    `${tool} does not accept ${unknown.map((key) => JSON.stringify(key)).join(", ")}; ` +
+      `accepted fields are ${[...allowed].join(", ")}`,
+  );
+}
+
+function writeDisabled(env: Env): Response | null {
+  if (calendarWritesEnabled(env)) return null;
+  return errorBody(
+    "not_supported",
+    calendarsEnabled(env)
+      ? "calendar writes are disabled: set CALENDAR_WRITE to 1"
+      : "calendars are disabled: ALLOWED_CALENDARS is empty",
+    404,
+  );
+}
+
+/** POST /v1/calendars/:calendar/events */
+async function handleCreateEvent(
+  request: Request,
+  calendarSegment: string,
+  env: Env,
+): Promise<Response> {
+  const disabled = writeDisabled(env);
+  if (disabled !== null) return disabled;
+  const calendar = decodeSegment(calendarSegment, "calendar");
+  const raw = await readJsonBody(request);
+  assertKnownFields(raw, CREATE_EVENT_FIELDS, "create_event");
+  const body = createEventBodySchema.parse(raw);
+  const result = await createEvent(
+    env,
+    { calendar, ...body },
+    {
+      principal: "bearer",
+      rateLimitKey: request.headers.get("CF-Connecting-IP") ?? "unknown",
+    },
+  );
+  return json(result, 201);
+}
+
+/** PUT /v1/calendars/:calendar/events/:id */
+async function handleUpdateEvent(
+  request: Request,
+  calendarSegment: string,
+  idSegment: string,
+  env: Env,
+): Promise<Response> {
+  const disabled = writeDisabled(env);
+  if (disabled !== null) return disabled;
+  const calendar = decodeSegment(calendarSegment, "calendar");
+  const id = decodeSegment(idSegment, "event id");
+  const raw = await readJsonBody(request);
+  assertKnownFields(raw, UPDATE_EVENT_FIELDS, "update_event");
+  const body = updateEventBodySchema.parse(raw);
+  const result = await updateEvent(
+    env,
+    { calendar, id, ...body },
+    {
+      principal: "bearer",
+      rateLimitKey: request.headers.get("CF-Connecting-IP") ?? "unknown",
+    },
+  );
+  return json(result);
+}
+
 /** GET /v1/reminder-lists/:list/reminders?includeCompleted=&dueFrom=&dueTo= */
 async function handleListReminders(
   url: URL,
@@ -403,6 +535,28 @@ export async function handleRest(request: Request, env: Env): Promise<Response> 
       segments[3] === "events"
     ) {
       return await handleListEvents(url, segments[2], env);
+    }
+
+    // POST /v1/calendars/:calendar/events
+    if (
+      request.method === "POST" &&
+      segments.length === 4 &&
+      segments[0] === "v1" &&
+      segments[1] === "calendars" &&
+      segments[3] === "events"
+    ) {
+      return await handleCreateEvent(request, segments[2], env);
+    }
+
+    // PUT /v1/calendars/:calendar/events/:id
+    if (
+      request.method === "PUT" &&
+      segments.length === 5 &&
+      segments[0] === "v1" &&
+      segments[1] === "calendars" &&
+      segments[3] === "events"
+    ) {
+      return await handleUpdateEvent(request, segments[2], segments[4], env);
     }
 
     // GET /v1/reminder-lists/:list/reminders/:id

@@ -41,6 +41,24 @@ export function isResourceId(value: string): boolean {
   return RESOURCE_ID.test(value) && value !== "." && value !== "..";
 }
 
+const STRONG_ETAG = /^"[\x20-\x21\x23-\x7e]*"$/;
+
+/**
+ * Validate the ETag a caller passes back for an update. Reads tolerate a weak
+ * ETag, but If-Match needs exactly one strong, quoted tag.
+ */
+export function assertStrongEtag(value: string): string {
+  if (!STRONG_ETAG.test(value)) {
+    throw new ApiError(
+      400,
+      "invalid_etag",
+      "etag must be exactly one strong, quoted ETag returned by get_event; " +
+        "W/, *, and comma-separated lists are refused",
+    );
+  }
+  return value;
+}
+
 export function byteLength(value: string): number {
   return new TextEncoder().encode(value).byteLength;
 }

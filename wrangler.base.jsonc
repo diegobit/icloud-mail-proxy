@@ -28,9 +28,9 @@
     "bindings": [{ "name": "SEND_LEDGER", "class_name": "SendLedger" }]
   },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["SendLedger"] }],
-  // Per-IP rate limiters for the unauthenticated OAuth endpoints that write to
-  // OAUTH_KV (free tier: 1,000 writes/day): /oauth/register and /oauth/token
-  // (the latter caches CIMD client-assertion replay markers per request).
+  // Per-IP rate limiters: /oauth/register and /oauth/token are unauthenticated
+  // and write to OAUTH_KV (free tier: 1,000 writes/day); CALENDAR_WRITE_LIMITER
+  // bounds CalDAV PUTs to 30 per minute per connecting IP.
   "ratelimits": [
     {
       "name": "OAUTH_REGISTER_LIMITER",
@@ -40,6 +40,11 @@
     {
       "name": "OAUTH_TOKEN_LIMITER",
       "namespace_id": "1002",
+      "simple": { "limit": 30, "period": 60 }
+    },
+    {
+      "name": "CALENDAR_WRITE_LIMITER",
+      "namespace_id": "1003",
       "simple": { "limit": 30, "period": 60 }
     }
   ],

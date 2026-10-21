@@ -14,6 +14,7 @@ import {
   isoDate,
   isoInZone,
   isoWall,
+  tryOffsetMinutes,
   wallAsUtcMs,
   wallClockInZone,
   wallClockToUtc,
@@ -85,6 +86,62 @@ export function parseBoundValue(
   const minutes = Number(zone.slice(4, 6));
   if (hours > 23 || minutes > 59) invalid(`${label} has an invalid UTC offset: ${JSON.stringify(value)}`);
   return { wall, offsetMinutes: sign * (hours * 60 + minutes) };
+}
+
+const WALL_DATE_TIME_RE = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})$/;
+
+/**
+ * Parse a write-side wall clock. Writes never accept a Z or an offset here:
+ * the caller supplies a zone separately, so an offset would be ambiguous.
+ */
+export function parseWallDateTime(value: string, label: string): WallClock {
+  const match = WALL_DATE_TIME_RE.exec(value);
+  if (match === null) {
+    invalid(`${label} must be YYYY-MM-DDTHH:MM:SS (a wall clock, without a zone)`);
+  }
+  const wall = {
+    year: Number(match[1]),
+    month: Number(match[2]),
+    day: Number(match[3]),
+    hour: Number(match[4]),
+    minute: Number(match[5]),
+    second: Number(match[6]),
+  };
+  try {
+    assertWallClock(wall);
+  } catch {
+    invalid(`${label} is not a valid date-time: ${JSON.stringify(value)}`);
+  }
+  assertSupportedYear(dateOf(wall), label);
+  return wall;
+}
+
+/** Parse a strict write-side YYYY-MM-DD date. */
+export function parseDateOnly(value: string, label: string): DateParts {
+  const match = DATE_RE.exec(value);
+  if (match === null) invalid(`${label} must be YYYY-MM-DD`);
+  const date = { year: Number(match[1]), month: Number(match[2]), day: Number(match[3]) };
+  try {
+    assertWallClock({ ...date, hour: 0, minute: 0, second: 0 });
+  } catch {
+    invalid(`${label} is not a valid date: ${JSON.stringify(value)}`);
+  }
+  assertSupportedYear(date, label);
+  return date;
+}
+
+/** Refuse a zone Intl cannot resolve; the message is safe to return. */
+export function assertZone(zone: string, label = "timeZone"): string {
+  if (tryOffsetMinutes(zone, Date.now()) === null) {
+    invalid(`${label} is not a usable IANA time zone: ${JSON.stringify(zone)}`);
+  }
+  return zone;
+}
+
+/** iCalendar DATE value, e.g. 20261022. */
+export function icsDate(date: DateParts): string {
+  const pad = (value: number, width: number) => String(value).padStart(width, "0");
+  return `${pad(date.year, 4)}${pad(date.month, 2)}${pad(date.day, 2)}`;
 }
 
 export function resolveBound(value: string, label: string, zone: string): Bound {

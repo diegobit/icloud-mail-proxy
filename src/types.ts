@@ -27,6 +27,9 @@ export interface Env {
   OAUTH_KV: KVNamespace;
   OAUTH_REGISTER_LIMITER: RateLimit;
   OAUTH_TOKEN_LIMITER: RateLimit;
+  // Per-IP limiter for CalDAV writes. Missing in a deployment disables writes
+  // (fail closed) rather than letting them run unbounded.
+  CALENDAR_WRITE_LIMITER: RateLimit;
   OAUTH_PROVIDER: OAuthHelpers;
   // Public origin to advertise when the request URL is not the origin clients
   // reach (tunnels, proxies). Unset in normal deployments.

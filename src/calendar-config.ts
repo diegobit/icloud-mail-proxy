@@ -67,6 +67,15 @@ export function reminderListsEnabled(env: Env): boolean {
   return Array.isArray(reminderLists) ? reminderLists.length > 0 : true;
 }
 
+/** Writes exist only when the domain is enabled and its write flag is on. */
+export function calendarWritesEnabled(env: Env): boolean {
+  return calendarsEnabled(env) && calendarConfig(env).calendarWrite;
+}
+
+export function reminderWritesEnabled(env: Env): boolean {
+  return reminderListsEnabled(env) && calendarConfig(env).remindersWrite;
+}
+
 /** The resource scopes this deployment can actually offer. */
 export function enabledResourceScopes(env: Env): ResourceScope[] {
   const config = calendarConfig(env);
