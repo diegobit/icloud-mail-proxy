@@ -6,6 +6,7 @@ import { z } from "zod";
 import { CalDavError } from "./caldav";
 import { calendarsEnabled, reminderListsEnabled } from "./calendar-config";
 import { listCollections, type CollectionKind } from "./calendar-core";
+import { getEvent, listEvents } from "./calendar-events";
 import {
   ApiError,
   getAttachment,
@@ -228,6 +229,60 @@ async function handleCollections(url: URL, env: Env, kind: CollectionKind): Prom
   return json(kind === "calendar" ? { calendars: collections } : { reminderLists: collections });
 }
 
+function queryValue(url: URL, name: string): string | undefined {
+  if (!url.searchParams.has(name)) return undefined;
+  return url.searchParams.get(name) ?? undefined;
+}
+
+function queryLimit(url: URL): number | undefined {
+  const raw = queryValue(url, "limit");
+  if (raw === undefined) return undefined;
+  if (!/^\d+$/.test(raw) || Number(raw) < 1) {
+    throw new ApiError(400, "invalid_request", "limit must be a positive integer");
+  }
+  return Number(raw);
+}
+
+function decodeSegment(value: string, label: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    throw new ApiError(400, "invalid_request", `${label} is not valid`);
+  }
+}
+
+/** GET /v1/calendars/:calendar/events?from=&to=&limit=&text= */
+async function handleListEvents(url: URL, calendarSegment: string, env: Env): Promise<Response> {
+  if (!calendarsEnabled(env)) {
+    return errorBody("not_supported", "calendars are disabled: ALLOWED_CALENDARS is empty", 404);
+  }
+  const calendar = decodeSegment(calendarSegment, "calendar");
+  return json(
+    await listEvents(env, {
+      calendar,
+      from: queryValue(url, "from"),
+      to: queryValue(url, "to"),
+      limit: queryLimit(url),
+      text: queryValue(url, "text"),
+    }),
+  );
+}
+
+/** GET /v1/calendars/:calendar/events/:id?from= */
+async function handleGetEvent(
+  url: URL,
+  calendarSegment: string,
+  idSegment: string,
+  env: Env,
+): Promise<Response> {
+  if (!calendarsEnabled(env)) {
+    return errorBody("not_supported", "calendars are disabled: ALLOWED_CALENDARS is empty", 404);
+  }
+  const calendar = decodeSegment(calendarSegment, "calendar");
+  const id = decodeSegment(idSegment, "event id");
+  return json(await getEvent(env, { calendar, id, from: queryValue(url, "from") }));
+}
+
 /**
  * GET /healthz: prove the Worker can actually reach and authenticate to
  * imap.mail.me.com right now (LOGIN + LOGOUT, no EXAMINE, nothing else). An
@@ -275,6 +330,28 @@ export async function handleRest(request: Request, env: Env): Promise<Response> 
       (segments[1] === "calendars" || segments[1] === "reminder-lists")
     ) {
       return await handleCollections(url, env, segments[1] === "calendars" ? "calendar" : "reminders");
+    }
+
+    // GET /v1/calendars/:calendar/events/:id
+    if (
+      request.method === "GET" &&
+      segments.length === 5 &&
+      segments[0] === "v1" &&
+      segments[1] === "calendars" &&
+      segments[3] === "events"
+    ) {
+      return await handleGetEvent(url, segments[2], segments[4], env);
+    }
+
+    // GET /v1/calendars/:calendar/events
+    if (
+      request.method === "GET" &&
+      segments.length === 4 &&
+      segments[0] === "v1" &&
+      segments[1] === "calendars" &&
+      segments[3] === "events"
+    ) {
+      return await handleListEvents(url, segments[2], env);
     }
 
     // POST /v1/search

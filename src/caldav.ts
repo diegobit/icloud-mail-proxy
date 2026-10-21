@@ -197,6 +197,10 @@ export function parseMultistatus(xml: string): DavResponse[] {
     throw new CalDavError("malformed", 0, `the CalDAV XML could not be parsed: ${messageOf(error)}`);
   }
   const multistatus = isRecord(parsed) ? parsed.multistatus : undefined;
+  // An empty <multistatus> is a valid 207 with zero responses: fast-xml-parser
+  // represents it as a string (empty, or whitespace) rather than an object.
+  // Only a non-empty, non-object value is malformed.
+  if (typeof multistatus === "string" && multistatus.trim() === "") return [];
   if (!isRecord(multistatus)) {
     throw new CalDavError("malformed", 0, "the CalDAV response is not a DAV multistatus");
   }

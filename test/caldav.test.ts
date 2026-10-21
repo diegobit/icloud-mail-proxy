@@ -260,6 +260,14 @@ describe("multistatus parsing", () => {
     expect(parseMultistatus(COLLECTIONS)).toHaveLength(4);
   });
 
+  it("accepts a valid multistatus with zero responses", () => {
+    expect(
+      parseMultistatus(
+        `<?xml version="1.0" encoding="UTF-8"?><D:multistatus xmlns:D="DAV:"></D:multistatus>`,
+      ),
+    ).toEqual([]);
+  });
+
   it("reads a property href and trims it", () => {
     const [response] = parseMultistatus(rootXml(`  /${DSID}/principal/  `));
     expect(propHref(response, "current-user-principal")).toBe(`/${DSID}/principal/`);

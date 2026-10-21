@@ -823,10 +823,23 @@ export interface ExpandedOccurrence {
   timeZoneUnresolved: boolean;
 }
 
+export type ExpansionTruncation = "recurrence_budget" | "occurrence_cap";
+
 export interface ExpansionResult {
   occurrences: ExpandedOccurrence[];
   truncated: boolean;
+  /** What stopped the expansion, or null when it is complete. */
+  truncatedReason: ExpansionTruncation | null;
   unsupportedRange: boolean;
+}
+
+/**
+ * The effective end of a component: DTEND/DUE, or DTSTART plus the parsed
+ * duration. Null when the component has no DTSTART (a VTODO may omit it).
+ */
+export function componentEnd(component: ParsedComponent): IcalTime | null {
+  if (component.start === null) return null;
+  return endOf(component.start, component);
 }
 
 export function expandResource(parsed: ParsedResource, options: ExpandOptions): ExpansionResult {
@@ -850,7 +863,8 @@ export function expandResource(parsed: ParsedResource, options: ExpandOptions): 
   const exdateKeys = new Set(parsed.master.exdate.map((entry) => timeKey(entry)));
   const seen = new Set<string>();
   const occurrences: ExpandedOccurrence[] = [];
-  let truncated = budget.remaining <= 0;
+  let truncatedReason: ExpansionTruncation | null =
+    budget.remaining <= 0 ? "recurrence_budget" : null;
 
   const add = (
     component: ParsedComponent,
@@ -879,7 +893,7 @@ export function expandResource(parsed: ParsedResource, options: ExpandOptions): 
   if (master.start !== null) {
     if (master.rrule !== null) {
       const generated = generateRule(master, master.rrule, caps, budget, options, zone);
-      truncated = truncated || generated.truncated;
+      if (generated.truncated) truncatedReason ??= "recurrence_budget";
       for (const candidate of generated.starts) {
         const key = timeKey(candidate);
         if (exdateKeys.has(key)) continue;
@@ -909,9 +923,14 @@ export function expandResource(parsed: ParsedResource, options: ExpandOptions): 
   occurrences.sort((a, b) => sortKey(a.start) - sortKey(b.start));
   if (occurrences.length > caps.maxOccurrencesPerResource) {
     occurrences.length = caps.maxOccurrencesPerResource;
-    truncated = true;
+    truncatedReason ??= "occurrence_cap";
   }
-  return { occurrences, truncated, unsupportedRange: parsed.unsupportedRange };
+  return {
+    occurrences,
+    truncated: truncatedReason !== null,
+    truncatedReason,
+    unsupportedRange: parsed.unsupportedRange,
+  };
 }
 
 function resolveCaps(options: Partial<IcalCaps>): IcalCaps {
