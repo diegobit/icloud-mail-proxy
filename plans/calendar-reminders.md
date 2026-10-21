@@ -692,3 +692,24 @@ with no `Event`/`Time`/`Timezone` use, `COUNT` rules expand from `DTSTART`
   (home, 6 collections, 3 pseudo-collections), `expand` byte-identical (1,814,924 bytes both), 150 event RRULEs
   all `WEEKLY`, single resource `GET` 200 / `PROPFIND` no data / `multiget` data
   + strong quoted ETag, 3 VTODO resources unfiltered and 0 in a 30-day window.
+- 2026-10-22, local: `npm test` 707 passed / 37 files, `npm run typecheck` clean,
+  `npm run check:bundle` clean. `wrangler dev` with both write flags `0` and both
+  allowlists `*`: `tools/list` returned 14 tools (mail plus read-only calendar
+  and reminder tools, no writes), and all five REST write routes answered `404
+  not_supported`.
+- 2026-10-22, production (`https://icloud-mail.diegobit.com`, version
+  `69444862-313c-4d52-91d2-aa769438a974`): `verifyDeployment` passed all checks,
+  including `?all=1` (5 calendars, 2 reminder lists) and the 7-day
+  `list_events`, with 19 tools. Created a one-off event on `Scratch` for
+  2026-10-23 10:00 `Europe/Rome`; the API returned `10:00+02:00` and `get_event`
+  showed the stored UTC instant `08:00Z`. Renamed it through `update_event`
+  with the returned ETag; a stale ETag returned `409 conflict` and left the
+  summary unchanged. `update_event` refused a recurring `Lavoro` resource with
+  `422 recurring_not_supported` and a scheduling resource with `422
+  scheduling_not_supported`; both ETags and summaries were unchanged after the
+  refusal.
+- 2026-10-22, blocked: the `Scratch` reminder list is still not visible over
+  CalDAV (`probe-caldav.mjs` lists only `Casa SP⚠️` and `Reminders` as VTODO
+  collections; `Scratch` is VEVENT-only). Reminder acceptance, the iPhone
+  rendering check, and the OAuth narrowed-grant reconnect check are therefore
+  pending owner action; no reminder write has been attempted.
