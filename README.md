@@ -8,6 +8,11 @@ messages, replies and forwards, plus saving a message into the real Drafts
 folder so it can be finished from any mail app. It can also file mail: archive
 a message or move it to iCloud's trash, one message at a time.
 
+When calendars and reminders are enabled, the same Worker, token and MCP
+connector also read and write iCloud calendar events and reminders over
+CalDAV — no second deployment, no second connector. Those domains are opt-in;
+see [Calendars and reminders](#calendars-and-reminders).
+
 One deployment serves one iCloud account and lives in its owner's Cloudflare
 account. The examples in this README use the author's instance at
 `https://icloud-mail.diegobit.com`; the quick start below deploys your own.
@@ -199,6 +204,7 @@ rollback, automated deploys: [DEPLOY.md](DEPLOY.md).
 Agent  --HTTPS (REST /v1 or MCP /mcp)-->  Cloudflare Worker  --IMAPS:993-->        imap.mail.me.com
        <-- JSON -----------------------                    <-- LOGIN/EXAMINE/SELECT/UID SEARCH/UID FETCH BODY.PEEK/APPEND/UID MOVE/LOGOUT --
                                                           --SMTP STARTTLS:587-->  smtp.mail.me.com
+                                                          --CalDAV HTTPS-->       caldav.icloud.com (then the account's shard)
 ```
 
 The Worker speaks a small, hand-rolled IMAP client (`src/imap.ts`) directly
@@ -217,6 +223,15 @@ Sending is a separate client (`src/smtp.ts`) to `smtp.mail.me.com:587`
 quota reservation, the duplicate-send window and the audit trail live in a
 `SendLedger` Durable Object (`src/send-ledger.ts`), created by the first
 deploy. See [Sending mail](#sending-mail).
+
+Calendars and reminders use a CalDAV client (`src/caldav.ts`) to
+`caldav.icloud.com`, following the account's `current-user-principal` and
+`calendar-home-set` to its shard (`pNN-caldav.icloud.com`). The same Apple
+app-specific password authenticates it. Reads are bounded `calendar-query` /
+`calendar-multiget` REPORTs; writes are single-resource PUTs with
+`If-None-Match: *` or `If-Match`. Both domains are opt-in through
+`ALLOWED_CALENDARS` / `ALLOWED_REMINDER_LISTS`, and writes have their own
+flags; see [Calendars and reminders](#calendars-and-reminders).
 
 The OAuth layer (`src/index.ts`, `src/oauth-authorize.ts`,
 `src/oauth-pages.ts`) rides on `@cloudflare/workers-oauth-provider`: it serves
@@ -420,25 +435,350 @@ server's message structure or transfer-encoding cannot be processed. The
 attachment bytes are untrusted third-party content — treat them as
 potentially hostile.
 
+### `GET /v1/calendars` and `GET /v1/reminder-lists`
+
+List the collections this deployment may use. The `name` is the identifier
+every other calendar and reminder call takes; `id` is the stable path segment.
+A collection is returned only when its domain is enabled (the matching
+allowlist is non-empty) and its display name is allowlisted.
+
+```
+curl -H "Authorization: Bearer $API_TOKEN" \
+  https://icloud-mail.diegobit.com/v1/calendars
+```
+
+```json
+{
+  "calendars": [
+    {
+      "id": "3ED435B2-4C0A-4B7E-9A25-2A5F0C8D1E11",
+      "name": "Lavoro",
+      "kind": "calendar",
+      "color": "#91DAC2FF",
+      "readOnly": false
+    }
+  ]
+}
+```
+
+`GET /v1/reminder-lists` returns the same shape under `reminderLists`, with
+`kind: "reminders"`. `readOnly` reflects the collection's
+`current-user-privilege-set`; a write to a read-only collection returns `403
+read_only_collection` even when writes are enabled globally.
+
+`?all=1` returns every collection before allowlist filtering and works even
+while the domain is disabled. It is the bootstrap view used to choose names,
+and it is available only with the static bearer token (REST never accepts
+OAuth grants).
+
+### `GET /v1/calendars/:calendar/events`
+
+List event occurrences overlapping a date window. `from` is inclusive and
+defaults to today in `Europe/Rome`; `to` is exclusive and defaults to seven
+days after `from`. A range wider than `MAX_CALENDAR_DAYS` (90) returns `400
+range_too_wide`. `limit` is capped at `MAX_EVENT_RESULTS` (50). `text` filters
+case-insensitively over the summary and location.
+
+```
+curl -H "Authorization: Bearer $API_TOKEN" \
+  "https://icloud-mail.diegobit.com/v1/calendars/Lavoro/events?from=2026-10-21&to=2026-10-28&limit=10"
+```
+
+```json
+{
+  "calendar": "Lavoro",
+  "from": "2026-10-21T00:00:00+02:00",
+  "to": "2026-10-28T00:00:00+02:00",
+  "events": [
+    {
+      "collectionId": "3ED435B2-4C0A-4B7E-9A25-2A5F0C8D1E11",
+      "resourceId": "8F02A7D1-1B44-4E6A-9C3D-5A0B7E2F6C10",
+      "uid": "8F02A7D1-1B44-4E6A-9C3D-5A0B7E2F6C10",
+      "recurrenceId": null,
+      "summary": "Standup",
+      "location": "Room 2",
+      "start": "2026-10-22T09:00:00+02:00",
+      "end": "2026-10-22T09:30:00+02:00",
+      "startWall": "2026-10-22T09:00:00",
+      "endWall": "2026-10-22T09:30:00",
+      "timeZone": "Europe/Rome",
+      "allDay": false,
+      "timeZoneUnresolved": false,
+      "isOverride": false,
+      "unsupportedRange": false,
+      "readOnlyReason": null
+    }
+  ],
+  "total": 1,
+  "truncated": false,
+  "truncatedReason": null,
+  "unsupportedRange": false
+}
+```
+
+`start` / `end` are ISO 8601 with an offset for timed events, `YYYY-MM-DD` for
+all-day events, and `null` for a floating time or an unresolved `TZID`.
+`startWall` / `endWall` and `timeZone` keep the resource's own wall clock and
+zone. Recurrence is expanded server-side; each occurrence has its own
+`recurrenceId` (`null` for a one-off event), and `isOverride` marks a
+`RECURRENCE-ID` component. Occurrences are sorted by start. `total` counts
+matches before `limit`; `truncatedReason` is `"limit"`, `"recurrence_budget"`
+or `"occurrence_cap"`. `readOnlyReason` is `"recurring"` or `"scheduling"`
+when the resource may not be written; see [Writes](#writes).
+
+Floating and unresolved-`TZID` occurrences name no instant, so they are
+excluded from range results; `get_event` still reports them. Malformed or
+unsupported resources fail the whole request rather than being silently
+skipped: `422 resource_too_large`, `422 too_many_resources` (more than
+`MAX_RESOURCES_PER_QUERY`, 300) or `422 recurrence_too_complex`.
+
+### `GET /v1/calendars/:calendar/events/:id`
+
+Read one event by `id` (the `resourceId` from `list_events`, without `.ics`).
+The optional `from` starts a 90-day occurrence window and defaults to today.
+The response carries the same fields as a listed event plus:
+
+```json
+{
+  "etag": "\"C=1234;O=1\"",
+  "recurring": false,
+  "scheduling": false,
+  "recurrenceRule": null,
+  "untrustedCalendarContent": {
+    "summary": "Standup",
+    "description": "Daily sync",
+    "location": "Room 2"
+  },
+  "occurrences": [
+    {
+      "recurrenceId": null,
+      "start": "2026-10-22T09:00:00+02:00",
+      "end": "2026-10-22T09:30:00+02:00",
+      "startWall": "2026-10-22T09:00:00",
+      "endWall": "2026-10-22T09:30:00",
+      "allDay": false,
+      "timeZone": "Europe/Rome",
+      "timeZoneUnresolved": false,
+      "isOverride": false,
+      "summary": "Standup"
+    }
+  ],
+  "from": "2026-10-21T00:00:00+02:00",
+  "to": "2027-01-19T00:00:00+01:00",
+  "truncated": false,
+  "truncatedReason": null,
+  "unsupportedRange": false
+}
+```
+
+`etag` is the strong validator `update_event` requires. The top-level
+`start`/`end` describe the master event; `occurrences` is the window, with
+floating or unresolved occurrences omitted from the window but still visible
+in the master detail. `untrustedCalendarContent` marks the text as third-party
+content. A missing id returns `404 not_found`.
+
+### `POST /v1/calendars/:calendar/events` and `PUT /v1/calendars/:calendar/events/:id`
+
+Create one event, or change only the fields you pass on an existing one.
+These routes exist only when `CALENDAR_WRITE=1`; otherwise they answer `404
+not_supported`. The event must be in a writable collection.
+
+```
+curl -X POST -H "Authorization: Bearer $API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"summary":"Dentist","start":"2026-10-23T09:00:00","end":"2026-10-23T10:00:00","timeZone":"Europe/Rome","location":"Via Roma 1"}' \
+  https://icloud-mail.diegobit.com/v1/calendars/Lavoro/events
+```
+
+```json
+{
+  "calendar": "Lavoro",
+  "collectionId": "3ED435B2-4C0A-4B7E-9A25-2A5F0C8D1E11",
+  "resourceId": "A17B0E4C-9D21-4B7A-8C33-6F5E2D1A0B99",
+  "uid": "A17B0E4C-9D21-4B7A-8C33-6F5E2D1A0B99",
+  "etag": "\"C=1235;O=1\"",
+  "summary": "Dentist",
+  "start": "2026-10-23T09:00:00+02:00",
+  "end": "2026-10-23T10:00:00+02:00",
+  "timeZone": "Europe/Rome",
+  "allDay": false
+}
+```
+
+`start` and `end` are wall clocks `YYYY-MM-DDTHH:MM:SS` read in `timeZone`
+(default `Europe/Rome`), or `YYYY-MM-DD` for an all-day event. `end` is
+exclusive. `allDay` is inferred from the form of `start`/`end` when omitted; a
+value that contradicts the forms, a mixed timed/all-day pair, or a `timeZone`
+on an all-day event is refused. Timed values are stored as UTC; all-day values
+are stored as `DATE`. `summary` is at most 200 characters; `location` and
+`description` are at most 8 KB each. An optional `id` makes a retry
+idempotent: if the resource already exists the call returns `409
+already_exists`, so read and compare instead of creating a second copy.
+Unknown body keys are refused with `400 unsupported_field`; there is no way to
+pass arbitrary iCalendar properties.
+
+`PUT .../:id` takes `etag` plus any of `summary`, `start`, `end`, `timeZone`,
+`allDay`, `location`, `description`. It is a partial update: only the fields
+present change. Pass `start` and `end` together. `location` or `description`
+`null` removes that property. The server re-reads the event, checks its
+current ETag and uses `If-Match`:
+
+- `400 invalid_etag` — the tag is not exactly one strong, quoted ETag (`W/`,
+  `*`, comma lists and malformed values are refused).
+- `409 conflict` — the event changed since it was read; call `get_event` and
+  retry with the fresh ETag.
+- `422 recurring_not_supported` — the event has `RRULE`, `RDATE` or a
+  `RECURRENCE-ID` component.
+- `422 scheduling_not_supported` — the event carries `ORGANIZER` or
+  `ATTENDEE`; writing it could send invitations or cancellations.
+- `403 read_only_collection` — the collection is not writable for the account.
+- `502 mutation_state_unknown` — the PUT was sent and its response never
+  arrived. It may have landed; reconcile with `get_event`, never blind-retry.
+- `429 rate_limited` — more than 30 writes per minute from the same IP.
+
+Create returns `201`, update returns `200`, both with the body shown above.
+`etag` may be `null` when iCloud omits it from the PUT response; call
+`get_event` before the next update. There is no delete tool.
+
+### `GET /v1/reminder-lists/:list/reminders` and `.../:id`
+
+List reminders in one list. The server fetches the list without a time-range
+and filters client-side, because iCloud's VTODO time filter is not a superset:
+open reminders by default, `includeCompleted=1` adds completed ones, cancelled
+reminders are always excluded, and `dueFrom` (inclusive) / `dueTo` (exclusive)
+bound `DUE`. Undated reminders — and reminders whose `DUE` has no absolute
+reading — are always included, even with bounds; their `due` is `null` and
+`dueWall` / `dueTimeZoneUnresolved` explain why. A date-only `DUE` is compared
+at midnight `Europe/Rome`.
+
+```
+curl -H "Authorization: Bearer $API_TOKEN" \
+  "https://icloud-mail.diegobit.com/v1/reminder-lists/Reminders/reminders?includeCompleted=0&dueFrom=2026-10-21&dueTo=2026-10-28"
+```
+
+```json
+{
+  "reminderList": "Reminders",
+  "reminders": [
+    {
+      "collectionId": "5C1A2B3D-4E5F-6071-8293-A4B5C6D7E8F9",
+      "resourceId": "C0FFEE01-2345-4678-9ABC-DEF012345678",
+      "uid": "C0FFEE01-2345-4678-9ABC-DEF012345678",
+      "summary": "Book the room",
+      "due": "2026-10-23T09:00:00+02:00",
+      "dueWall": "2026-10-23T09:00:00",
+      "dueAllDay": false,
+      "dueTimeZone": "Europe/Rome",
+      "dueTimeZoneUnresolved": false,
+      "start": null,
+      "startWall": null,
+      "startAllDay": false,
+      "startTimeZone": null,
+      "startTimeZoneUnresolved": false,
+      "priority": 5,
+      "priorityLabel": "medium",
+      "status": "NEEDS-ACTION",
+      "completed": null,
+      "percentComplete": null,
+      "isCompleted": false,
+      "isCancelled": false,
+      "readOnlyReason": null
+    }
+  ],
+  "total": 1,
+  "truncated": false
+}
+```
+
+`includeCompleted` accepts only `1`/`true` or `0`/`false`. Results are sorted by
+`DUE` ascending with undated or unplaceable reminders last, then capped at
+`MAX_REMINDERS` (200); `truncated: true` means more matched than were returned
+and `total` reports the pre-cap count. `priority` uses iCalendar's 0–9 scale
+with `priorityLabel` `none` (0/null), `high` (1–4), `medium` (5) or `low`
+(6–9). `isCompleted` is true for `STATUS:COMPLETED` or a `COMPLETED` timestamp;
+`isCancelled` is true for `STATUS:CANCELLED` (always filtered out).
+`start` is the VTODO `DTSTART` (the "remind me on a day" time, not an alarm).
+
+`GET .../:id` returns the same fields plus `etag`, `recurring`, `scheduling`,
+`readOnlyReason`, and `untrustedCalendarContent: { summary, description }`
+(the notes). `etag` is what the write tools require.
+
+### `POST /v1/reminder-lists/:list/reminders`, `PUT .../:id` and `POST .../:id/complete`
+
+Write one reminder. These routes exist only when `REMINDERS_WRITE=1`; otherwise
+they answer `404 not_supported`. The list must be writable.
+
+```
+curl -X POST -H "Authorization: Bearer $API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"summary":"Book the room","due":"2026-10-23T09:00:00","priority":5}' \
+  https://icloud-mail.diegobit.com/v1/reminder-lists/Reminders/reminders
+```
+
+A created reminder has a title, optional notes, an optional due and an
+optional priority; location alarms, tags, subtasks, sections, attachments and
+recurrence are not represented. `due` is a wall clock
+`YYYY-MM-DDTHH:MM:SS` read in `timeZone` (default `Europe/Rome`), or
+`YYYY-MM-DD` for an all-day due; omit or pass `null` for an undated reminder.
+Timed dues are stored as UTC, all-day dues as `DATE`, with
+`STATUS:NEEDS-ACTION`. `summary` is at most 200 characters; `notes` at most
+8 KB. An optional `id` makes a retry idempotent; a duplicate returns `409
+already_exists`. Unknown body keys are refused with `400 unsupported_field`.
+
+`PUT .../:id` takes `etag` plus any of `summary`, `notes`, `due`, `timeZone`,
+`priority`, `completed`. It is partial: only the fields present change. Pass
+`notes: null` to remove the notes, `due: null` to remove the due (and any
+`DURATION`), and `priority: null` or `0` to remove the priority.
+`completed: false` reopens the reminder: `STATUS:NEEDS-ACTION`, with
+`COMPLETED` and `PERCENT-COMPLETE` removed. `completed: true` completes it.
+A new due must use the same value type as the existing `DTSTART` (DATE or
+timed) and a floating `DTSTART` cannot take an absolute due; v1 never edits
+`DTSTART`, so a contradiction is refused with `400 invalid_request`.
+
+`POST .../:id/complete` takes only `{ "etag": "..." }` and performs a
+read-modify-write with `If-Match`: `STATUS:COMPLETED`, `COMPLETED` set to the
+current UTC time (whole seconds) and `PERCENT-COMPLETE:100`. Calling it again
+updates the completion time, like completing an already-completed reminder in
+Apple Reminders.
+
+Create returns `201`, the other two return `200`, all with the same fields as a
+listed reminder plus `etag`, `recurring`, `scheduling`, `readOnlyReason` and
+`untrustedCalendarContent` (`etag` may be `null` when iCloud omits it; call
+`get_reminder` before the next write). The write errors are the same as for
+events — `invalid_etag`, `conflict`, `recurring_not_supported`,
+`scheduling_not_supported`, `read_only_collection`, `mutation_state_unknown`,
+`rate_limited` — and there is no delete tool.
+
 ## MCP
 
-A stateless Streamable HTTP MCP server is served at `/mcp`, exposing four read
-tools that mirror the REST endpoints — `list_mailboxes`, `search_mail`,
+A stateless Streamable HTTP MCP server is served at `/mcp`. It exposes eight
+mail tools that mirror the REST endpoints — `list_mailboxes`, `search_mail`,
 `get_mail_message`, and `get_mail_attachment` (returns
 `{ filename, mimeType, size, contentBase64 }`, base64 of the decoded content,
 subject to the same type allowlist and size cap) — plus two filing tools,
 `archive_mail` and `delete_mail`, and two sending tools: `send_mail` (a new
 message, a reply or a forward, submitted immediately) and `save_draft` (the same
-message put into iCloud's `Drafts` folder, to be finished from any mail app). A
-fresh `McpServer` is built per request; no session state is held between calls.
+message put into iCloud's `Drafts` folder, to be finished from any mail app).
+When the calendar and reminder domains are enabled it adds up to eleven more:
+three read tools and two write tools for calendars, and three read tools and
+three write tools for reminders. Write tools appear only when their flag is on.
+A fresh `McpServer` is built per request; no session state is held between calls.
 
 `/mcp` accepts two credentials: the static bearer token (Claude Code, opencode,
 Codex CLI, curl) and OAuth 2.1 access tokens issued by this Worker for
 connectors that cannot send custom headers (ChatGPT developer mode, claude.ai).
 The server publishes its OAuth metadata under `/.well-known/`; the consent flow
-asks for the API token once per connector and binds the grant to it, and scopes
-every grant to `mail:read`. Every authorization request must carry a PKCE
-`S256` challenge: requests without one are refused before the consent page.
+asks for the API token once per connector and binds the grant to it. The
+consent page offers the scopes this deployment has enabled — `mail:read`, plus
+`calendar:read` / `calendar:write` and/or `reminders:read` /
+`reminders:write` — preselected with what the client requested, and the owner
+may deselect. The stored grant can only narrow that offer. `mail:read` is the
+umbrella for all eight mail tools, including sending and filing;
+`calendar:write` implies `calendar:read` and `reminders:write` implies
+`reminders:read`. Every authorization request must carry a PKCE `S256`
+challenge: requests without one are refused before the consent page. A grant
+minted before calendars existed holds only `mail:read`, so the connector must
+reconnect once before the calendar tools work.
 
 Connect from Claude Code (single-quote the header so the shell does not expand
 the token; this CLI may store an expanded header value):
@@ -523,6 +863,146 @@ and `.../trash` over REST. Both take the id from a search result
 Unlike sending, filing is reversible from a mail client: archive a message back
 to the INBOX or restore it from the trash by hand.
 
+## Calendars and reminders
+
+Calendars and reminders are an optional domain on the same Worker, REST API
+and `/mcp` connector. Nothing is exposed until an allowlist is set: with
+`ALLOWED_CALENDARS` or `ALLOWED_REMINDER_LISTS` empty or absent, that domain
+registers no tools, its REST routes answer `404 not_supported`, and it
+contributes no OAuth scopes. The tracked defaults are empty, so a fresh
+deployment cannot touch either until its owner opts in.
+
+Enable a domain in `wrangler.base.jsonc` (or a deployment profile) and
+redeploy:
+
+```jsonc
+"ALLOWED_CALENDARS": "Lavoro,Family",
+"ALLOWED_REMINDER_LISTS": "Reminders",
+"CALENDAR_WRITE": "1",
+"REMINDERS_WRITE": "1",
+```
+
+- The allowlists contain display names, exactly as returned by `list_calendars`
+  and `list_reminder_lists`, matched case-sensitively. `*` means every
+  collection that passes discovery, including shared collections and ones
+  created later. It must be alone: `*,Lavoro` is a configuration error, not a
+  superset. A configured name that matches nothing fails closed on every call
+  (`configured_calendar_missing` / `configured_reminder_list_missing`); a
+  duplicate display name returns `409 ambiguous_calendar_name`.
+- Writes are a second gate. `CALENDAR_WRITE` and `REMINDERS_WRITE` default to
+  `0`; with a flag at `0`, the corresponding write tools are not registered and
+  the REST write routes answer `404 not_supported`, even when the allowlist is
+  non-empty.
+- To see the names before enabling a domain, call the bearer-only bootstrap
+  view. It returns every collection before allowlist filtering and works while
+  the domain is disabled:
+
+  ```
+  curl -H "Authorization: Bearer $API_TOKEN" \
+    "https://<worker>/v1/calendars?all=1"
+  curl -H "Authorization: Bearer $API_TOKEN" \
+    "https://<worker>/v1/reminder-lists?all=1"
+  ```
+
+The MCP surface adds up to eleven tools; with the eight mail tools that is 19
+in a deployment with both domains and both write flags on:
+
+| Tool | Scope | Enabled by |
+| --- | --- | --- |
+| `list_calendars`, `list_events`, `get_event` | `calendar:read` | `ALLOWED_CALENDARS` |
+| `create_event`, `update_event` | `calendar:write` | `ALLOWED_CALENDARS` + `CALENDAR_WRITE=1` |
+| `list_reminder_lists`, `list_reminders`, `get_reminder` | `reminders:read` | `ALLOWED_REMINDER_LISTS` |
+| `create_reminder`, `update_reminder`, `complete_reminder` | `reminders:write` | `ALLOWED_REMINDER_LISTS` + `REMINDERS_WRITE=1` |
+| the eight mail tools | `mail:read` | always |
+
+The static bearer token reaches every enabled tool. OAuth connectors get the
+scopes selected on the consent page, which is why an older grant holding only
+`mail:read` must reconnect before using calendars or reminders.
+
+### Reads
+
+Calendar reads take a collection name (not an id) and a date window. `from` is
+inclusive and defaults to today in `Europe/Rome`; `to` is exclusive and
+defaults to seven days after `from`. A window wider than `MAX_CALENDAR_DAYS`
+(90) is refused with `range_too_wide`, and a query matching more than
+`MAX_RESOURCES_PER_QUERY` (300) resources is refused with `too_many_resources`
+— narrow the range instead of paging. `list_events` returns occurrences whose
+interval overlaps the window, sorted by start and capped by `MAX_EVENT_RESULTS`
+(50); `truncated` and `truncatedReason` say whether the cap or a recurrence
+budget cut the result. List reads never return an ETag; the single-resource
+reads (`get_event`, `get_reminder`) do.
+
+Recurrence is expanded with our own bounded cursor over the window, not with
+`ical.js`'s iterator. Apple's `TZID`, `Z` and `VALUE=DATE` forms are all read;
+timed values keep their zone and wall clock, all-day values are dates. A
+floating time or an unresolved `TZID` names no instant, so it is excluded from
+range results rather than compared as if it were UTC; `get_event` still reports
+it in the master detail. Each occurrence carries `collectionId`, `resourceId`,
+`uid`, `recurrenceId` and `readOnlyReason`, so an agent never has to guess
+which instance it is looking at. Recurring resources and resources carrying
+`ORGANIZER`/`ATTENDEE` are readable but read-only in v1; `readOnlyReason` says
+which, and writes refuse them.
+
+Reminder reads fetch the whole VTODO list without a server time-range and
+filter client-side, because iCloud's filter is not a superset. Open reminders
+are returned by default; `includeCompleted` adds completed ones; cancelled
+ones are always excluded. `dueFrom` (inclusive) and `dueTo` (exclusive) bound
+`DUE`; undated reminders and reminders whose `DUE` is floating or has an
+unresolved zone are always included, with `due: null` and the wall-clock flags.
+A date-only `DUE` is compared at midnight `Europe/Rome`. Results are sorted by
+due date with undated last, then capped at `MAX_REMINDERS` (200) with
+`truncated: true` and a pre-cap `total`. `get_reminder` adds the notes, the
+ETag and the full field mapping.
+
+### Writes
+
+Five tools write: `create_event` / `update_event`, and `create_reminder` /
+`update_reminder` / `complete_reminder`. There is no delete tool, no recurrence
+editing, no scheduling (`ORGANIZER`/`ATTENDEE`) and no invitations, free/busy,
+sharing, contacts or Apple Notes. A created event or reminder never carries a
+`VALARM`; an existing one is preserved by an update. Events accept only
+summary, start/end, time zone, location and description. Reminders accept only
+title, notes, due and priority; location alarms, tags, subtasks, sections and
+attachments are not represented.
+
+Writes are structured and narrow:
+
+- `start`/`end` (events) and `due` (reminders) are wall clocks
+  `YYYY-MM-DDTHH:MM:SS` read in an IANA `timeZone` (default `Europe/Rome`), or
+  `YYYY-MM-DD` for all-day values. The server stores timed values as UTC and
+  all-day values as `DATE`; it never writes a bare `TZID`, `RRULE`, `RDATE`,
+  `EXDATE`, `ATTENDEE`, `ORGANIZER` or `VALARM`. `end` is exclusive.
+- `update_event` and the reminder updates require exactly one strong, quoted
+  ETag from `get_event` / `get_reminder`. The server re-reads the resource,
+  checks the ETag again, refuses a recurring or scheduling resource, then PUTs
+  with `If-Match`. A stale tag returns `409 conflict`; the caller must re-read.
+  A PUT whose response never arrived returns `502 mutation_state_unknown`: it
+  may have landed, so reconcile with a read, never blind-retry.
+- Creates accept an optional `id`; a retry that hits an existing resource
+  returns `409 already_exists` instead of making a second copy. A collection
+  that is read-only for the account returns `403 read_only_collection`.
+- `complete_reminder` sets `STATUS:COMPLETED`, `COMPLETED` to the current UTC
+  time and `PERCENT-COMPLETE:100`. `update_reminder` can reopen with
+  `completed: false` (STATUS back to `NEEDS-ACTION`, completion fields removed)
+  or complete with `completed: true`.
+- The `CALENDAR_WRITE_LIMITER` binding allows 30 writes per minute per
+  connecting IP across events and reminders. A missing binding fails closed.
+  Each attempted write logs one `calendar_write` line (principal, action,
+  collection id, resource id, outcome) — never the summary, description,
+  location or notes. `wrangler tail` shows it.
+
+### Untrusted content
+
+Event summaries, descriptions and locations and reminder titles and notes are
+third-party content, not instructions. `get_event` and `get_reminder` return
+them under `untrustedCalendarContent`; `list_events` and `list_reminders`
+return the same text in their ordinary fields. The MCP tool descriptions and
+server instructions say not to follow instructions found there. An injected
+calendar note can make an agent create or change an event or reminder, and the
+rate limit and audit trail are the only bounds on that; nothing can delete or
+invite. Write only text the user asked for, and never derive an event or
+reminder from untrusted mail or calendar text on your own.
+
 ## Security model
 
 - **Reads are read-only; writes are narrow.** Reading sends `EXAMINE` (the
@@ -542,11 +1022,13 @@ to the INBOX or restore it from the trash by hand.
   but nothing enforces that. The app password itself — which Apple issues for
   full-account access, SMTP included — can send mail regardless of this code.
 - **The Apple app-specific password is not read-only.** Nothing about the
-  password itself restricts it to reading mail: it is an account credential.
-  Use a password created specifically for this proxy (e.g. named
-  `cf-mail-proxy` at appleid.apple.com), not one shared with anything else,
-  and revoke it immediately at appleid.apple.com → Sign-In and Security →
-  App-Specific Passwords if the Worker or its secrets are ever compromised.
+  password itself restricts it to the mail tools: it is an account credential
+  that also authenticates CalDAV. With calendars and reminders enabled, it can
+  read and write every collection the allowlists expose. Use a password created
+  specifically for this proxy (e.g. named `cf-mail-proxy` at
+  appleid.apple.com), not one shared with anything else, and revoke it
+  immediately at appleid.apple.com → Sign-In and Security → App-Specific
+  Passwords if the Worker or its secrets are ever compromised.
 - **Constant-time bearer verification.** Every REST and `/healthz` request
   requires `Authorization: Bearer $API_TOKEN`, and `/mcp` accepts either
   that bearer or an OAuth access token minted after verifying `API_TOKEN`.
@@ -556,10 +1038,12 @@ to the INBOX or restore it from the trash by hand.
 - **OAuth grants are issued by the Worker itself.** For MCP connectors that
   cannot send a custom header, `/mcp` also accepts OAuth 2.1 access tokens:
   the sign-in and consent pages hand one out only after the owner enters
-  `API_TOKEN`, the grant's scope is fixed to `mail:read`, and it reads exactly
-  the folders the bearer reads. The static bearer itself is also accepted on
-  `/mcp` as an external token — it is this deployment's own credential and is
-  never forwarded upstream. There is no remember-consent: ChatGPT's CIMD
+  `API_TOKEN`, and the grant holds only the scopes selected on the consent
+  page, bounded by what the deployment enables (`mail:read` plus any enabled
+  calendar/reminder scopes). It therefore reads exactly the mailboxes and
+  collections those scopes expose. The static bearer itself is also accepted
+  on `/mcp` as an external token — it is this deployment's own credential and
+  is never forwarded upstream. There is no remember-consent: ChatGPT's CIMD
   `client_id` is shared by every ChatGPT user, and a remembered consent would
   make a crafted `/authorize` link approvable without the token. Grants are
   bound to the current `API_TOKEN`, so rotating it revokes every one of them —
@@ -568,6 +1052,13 @@ to the INBOX or restore it from the trash by hand.
   introduced are refused the same way (see [DEPLOY.md](DEPLOY.md)). A grant
   can also send, like the bearer; the audit trail records which principal
   performed each send or draft save.
+- **Calendar and reminder writes are opt-in and bounded.** Both flags default
+  to off. When on, only allowlisted collections are reachable, only one-off
+  resources without an organizer or attendees can be changed, every update
+  requires a strong ETag and a fresh read, a per-IP limiter allows 30 writes
+  per minute, and each attempt logs metadata only. There is no delete. The app
+  password itself still grants broader access to the account, so the allowlists
+  and flags bound this code, not the credential.
 - **No caching, no content logging.** All responses set
   `Cache-Control: private, no-store`. Unexpected-error logging only ever
   includes an error message, never a request body or message content.
@@ -582,6 +1073,14 @@ to the INBOX or restore it from the trash by hand.
   send caps bound the volume, the mutation destinations are fixed, and the
   audit output shows what happened, but nothing else stands in the way (see
   [Sending mail](#sending-mail) and [Filing and deleting](#filing-and-deleting)).
+- **Calendar and reminder text is untrusted input.** Event summaries,
+  descriptions and locations and reminder titles and notes are third-party
+  content. `get_event` and `get_reminder` label them under
+  `untrustedCalendarContent`, and the MCP tool descriptions and server
+  instructions say not to follow instructions found there. An injected note
+  can make the agent create or change an event or reminder; only the write
+  flags, allowlists, ETag re-read and rate limit stand in the way, and nothing
+  can delete or invite. See [Calendars and reminders](#calendars-and-reminders).
 - **Hard caps everywhere.** Only mailboxes in `ALLOWED_MAILBOXES` can be
   read, and a mutation can only move one uid into one of its two configured
   destinations; `MAX_RESULTS` caps how many summaries a search returns;
@@ -593,7 +1092,13 @@ to the INBOX or restore it from the trash by hand.
   `MAX_ATTACHMENT_BYTES` caps a single attachment's size. On the send side,
   `SEND_MAX_PER_DAY`, `SEND_MAX_RCPTS_PER_DAY`, `SEND_MAX_RCPTS_PER_MESSAGE`
   and `SEND_MAX_BODY_BYTES` cap sending and are clamped to hard maxima in
-  `src/send-policy.ts`; a `0` daily cap refuses every send.
+  `src/send-policy.ts`; a `0` daily cap refuses every send. For calendars and
+  reminders, `MAX_CALENDAR_DAYS`, `MAX_EVENT_RESULTS`, `MAX_REMINDERS`,
+  `MAX_RESOURCE_BYTES`, `MAX_RESOURCES_PER_QUERY`,
+  `MAX_OCCURRENCES_PER_RESOURCE`, `MAX_RDATE_EXDATE` and the two recurrence
+  budgets bound reads; `MAX_RESPONSE_BYTES` bounds every CalDAV response.
+  `ALLOWED_CALENDARS` and `ALLOWED_REMINDER_LISTS` select what is reachable,
+  and `CALENDAR_WRITE` / `REMINDERS_WRITE` gate all writes.
 - **Attachment content is untrusted, and served defensively.** Attachment
   bytes are third-party content; the download endpoint sets
   `X-Content-Type-Options: nosniff`, sanitizes the `Content-Disposition`

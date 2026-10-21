@@ -81,6 +81,54 @@ Filing mail adds two base vars, both destinations and never request input:
   readable through this proxy), and a destination equal to the source mailbox
   is refused at runtime.
 
+### Calendars and reminders (opt-in)
+
+The tracked defaults disable both domains. An empty or absent
+`ALLOWED_CALENDARS` / `ALLOWED_REMINDER_LISTS` means no tools, no REST routes
+and no OAuth scopes for that domain. Two allowlist values control what is
+reachable:
+
+- `ALLOWED_CALENDARS` and `ALLOWED_REMINDER_LISTS` — comma-separated display
+  names, exactly as iCloud reports them, matched case-sensitively. `*` means
+  every collection that passes discovery, including shared collections and
+  ones created later. `*` must be alone: a mixed value such as `*,Lavoro` is a
+  configuration error, not a superset. A configured name that matches nothing
+  fails closed (`configured_calendar_missing` /
+  `configured_reminder_list_missing`); two collections with the same name
+  return `409 ambiguous_calendar_name`. Renaming a collection in Apple
+  Calendar/Reminders breaks a config that names it: update the allowlist and
+  redeploy.
+- `CALENDAR_WRITE` and `REMINDERS_WRITE` — `"1"` or `"0"`, default `0`.
+  Writes require both a non-empty allowlist and the flag; with the flag at
+  `0`, the write tools are not registered and the REST write routes answer
+  `404 not_supported`. The tracked `production` profile opts in to `*` for
+  both domains with writes enabled; a fresh deployment does not.
+
+To discover the exact names before enabling a domain, call the bearer-only
+bootstrap view on the deployed Worker. It returns every collection before
+allowlist filtering and works while the domain is disabled:
+
+```
+curl -H "Authorization: Bearer $API_TOKEN" "https://<worker>/v1/calendars?all=1"
+curl -H "Authorization: Bearer $API_TOKEN" "https://<worker>/v1/reminder-lists?all=1"
+```
+
+Each entry carries `id`, `name`, `kind`, `color` and `readOnly`. Use the
+display `name` in the allowlists; the `id` is what responses carry as
+`collectionId`. `readOnly` comes from iCloud's privileges and is separate
+from the write flag: a read-only collection still refuses writes with `403
+read_only_collection`.
+
+The read bounds are base vars, not secrets: `MAX_CALENDAR_DAYS` (90),
+`MAX_EVENT_RESULTS` (50), `MAX_REMINDERS` (200), `MAX_RESPONSE_BYTES`
+(4194304), `MAX_RESOURCE_BYTES` (262144), `MAX_RESOURCES_PER_QUERY` (300),
+`MAX_OCCURRENCES_PER_RESOURCE` (200), `MAX_RDATE_EXDATE` (500),
+`MAX_RECURRENCE_CANDIDATES_PER_RULE` (50000),
+`MAX_RECURRENCE_CANDIDATES_PER_REQUEST` (200000) and `CALDAV_TIMEOUT_MS`
+(15000). `CALENDAR_WRITE_LIMITER` is the per-IP rate limiter for writes (30
+per minute, shared by events and reminders); if the binding is missing while a
+write flag is on, writes fail closed instead of running unlimited.
+
 ## Migrating the production deployment
 
 The tracked config no longer carries the `icloud-mail.diegobit.com` route: it
@@ -235,6 +283,42 @@ generate a new token, because that would break every existing client.
 - **Restoring mail:** move the message back from `Archive` or the trash in a
   mail client. This proxy has no restore tool and never empties the trash.
 
+## Calendar and reminder operations
+
+- **Inspect what happened:** `wrangler tail` shows one `calendar_write` line per
+  attempted event or reminder write — principal, action (`create_event`,
+  `update_event`, `create_reminder`, `update_reminder`, `complete_reminder`),
+  calendar or reminder-list id, resource id and outcome. It never includes the
+  summary, description, location or notes. Unlike sends, calendar writes have
+  no durable audit trail.
+- **"conflict":** the resource changed since it was read. Call `get_event` or
+  `get_reminder` again, compare, and retry with the fresh ETag. Do not reuse
+  the old tag.
+- **"mutation_state_unknown":** the PUT was sent and the response never
+  arrived. It may have landed. Read the resource with `get_event` /
+  `get_reminder` and reconcile; never blind-retry a create or an update.
+- **"already_exists":** an idempotent create found the id already present.
+  Read it and compare instead of creating a second copy with a new id.
+- **"recurring_not_supported" / "scheduling_not_supported":** recurring
+  resources and resources with an organizer or attendees cannot be changed
+  through this proxy. Edit them in Apple Calendar or Apple Reminders. Retrying
+  will not help.
+- **"read_only_collection":** iCloud's privileges say the collection is not
+  writable for this account, even though the write flag is on. Pick another
+  collection or change the sharing/ownership in Apple's app.
+- **"rate_limited":** more than 30 writes per minute came from the same
+  connecting IP. Wait a minute; the limit is shared by events and reminders.
+- **No delete and no invitations:** there is no delete tool, no recurrence
+  editor, no attendee/organizer editing and no free/busy, sharing, contacts or
+  Apple Notes. Deleting an event or reminder stays an action in Apple's apps.
+- **Choosing or re-checking collections:** `GET /v1/calendars?all=1` and
+  `GET /v1/reminder-lists?all=1` with the bearer token list every collection
+  before allowlist filtering, even while the domains are disabled. Use them
+  when a configured name no longer resolves.
+- **After upgrading from a mail-only grant:** OAuth connectors must reconnect
+  so the consent page can offer the new scopes. A grant that still holds only
+  `mail:read` answers `insufficient_scope` on the calendar tools until then.
+
 ## Recovering an interrupted setup
 
 Setup records its progress in `.deploy/state.json` (nonsecret: account ID,
@@ -308,6 +392,9 @@ returns `{ "ok": true, "imapLatencyMs": … }` when the Worker can log in to
 iCloud. Without the header it must answer HTTP 401. A missing `API_TOKEN`
 secret is a closed Worker: HTTP 500 `not_configured`, not an open endpoint.
 Upstream IMAP failures are HTTP 503 with `{ "ok": false, "error": { "code", "message" } }`.
+`/healthz` checks IMAP only; it does not prove CalDAV. When calendars or
+reminders are enabled, `GET /v1/calendars` (or `?all=1` for discovery) is the
+end-to-end CalDAV check.
 
 OAuth grants live in `OAUTH_KV`, which is eventually consistent across
 Cloudflare locations: an access token issued at one location can be unknown at
