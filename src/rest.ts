@@ -3,6 +3,9 @@
 // happens.
 
 import { z } from "zod";
+import { CalDavError } from "./caldav";
+import { calendarsEnabled, reminderListsEnabled } from "./calendar-config";
+import { listCollections, type CollectionKind } from "./calendar-core";
 import {
   ApiError,
   getAttachment,
@@ -55,6 +58,29 @@ function mapError(e: unknown): Response {
     }
     // Server text is safe to surface: it never contains credentials.
     return errorBody("upstream_imap_error", e.message, 502);
+  }
+  if (e instanceof CalDavError) {
+    switch (e.code) {
+      case "unauthorized":
+      case "forbidden":
+        return errorBody("upstream_unauthorized", e.message, 502);
+      case "not_found":
+        return errorBody("not_found", e.message, 404);
+      case "conflict":
+        return errorBody("conflict", e.message, 409);
+      case "too_many_resources":
+        return errorBody("too_many_resources", e.message, 422);
+      case "recurrence_too_complex":
+        return errorBody("recurrence_too_complex", e.message, 422);
+      case "mutation_state_unknown":
+        return errorBody("mutation_state_unknown", e.message, 502);
+      case "malformed":
+        return errorBody("malformed", e.message, 502);
+      case "invalid_argument":
+        return errorBody("invalid_request", e.message, 400);
+      default:
+        return errorBody("upstream_error", e.message, 502);
+    }
   }
   if (e instanceof z.ZodError) {
     return errorBody("invalid_request", z.prettifyError(e), 400);
@@ -181,6 +207,28 @@ async function handleMutation(
 }
 
 /**
+ * GET /v1/calendars and /v1/reminder-lists. `?all=1` is the static-bearer-only
+ * bootstrap view used by setup: every collection before allowlist filtering,
+ * and it works even when the domain is disabled. Without it the domain must be
+ * enabled and only allowlisted collections are returned.
+ */
+async function handleCollections(url: URL, env: Env, kind: CollectionKind): Promise<Response> {
+  const all = url.searchParams.get("all") === "1";
+  const enabled = kind === "calendar" ? calendarsEnabled(env) : reminderListsEnabled(env);
+  if (!enabled && !all) {
+    return errorBody(
+      "not_supported",
+      kind === "calendar"
+        ? "calendars are disabled: ALLOWED_CALENDARS is empty"
+        : "reminder lists are disabled: ALLOWED_REMINDER_LISTS is empty",
+      404,
+    );
+  }
+  const collections = await listCollections(env, kind, { all });
+  return json(kind === "calendar" ? { calendars: collections } : { reminderLists: collections });
+}
+
+/**
  * GET /healthz: prove the Worker can actually reach and authenticate to
  * imap.mail.me.com right now (LOGIN + LOGOUT, no EXAMINE, nothing else). An
  * ImapError here is a known "the mail server is having trouble" state, so it
@@ -217,6 +265,16 @@ export async function handleRest(request: Request, env: Env): Promise<Response> 
       segments[1] === "mailboxes"
     ) {
       return json({ mailboxes: listMailboxes(env) });
+    }
+
+    // GET /v1/calendars[?all=1] and /v1/reminder-lists[?all=1]
+    if (
+      request.method === "GET" &&
+      segments.length === 2 &&
+      segments[0] === "v1" &&
+      (segments[1] === "calendars" || segments[1] === "reminder-lists")
+    ) {
+      return await handleCollections(url, env, segments[1] === "calendars" ? "calendar" : "reminders");
     }
 
     // POST /v1/search

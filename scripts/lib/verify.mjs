@@ -332,10 +332,20 @@ function describeMcpChallenge(result, origin) {
   }
   const challenge = result.headers?.get?.("www-authenticate") ?? "";
   const metadataRef = `resource_metadata="${origin}/.well-known/oauth-protected-resource/mcp"`;
-  if (!challenge.includes(metadataRef) || !challenge.includes('scope="mail:read"')) {
-    return { name, ok: false, kind: "oauth", detail: `WWW-Authenticate was "${challenge}", expected resource_metadata and scope="mail:read"` };
+  // Calendars and reminders add their read scopes to the challenge when the
+  // deployment enables them, so check that mail:read is among the named
+  // scopes rather than expecting the whole string to be exactly mail:read.
+  const scopeMatch = /scope="([^"]*)"/.exec(challenge);
+  const scopes = scopeMatch ? scopeMatch[1].split(/\s+/).filter(Boolean) : [];
+  if (!challenge.includes(metadataRef) || !scopes.includes("mail:read")) {
+    return {
+      name,
+      ok: false,
+      kind: "oauth",
+      detail: `WWW-Authenticate was "${challenge}", expected resource_metadata and a scope list including mail:read`,
+    };
   }
-  return { name, ok: true, detail: "HTTP 401 pointing at the OAuth metadata, scope mail:read" };
+  return { name, ok: true, detail: `HTTP 401 pointing at the OAuth metadata, scopes ${scopes.join(" ")}` };
 }
 
 function describeHealth(result, base) {

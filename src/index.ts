@@ -12,9 +12,11 @@
 
 import OAuthProvider, { GrantType, OAuthError } from "@cloudflare/workers-oauth-provider";
 import { epochMatches, grantEpoch, hasPkcePolicy, isAuthorized, json, tokenMatches, withNoStore } from "./auth";
+import { requiredScopes, scopeProfile, supportedScopes } from "./calendar-config";
 import { createMailMcpHandler } from "./mcp";
 import { handleAuthorize } from "./oauth-authorize";
 import { handleRest } from "./rest";
+import { authorityOf } from "./scopes";
 import type { Env } from "./types";
 
 // The Durable Object class must be exported from the entry module so the
@@ -55,15 +57,15 @@ const mcpApiHandler = {
       return json({ error: { code: "invalid_token", message: "API token rotated; reconnect" } }, 401, {
         "WWW-Authenticate":
           `Bearer realm="OAuth", resource_metadata="${origin}/.well-known/oauth-protected-resource/mcp", ` +
-          `error="invalid_token", scope="mail:read"`,
+          `error="invalid_token", scope="${requiredScopes(env).join(" ")}"`,
       });
     }
     // Drafts are bound to the calling client: an OAuth grant's clientId, or
     // the shared static bearer. Another client cannot see or act on them.
-    const auth = (ctx as { auth?: { clientId?: unknown } }).auth;
+    const auth = (ctx as { auth?: { clientId?: unknown; scope?: unknown } }).auth;
     const principal =
       typeof auth?.clientId === "string" && auth.clientId !== "" ? `oauth:${auth.clientId}` : "bearer";
-    return createMailMcpHandler(env, principal)(request, env, ctx);
+    return createMailMcpHandler(env, principal, authorityOf(props, auth))(request, env, ctx);
   },
 };
 
@@ -134,17 +136,21 @@ const defaultFetch = {
 };
 
 /**
- * One provider per origin, kept across requests: the library's constructor is
- * synchronous validation only, and a fresh instance per request would discard
- * the client-assertion JWKS cache. The deployment URL is unknown at build
- * time (workers.dev vs custom domain), hence the map. Capped so stray
- * hostnames cannot grow it without bound.
+ * One provider per origin and scope profile, kept across requests: the
+ * library's constructor is synchronous validation only, and a fresh instance
+ * per request would discard the client-assertion JWKS cache. The deployment URL
+ * is unknown at build time (workers.dev vs custom domain), hence the map.
+ * Capped so stray hostnames cannot grow it without bound.
  */
 const PROVIDER_LIMIT = 8;
 const providers = new Map<string, OAuthProvider<Env>>();
 
-function providerFor(origin: string): OAuthProvider<Env> {
-  const cached = providers.get(origin);
+function providerFor(origin: string, env: Env): OAuthProvider<Env> {
+  // The offered scope set is a function of the deployment config, so the cache
+  // key carries a fingerprint of it: a config change must not be pinned to the
+  // first origin's provider for the isolate's lifetime.
+  const key = `${origin}|${scopeProfile(env)}`;
+  const cached = providers.get(key);
   if (cached) return cached;
 
   const provider = new OAuthProvider<Env>({
@@ -155,8 +161,8 @@ function providerFor(origin: string): OAuthProvider<Env> {
     tokenEndpoint: "/oauth/token",
     clientRegistrationEndpoint: "/oauth/register",
     clientIdMetadataDocumentEnabled: true,
-    scopesSupported: ["mail:read", "offline_access"],
-    requiredScopes: ["mail:read"],
+    scopesSupported: supportedScopes(env),
+    requiredScopes: requiredScopes(env),
     resourceMetadata: {
       resource: `${origin}/mcp`,
       authorization_servers: [origin],
@@ -244,7 +250,7 @@ export default {
       // first origin's resource configuration (issuer, resource URLs) onto
       // every other origin. Each dispatch gets a fresh wrapper without it.
       const { OAUTH_PROVIDER: _memoized, ...dispatchEnv } = env;
-      return withNoStore(await providerFor(origin).fetch(effectiveRequest, dispatchEnv as Env, ctx));
+      return withNoStore(await providerFor(origin, env).fetch(effectiveRequest, dispatchEnv as Env, ctx));
     } catch (error) {
       console.error("provider_dispatch_error", error instanceof Error ? error.message : String(error));
       return withNoStore(dispatchFailure(pathname));

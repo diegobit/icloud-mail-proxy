@@ -3,12 +3,65 @@
 // everything goes through escapeHtml before it reaches the markup
 // (plans/oauth-mcp.md, step 3).
 
+import type { ResourceScope } from "./scopes";
+
 export interface ClientFacts {
   clientName: string;
   clientDomain?: string;
   redirectUri: string;
   redirectHost: string;
   redirectIsLoopback: boolean;
+}
+
+export interface ScopeChoice {
+  scope: ResourceScope;
+  label: string;
+  detail: string;
+  checked: boolean;
+}
+
+const SCOPE_COPY: Record<ResourceScope, { label: string; detail: string }> = {
+  "mail:read": {
+    label: "Read and manage mail",
+    detail:
+      "List folders, search and read messages, download allowed attachments, send mail and " +
+      "save drafts, and move messages into Archive or Trash.",
+  },
+  "calendar:read": {
+    label: "Read calendars and events",
+    detail: "List calendars and read events and their details.",
+  },
+  "calendar:write": {
+    label: "Create and update events",
+    detail: "Add events and change existing ones. Deleting is not offered.",
+  },
+  "reminders:read": {
+    label: "Read reminder lists and reminders",
+    detail: "List reminder lists and read reminders and their notes.",
+  },
+  "reminders:write": {
+    label: "Create, update and complete reminders",
+    detail: "Add reminders, change them and mark them complete. Deleting is not offered.",
+  },
+};
+
+/**
+ * What the consent page offers. The deployment's enabled scopes are the only
+ * choices; the client's request preselects them. When the client asked for
+ * nothing this deployment offers, the read scopes are preselected so an empty
+ * approval is not the default.
+ */
+export function scopeChoices(
+  enabled: readonly ResourceScope[],
+  requested: readonly string[],
+): ScopeChoice[] {
+  const requestedSet = new Set(requested);
+  const anyRequested = enabled.some((scope) => requestedSet.has(scope));
+  return enabled.map((scope) => ({
+    scope,
+    ...SCOPE_COPY[scope],
+    checked: anyRequested ? requestedSet.has(scope) : scope.endsWith(":read"),
+  }));
 }
 
 export function escapeHtml(value: string): string {
@@ -45,7 +98,12 @@ const STYLE = `
   .warn { background: #fff4e5; border-radius: 8px; padding: .75rem 1rem; }
   .error { background: #fdecea; border-radius: 8px; padding: .75rem 1rem; font-weight: 600; }
   form { margin-top: 1.5rem; display: grid; gap: .75rem; }
+  fieldset { border: 0; padding: 0; margin: 1.5rem 0 0; display: grid; gap: .75rem; }
+  legend { font-weight: 600; padding: 0; margin-bottom: .25rem; }
   label { font-weight: 600; }
+  label.scope { display: flex; gap: .5rem; font-weight: 400; }
+  label.scope input { margin-top: .25rem; }
+  label.scope span { line-height: 1.4; }
   input[type=password] { font: inherit; padding: .5rem .75rem; border: 1px solid #999;
                          border-radius: 8px; }
   .buttons { display: flex; gap: .75rem; }
@@ -116,18 +174,36 @@ ${errorHtml}
 
 // The consent form carries the grant epoch of the API token that was
 // verified at sign-in (see oauth-authorize.ts): the consent handler refuses
-// to mint a grant when the token has rotated since.
-export function consentPage(options: { client: ClientFacts; handle: string; epoch: string }): string {
-  const { client, handle, epoch } = options;
+// to mint a grant when the token has rotated since. The scope checkboxes are
+// the grant: only values the deployment offers are rendered, and the handler
+// validates them again before approveConsent.
+export function consentPage(options: {
+  client: ClientFacts;
+  handle: string;
+  epoch: string;
+  scopes: readonly ScopeChoice[];
+}): string {
+  const { client, handle, epoch, scopes } = options;
+  const choices = scopes
+    .map(
+      (choice) =>
+        `<label class="scope"><input type="checkbox" name="scope" value="${escapeHtml(choice.scope)}"` +
+        `${choice.checked ? " checked" : ""}>` +
+        `<span><strong>${escapeHtml(choice.label)} (${escapeHtml(choice.scope)})</strong><br>` +
+        `${escapeHtml(choice.detail)}</span></label>`,
+    )
+    .join("\n");
   return page(
     "Approve access",
     `<h1>Approve access</h1>
 ${clientFactsHtml(client)}
-<p class="fact">This app will be able to:</p>
-<p class="fact"><strong>Read mail (mail:read)</strong> — list folders, search messages, read message bodies and download allowed attachments. It can also <strong>send mail and save drafts</strong> as this address; it cannot move, flag, or delete anything in the mailbox.</p>
 <form method="post" action="/authorize/consent">
 <input type="hidden" name="handle" value="${escapeHtml(handle)}">
 <input type="hidden" name="epoch" value="${escapeHtml(epoch)}">
+<fieldset>
+<legend>This app will be able to:</legend>
+${choices}
+</fieldset>
 <div class="buttons">
 <button type="submit" name="action" value="approve" class="primary">Approve</button>
 <button type="submit" name="action" value="deny">Deny</button>

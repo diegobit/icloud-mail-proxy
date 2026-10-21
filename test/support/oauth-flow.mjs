@@ -192,6 +192,7 @@ export async function oauthExchange(base, apiToken, tokenExchange = tokenRequest
       handle: hidden(consentHtml, "handle"),
       action: "approve",
       epoch: hidden(consentHtml, "epoch"),
+      scope: "mail:read",
     }),
     redirect: "manual",
   });
