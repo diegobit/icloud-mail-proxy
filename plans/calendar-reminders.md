@@ -85,17 +85,26 @@ overwrite would destroy.
 
 ## Decisions for the owner before implementing
 
-1. **Allowlists.** Proposed from the probe: calendars `Lavoro, Personale,
-   Casa SP`; reminder lists `Casa SP⚠️, Reminders`. `Spesa Belun` looks like a
-   shared list. The owner picks; an empty allowlist disables the domain
-   entirely (no tools, no scopes).
-2. **When writes go live.** Recommended: `CALENDAR_WRITE` and
-   `REMINDERS_WRITE` **off** at deploy, on after the acceptance in step 10.
-3. **Scratch targets** for acceptance: one throwaway calendar and one throwaway
-   reminder list, created by the owner in the Apple apps and deleted afterwards.
-   Nothing is accepted by touching `Lavoro` or `Personale`.
-4. **Zone names.** The account already uses `Europe/Rome`; confirm that is the
-   only zone the agent should assume when the caller omits `timeZone`.
+Answered by the owner on 2026-10-21:
+
+1. **Allowlists — everything.** Both domains use the `*` value: every
+   collection that passes the `resourcetype` + display-name filter is allowed,
+   including `Spesa Belun` (shared) and calendars or lists created later. `*`
+   is an explicit opt-in; an empty value still disables the domain, so a fresh
+   deployment never exposes calendars by accident. Writes to a shared
+   collection are visible to the other people immediately.
+2. **Writes — on at first deploy.** `CALENDAR_WRITE=1` and
+   `REMINDERS_WRITE=1` from the first production deploy. Acceptance still runs
+   against the scratch targets first; the write-gating checks run in
+   `wrangler dev` with the flags at `0`, not by turning production off and on.
+3. **Scratch targets.** The `Scratch` calendar is visible over CalDAV. The
+   `Scratch` reminder list was created in the app but is not yet visible to the
+   probe (checked twice on 2026-10-21, before and after a 20 s wait); re-check
+   before the reminder acceptance, since iCloud may not have synced it yet.
+   No acceptance write touches `Lavoro`, `Personale`, `Casa SP` or
+   `Spesa Belun`.
+4. **Zone names.** `Europe/Rome` is the default when the caller omits
+   `timeZone`.
 
 Everything else (description only in `get_event`, completed reminders excluded
 by default, UTC serialization for writes, recurring resources read-only) is an
@@ -432,13 +441,18 @@ Tool-to-scope inventory (19 tools: 8 existing, 11 new):
 
 ### Config, `Env` and the write bound
 
-`ALLOWED_CALENDARS`, `ALLOWED_REMINDER_LISTS` (names), `CALENDAR_WRITE`,
+`ALLOWED_CALENDARS`, `ALLOWED_REMINDER_LISTS` (comma-separated names, or `*`
+for every collection that passes the discovery filter), `CALENDAR_WRITE`,
 `REMINDERS_WRITE` (`"1"`/`"0"`), `MAX_CALENDAR_DAYS` 90, `MAX_EVENT_RESULTS` 50,
 `MAX_REMINDERS` 200, `MAX_RESPONSE_BYTES` 4194304, `MAX_RESOURCE_BYTES` 262144,
 `MAX_RESOURCES_PER_QUERY` 300, `MAX_OCCURRENCES_PER_RESOURCE` 200,
 `MAX_RDATE_EXDATE` 500, `MAX_RECURRENCE_CANDIDATES_PER_RULE` 50000,
 `MAX_RECURRENCE_CANDIDATES_PER_REQUEST` 200000, `CALDAV_TIMEOUT_MS` 15000.
 Defaults live in `wrangler.base.jsonc` and are documented in `DEPLOY.md`.
+`*` must be written literally and alone; a mixed value like `*,Lavoro` is a
+config error, not a superset. Names are trimmed, compared case-sensitively, and
+a name that matches nothing is ignored (it may belong to another device).
+An empty or absent value disables the domain: no tools, no routes, no scopes.
 
 Writes get a real bound, not just an audit line: a `ratelimits` binding
 `CALENDAR_WRITE_LIMITER` (30 requests/minute per connecting IP) gates the write
@@ -540,22 +554,31 @@ README.
    `complete_reminder`, same preconditions and refusals.
 8. **Docs.** README (a "Calendars and reminders" section, API reference,
    security-model paragraph, untrusted-content bullet), `DEPLOY.md` (new vars,
-   how to confirm names, what write-off means), `.dev.vars.example`.
-9. **Setup and verify.** Because the domain is disabled until an allowlist
-   exists, setup runs a three-deploy sequence, resumable at each boundary:
-   (a) bootstrap deploy with the current config; (b) call the bearer-only
-   `?all=1` discovery on the deployed Worker — it cannot use the stored Apple
-   password, which Cloudflare never returns — print names and kinds, ask which
-   to allow, persist both allowlists in the setup state and the config fragment;
-   (c) **redeploy** with the new config, then verify. Persisting without the
-   final deploy would leave the Worker with the domains disabled or the old
-   allowlists. `verify` adds a read-only 7-day `list_events`, the `?all=1`
-   discovery check, and `tools/list` containment. Verify never writes.
-10. **Live acceptance.** Deploy with `CALENDAR_WRITE=1` and `REMINDERS_WRITE=1`
-    against the scratch targets only, run the checks below, then either keep
-    writes on or turn them off and redeploy.
+   how to confirm names, what `*` means and how writes are gated),
+   `.dev.vars.example`.
+9. **Setup and verify.** Because the domain is disabled until a non-empty
+   allowlist exists, setup runs a three-deploy sequence, resumable at each
+   boundary: (a) bootstrap deploy with the current config; (b) call the
+   bearer-only `?all=1` discovery on the deployed Worker — it cannot use the
+   stored Apple password, which Cloudflare never returns — print names and
+   kinds, ask which to allow (with `*` as the offered default), persist both
+   allowlists in the setup state and the config fragment; (c) **redeploy** with
+   the new config, then verify. Persisting without the final deploy would leave
+   the Worker with the domains disabled or the old allowlists. When the config
+   already carries `*`, step (b) is presentation only and (c) is a no-op
+   redeploy; the flow still runs so a stricter deployment works unchanged.
+   `verify` adds a read-only 7-day `list_events`, the `?all=1` discovery check,
+   and `tools/list` containment. Verify never writes.
+10. **Live acceptance.** Deploy with `CALENDAR_WRITE=1` and
+    `REMINDERS_WRITE=1` (the owner's choice: writes are on from the first
+    deploy) and run the checks below against the `Scratch` calendar and the
+    scratch reminder list. There is no off-then-on flip; the write-gating
+    checks run locally with the flags at `0`.
 
 ## Acceptance (live, on owner-created scratch targets)
+
+Both `Scratch` collections exist (one calendar, one reminder list); no other
+collection is written.
 
 - Create a one-off event tomorrow at 10:00 `Europe/Rome`, confirm it renders at
   10:00 on the iPhone, rename it through `update_event` with the returned ETag,
@@ -569,8 +592,9 @@ README.
   `recurring_not_supported`, and confirm nothing changed.
 - Attempt `update_event` on an event with an attendee: expect
   `scheduling_not_supported`.
-- With writes off, confirm the write tools are absent from `tools/list` and the
-  REST write routes answer `not_supported`.
+- In local `wrangler dev` with `CALENDAR_WRITE=0` and `REMINDERS_WRITE=0`,
+  confirm the write tools are absent from `tools/list` and the REST write
+  routes answer `not_supported`.
 - With a grant narrowed to read on the consent page, confirm
   `insufficient_scope`; confirm the static bearer still works; reconnect and
   confirm the write tools work with a write-scope grant.
