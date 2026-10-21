@@ -57,7 +57,7 @@ numeric account segment.
 | --- | --- |
 | `PROPFIND /` → `current-user-principal` | 207; `/<dsid>/principal/` |
 | `PROPFIND principal` → `calendar-home-set` | 207; absolute URL on the shard host, `https://pNN-caldav.icloud.com:443/<dsid>/calendars/` |
-| `PROPFIND home` Depth 1 | 207; 9 named collections plus `inbox`, `notification`, `outbox` with no display name |
+| `PROPFIND home` Depth 1 | 207; 10 entries: the account home, 6 calendars/reminder lists, and `inbox`, `notification`, `outbox` with no display name |
 | Component sets | `Lavoro`, `Personale`, `Casa SP`, `Spesa Belun` = `VEVENT`; `Casa SP⚠️`, `Reminders` = `VTODO`; `outbox` advertises both |
 | **VTODO exists** | Yes: `Casa SP⚠️` returns 3 VTODO resources. The iOS 13 CloudKit migration did not hide reminders on this account. |
 | Component-set XML | Apple writes `name='VEVENT'` with **single quotes** — a double-quote-only parser silently sees zero components |
@@ -124,16 +124,22 @@ export function createCalDav(env: Env, options?: CalDavOptions): CalDav
   once, retry once; never follow the redirect with credentials attached.
 - **Destination validation happens in two phases**, because the principal lives
   outside the calendar home and the home is unknown during bootstrap:
-  1. *Bootstrap* — only `https://caldav.icloud.com` and only the two discovery
-     requests (root, principal). Nothing else may carry credentials.
-  2. *Pinned* — after discovery, the origin is pinned to the discovered shard
-     (`scheme://host:port`), and every subsequent URL must be on that origin with
-     a path that starts with the discovered home path. The bootstrap origin stays
-     allowed only for the principal path.
-  The host name alone is not enough: `*.caldav.icloud.com` does **not** match the
-  real shard `p42-caldav.icloud.com`, and a host allowlist without an origin and
-  path pin lets a crafted multistatus move the next request to another account's
-  path. `scripts/probe-caldav.mjs` implements the same guard.
+  1. *Bootstrap* — only `https://caldav.icloud.com`, and only two requests: the
+     root and the exact principal path Apple returns (`/<dsid>/principal/`).
+     After the principal is parsed the bootstrap exception is narrowed from `/`
+     to that path by **equality**, not prefix — `/dsid/principal/anything` is
+     refused; nothing else may carry credentials.
+  2. *Pinned* — the `calendar-home-set` is validated **before** it is trusted:
+     `https:`, port 443, no userinfo, a hostname matching
+     `^p\d+-caldav\.icloud\.com$`, no encoded separators (`%2e`, `%2f`, `%5c`),
+     a trailing-slash directory, and a path that is exactly the principal's
+     account calendars directory — `/<dsid>/calendars/` derived from the
+     principal's own `/<dsid>/principal/`. Only then is the origin pinned, and
+     every later URL must be on that origin with a path under that home.
+  A host allowlist alone is not enough: `*.caldav.icloud.com` does **not** match
+  the real shard `p42-caldav.icloud.com`, and pinning whatever host a response
+  names would hand the Basic credential to that host. `scripts/probe-caldav.mjs`
+  implements exactly these checks, including the dsid-derived home path.
 - Discovery: root → `current-user-principal` → principal →
   `calendar-home-set`. Memoized per isolate in a capped map (user → URLs, TTL
   10 minutes). Only URLs, never content, so the no-cache stance of
@@ -230,30 +236,43 @@ leak it into the next in the same isolate.
 `src/ical.ts` wraps `ical.js` (exact version pinned; chosen over `node-ical`,
 which drags in `rrule`, `luxon` and `moment-timezone`):
 
-- `parseResource(ics)` → components grouped by UID plus VTIMEZONEs. Use the
-  resource's own VTIMEZONE for its times when the library allows component-local
-  resolution; otherwise parse with `Intl`. Never register a zone in a global
-  service.
-- `expandResource(parsed, { from, to, budget })` → occurrences. The master's
-  `RRULE`/`RDATE`/`EXDATE` drive the iterator; `RECURRENCE-ID` components
-  replace the matching instance. `RANGE=THISANDFUTURE` is detected and the
+- `parseResource(ics)` uses `ical.js` as a component tree and property reader
+  only: no `ICAL.Event`, no `ICAL.Time`, no `Timezone`/`TimezoneService`. Apple's
+  VTIMEZONE blocks are preserved verbatim for round-trips but never used to
+  resolve an instant; times are read as raw values plus `TZID` and converted in
+  `src/tz.ts` with `Intl`. This keeps ical.js's recurrence machinery — which its
+  `Timezone` type also uses internally — out of the request path entirely.
+- `expandResource(parsed, { from, to })` → occurrences. The master's
+  `RRULE`/`RDATE`/`EXDATE` drive the cursor described below; `RECURRENCE-ID`
+  components replace the matching instance. `RANGE=THISANDFUTURE` is detected and the
   resource is reported as `unsupportedRange: true` rather than half-expanded.
 - `mutateResource(ics, uid, mutate)` → read-modify-write that preserves
   VALARMs, X-properties, VTIMEZONE, `UID`, `DTSTAMP` and the `DTEND`/`DURATION`
   pairing. Creates build a minimal VCALENDAR (`PRODID` ours, `VERSION:2.0`,
   `CALSCALE:GREGORIAN`).
-- **Bounded rule subset.** A cap on *results* does not bound computation:
-  `ical.js`'s `RecurIterator.next()` runs internal search loops, and one call can
-  do far more work than the caller can count. So v1 accepts only rules it can
-  reason about — `FREQ` in `DAILY|WEEKLY|MONTHLY|YEARLY` with
-  `INTERVAL`/`BYDAY`/`BYMONTHDAY`/`BYMONTH`/`UNTIL`/`COUNT` — and refuses
-  `SECONDLY`/`MINUTELY`/`HOURLY` and the exotic parts (`BYSETPOS`, `BYYEARDAY`,
-  `BYWEEKNO`, `BYSECOND`, `BYMINUTE`, `BYHOUR`) with `recurrence_too_complex`.
-  On this account that keeps 150 of 150 event rules, all `WEEKLY`. The chosen
-  `ical.js` version's iterator is inspected in step 3, not assumed; the
-  aggregate budget is 20,000 candidate advances per request, exhaustion returns
-  `truncated: true, reason: "recurrence_budget"`, and hostile rules
-  (`FREQ=DAILY;INTERVAL=1` from 1970, `COUNT=100000`) get fixtures in workerd.
+- **Expansion is ours, not `ical.js`'s iterator.** A cap on *results* does not
+  bound computation, and `ical.js`'s `RecurIterator.next()` runs internal search
+  loops that the caller cannot meter: `FREQ=DAILY;BYMONTH=2;BYMONTHDAY=30` never
+  finds a candidate, and `INTERVAL=2147483647` walks billions of steps inside a
+  single `next()` (reproduced in review; no timer can preempt synchronous JS).
+  So `ical.js` is used for **parsing and serializing only**, and occurrences are
+  generated by a cursor over the query window — at most `MAX_CALENDAR_DAYS` (90)
+  day steps, 3 month steps, or 1 year step per rule, no matter what the rule
+  says. That is bounded by construction rather than by inspection.
+- `COUNT`-limited rules are expanded from `DTSTART` and stop at `COUNT` (≤ 1000
+  steps), because a window cursor cannot know how many occurrences preceded
+  `from`; `UNTIL` and unbounded rules use the window cursor and stop at the
+  earlier of the window end and `UNTIL`.
+- The accepted rule subset is what the generator implements
+  (`FREQ` in `DAILY|WEEKLY|MONTHLY|YEARLY` with `INTERVAL` ≤ 52,
+  `BYDAY` ≤ 7 values, `BYMONTHDAY`, `BYMONTH`, `COUNT` ≤ 1000, `UNTIL` inside
+  ±10 years); everything else — sub-daily frequencies, `BYSETPOS`, `BYYEARDAY`,
+  `BYWEEKNO`, `BYSECOND`, `BYMINUTE`, `BYHOUR`, out-of-range numerics,
+  impossible intersections such as `BYMONTH=2;BYMONTHDAY=30` — is refused with
+  `recurrence_too_complex` before any expansion. On this account that keeps 150
+  of 150 event rules, all `WEEKLY`. `RDATE`/`EXDATE` lists are capped at 500
+  entries each; a longer list is `recurrence_too_complex`, not a partial
+  expansion.
 
 ### Reads
 
@@ -412,9 +431,8 @@ Tool-to-scope inventory (19 tools: 8 existing, 11 new):
 `REMINDERS_WRITE` (`"1"`/`"0"`), `MAX_CALENDAR_DAYS` 90, `MAX_EVENT_RESULTS` 50,
 `MAX_REMINDERS` 200, `MAX_RESPONSE_BYTES` 4194304, `MAX_RESOURCE_BYTES` 262144,
 `MAX_RESOURCES_PER_QUERY` 300, `MAX_OCCURRENCES_PER_RESOURCE` 200,
-`MAX_RECURRENCE_ADVANCES` 5000, `MAX_RECURRENCE_ADVANCES_PER_REQUEST` 20000,
-`CALDAV_TIMEOUT_MS` 15000. Defaults in `wrangler.base.jsonc`, documented in
-`DEPLOY.md`.
+`MAX_RDATE_EXDATE` 500, `CALDAV_TIMEOUT_MS` 15000. Defaults live in
+`wrangler.base.jsonc` and are documented in `DEPLOY.md`.
 
 Writes get a real bound, not just an audit line: a `ratelimits` binding
 `CALENDAR_WRITE_LIMITER` (30 requests/minute per connecting IP) gates the write
@@ -497,8 +515,12 @@ README.
 3. **Time and iCalendar.** `src/tz.ts` and `src/ical.ts` with fixtures:
    `Europe/Rome` DST edges, `Lord_Howe`, all-day, `Z`, `TZID`, `RDATE`, `EXDATE`,
    override by `RECURRENCE-ID`, `RANGE=THISANDFUTURE`, an unknown TZID, the
-   bounded-rule subset, the advance budget, and the pinned ical.js iterator
-   inspection.
+   window cursor for all four frequencies, `COUNT` rules expanded from `DTSTART`
+   (so a February listing of a January series is correct), and hostile rules that
+   must be refused before expansion (`BYMONTH=2;BYMONTHDAY=30`,
+   `INTERVAL=2147483647`, `FREQ=SECONDLY`, a 10,000-entry `RDATE`). A test asserts
+   that `ICAL.Event`, `ICAL.Time`, `ICAL.Timezone` and the recurrence iterator are
+   never constructed.
 4. **Read events.** `list_events`, `get_event`, overlap semantics, occurrence
    identity, caps, `too_many_resources`, `range_too_wide`, REST parity.
 5. **Read reminders.** `list_reminder_lists`, `list_reminders`, `get_reminder`,
@@ -511,12 +533,16 @@ README.
 8. **Docs.** README (a "Calendars and reminders" section, API reference,
    security-model paragraph, untrusted-content bullet), `DEPLOY.md` (new vars,
    how to confirm names, what write-off means), `.dev.vars.example`.
-9. **Setup and verify.** Setup calls the bearer-only `?all=1` discovery on the
-   deployed Worker — it cannot use the stored Apple password, which Cloudflare
-   never returns — prints names and kinds, asks which to allow, persists both
-   allowlists in the setup state and config fragment. `verify` adds a read-only
-   7-day `list_events`, the `?all=1` discovery check, and `tools/list`
-   containment. Verify never writes.
+9. **Setup and verify.** Because the domain is disabled until an allowlist
+   exists, setup runs a three-deploy sequence, resumable at each boundary:
+   (a) bootstrap deploy with the current config; (b) call the bearer-only
+   `?all=1` discovery on the deployed Worker — it cannot use the stored Apple
+   password, which Cloudflare never returns — print names and kinds, ask which
+   to allow, persist both allowlists in the setup state and the config fragment;
+   (c) **redeploy** with the new config, then verify. Persisting without the
+   final deploy would leave the Worker with the domains disabled or the old
+   allowlists. `verify` adds a read-only 7-day `list_events`, the `?all=1`
+   discovery check, and `tools/list` containment. Verify never writes.
 10. **Live acceptance.** Deploy with `CALENDAR_WRITE=1` and `REMINDERS_WRITE=1`
     against the scratch targets only, run the checks below, then either keep
     writes on or turn them off and redeploy.
@@ -580,9 +606,19 @@ review surfaced.
 
 ## Review
 
-Round 1 and round 2: Codex `gpt-6.1-sol`, reasoning high, 2026-10-21. Round 1
-verdict *ready after fixes* (3 P0s, 14 P1s); round 2 verdict *ready after these
-fixes* (2 P0s, 6 P1s, wording). Everything raised is folded in above:
+Rounds 1–3: Codex `gpt-6.1-sol`, reasoning high, 2026-10-21. Round 1 verdict
+*ready after fixes* (3 P0s, 14 P1s); round 2 *ready after these fixes* (2 P0s,
+6 P1s, wording); round 3 *fix first* (1 P0, 2 P1s), all folded in below.
+Round 3 closed the scope-minting and setup-bootstrap P0s, then found that the
+destination guard still trusted an unvalidated home URL, that the accepted rule
+subset did not actually bound `ical.js`'s internal search, and that setup
+persisted selections without redeploying. Round 4 confirmed the setup sequence
+and found two remaining holes: the bootstrap path check used `startsWith`, and
+"component-local VTIMEZONE resolution" would still have constructed an ical.js
+iterator (and a window cursor cannot honour `COUNT`). All are fixed above: the
+principal path is matched by equality, `ical.js` is a parser/serializer only
+with no `Event`/`Time`/`Timezone` use, `COUNT` rules expand from `DTSTART`
+(capped at 1000), and setup redeploys after persisting. Earlier rounds:
 
 - Host allowlist rejects the real shard (`pNN-caldav` is not `*.caldav`), and
   destination validation is now two-phase (bootstrap, then pinned origin +
@@ -597,8 +633,9 @@ fixes* (2 P0s, 6 P1s, wording). Everything raised is folded in above:
   grant. The reconnect path is verified, not assumed.
 - Time zones: RFC 5545 uses the offset before the gap; writes are UTC/DATE only;
   unresolved zones stay floating and incomparable.
-- Bounded computation: a rule subset (not just a result cap), an aggregate
-  advance budget, response/per-resource byte caps, and hostile fixtures.
+- Bounded computation: expansion is a window cursor of our own (not `ical.js`'s
+  iterator), the accepted rule subset is what that cursor implements,
+  response/per-resource byte caps, and hostile fixtures.
 - Occurrence identity and refusal recovery are explicit, including
   `readOnlyReason` and an error that says retrying will not help.
 - Reminders: unfiltered bounded listing rather than a server filter that cannot
@@ -612,7 +649,7 @@ fixes* (2 P0s, 6 P1s, wording). Everything raised is folded in above:
 
 ## Verification log
 
-- 2026-10-21, `scripts/probe-caldav.mjs --json`: discovery 207/207, 9 named
-  collections, `expand` byte-identical (1,814,924 bytes both), 150 event RRULEs
+- 2026-10-21, `scripts/probe-caldav.mjs --json`: discovery 207/207, 10 entries
+  (home, 6 collections, 3 pseudo-collections), `expand` byte-identical (1,814,924 bytes both), 150 event RRULEs
   all `WEEKLY`, single resource `GET` 200 / `PROPFIND` no data / `multiget` data
   + strong quoted ETag, 3 VTODO resources unfiltered and 0 in a 30-day window.

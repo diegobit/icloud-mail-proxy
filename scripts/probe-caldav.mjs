@@ -60,23 +60,52 @@ function redact(value) {
 }
 
 // Destination guard. The probe attaches Basic credentials to URLs that come
-// out of Apple's XML, so it validates them the way the Worker must: bootstrap
-// requests only to the well-known host, then only the discovered shard origin
-// and the discovered home path.
+// out of Apple's XML, so it validates them the way the Worker must:
+//   - bootstrap: only the well-known host, and only the root request; once the
+//     principal path is known, only that exact path;
+//   - pinned: only an Apple CalDAV shard, on 443, with the exact account home
+//     derived from the principal, never just "some host that answered".
+const BOOTSTRAP_ORIGIN = "https://caldav.icloud.com";
+const SHARD_HOST = /^p\d+-caldav\.icloud\.com$/;
 const destinations = {
-  origins: new Set(["https://caldav.icloud.com"]),
-  pathByOrigin: new Map([["https://caldav.icloud.com", "/"]]),
+  origins: new Set([BOOTSTRAP_ORIGIN]),
+  pathByOrigin: new Map([[BOOTSTRAP_ORIGIN, "/"]]),
 };
 
 function assertDestination(url) {
   const parsed = new URL(url);
   if (parsed.protocol !== "https:") throw new Error(`refusing ${parsed.protocol} URL`);
   if (parsed.username || parsed.password) throw new Error("refusing a URL with credentials");
+  if (parsed.port && parsed.port !== "443") throw new Error(`refusing port ${parsed.port}`);
   if (!destinations.origins.has(parsed.origin)) throw new Error(`refusing host ${parsed.host}`);
+  if (/%2e|%2f|%5c/i.test(parsed.pathname)) throw new Error("refusing an encoded path separator");
   const prefix = destinations.pathByOrigin.get(parsed.origin);
-  if (!prefix || !parsed.pathname.startsWith(prefix)) {
-    throw new Error(`refusing path outside ${prefix} on ${parsed.host}`);
+  if (!prefix) throw new Error(`refusing ${parsed.host}: no allowed path`);
+  // The bootstrap host is allowed for exactly one path (the principal); the
+  // shard is allowed for its whole calendars home.
+  const allowed =
+    parsed.origin === BOOTSTRAP_ORIGIN ? parsed.pathname === prefix : parsed.pathname.startsWith(prefix);
+  if (!allowed) throw new Error(`refusing path ${parsed.pathname} on ${parsed.host}`);
+}
+
+/**
+ * The home is only trusted if it is the calendars directory of the account the
+ * principal belongs to, on an Apple shard. The principal path is the anchor:
+ * /<dsid>/principal/ may only point at /<dsid>/calendars/.
+ */
+function validateHome(principalPath, homeHref, principalUrl) {
+  const home = new URL(homeHref, principalUrl);
+  if (home.protocol !== "https:") throw new Error("home is not https");
+  if (home.port && home.port !== "443") throw new Error(`home is on port ${home.port}`);
+  if (home.username || home.password) throw new Error("home carries credentials");
+  if (!SHARD_HOST.test(home.hostname)) throw new Error(`home is not an Apple shard: ${home.hostname}`);
+  const account = /^\/(\d{6,})\/principal\/?$/.exec(principalPath);
+  if (!account) throw new Error(`unexpected principal path ${principalPath}`);
+  const expected = `/${account[1]}/calendars/`;
+  if (home.pathname !== expected) {
+    throw new Error(`home path ${home.pathname} is not the principal's ${expected}`);
   }
+  return home;
 }
 
 async function request(url, method, body, depth) {
@@ -164,6 +193,12 @@ async function discover() {
   if (!principal) throw new Error(`no current-user-principal (HTTP ${rootResponse.status})`);
 
   const principalUrl = new URL(principal, root).toString();
+  if (new URL(principalUrl).origin !== BOOTSTRAP_ORIGIN) throw new Error("principal is not on the bootstrap origin");
+  if (!/^\/\d{6,}\/principal\/?$/.test(new URL(principalUrl).pathname)) {
+    throw new Error(`unexpected principal path ${new URL(principalUrl).pathname}`);
+  }
+  // Narrow the bootstrap exception from "/" to the principal path itself.
+  destinations.pathByOrigin.set(BOOTSTRAP_ORIGIN, new URL(principalUrl).pathname);
   const principalResponse = await request(
     principalUrl,
     "PROPFIND",
@@ -175,9 +210,9 @@ async function discover() {
   );
   const home = innerHref(principalResponse.text, "calendar-home-set");
   if (!home) throw new Error(`no calendar-home-set (HTTP ${principalResponse.status})`);
-  const homeUrl = new URL(home, principalUrl);
-  // From here on, credentialed requests only reach the discovered shard and
-  // only under the discovered calendars path.
+  const homeUrl = validateHome(new URL(principalUrl).pathname, home, principalUrl);
+  // From here on, credentialed requests only reach the validated shard and
+  // only under the validated calendars path.
   destinations.origins.add(homeUrl.origin);
   destinations.pathByOrigin.set(homeUrl.origin, homeUrl.pathname);
   return { rootStatus: rootResponse.status, principalUrl, home: homeUrl.toString() };
