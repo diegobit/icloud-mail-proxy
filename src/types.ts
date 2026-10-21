@@ -45,6 +45,10 @@ export interface Env {
   SMTP_HOST?: string;
   SMTP_PORT?: string;
   SEND_LEDGER: DurableObjectNamespace<SendLedger>;
+  // CalDAV (plans/calendar-reminders.md). Optional so existing deployments and
+  // tests keep working; the transport falls back to 15 s and 4 MiB.
+  CALDAV_TIMEOUT_MS?: string;
+  MAX_RESPONSE_BYTES?: string;
 }
 
 export interface Address {
