@@ -7,6 +7,7 @@ import { CalDavError } from "./caldav";
 import { calendarsEnabled, reminderListsEnabled } from "./calendar-config";
 import { listCollections, type CollectionKind } from "./calendar-core";
 import { getEvent, listEvents } from "./calendar-events";
+import { getReminder, listReminders } from "./calendar-reminders";
 import {
   ApiError,
   getAttachment,
@@ -234,6 +235,14 @@ function queryValue(url: URL, name: string): string | undefined {
   return url.searchParams.get(name) ?? undefined;
 }
 
+function queryBoolean(url: URL, name: string): boolean | undefined {
+  const raw = queryValue(url, name);
+  if (raw === undefined) return undefined;
+  if (raw === "1" || raw === "true") return true;
+  if (raw === "0" || raw === "false") return false;
+  throw new ApiError(400, "invalid_request", `${name} must be 1 or 0`);
+}
+
 function queryLimit(url: URL): number | undefined {
   const raw = queryValue(url, "limit");
   if (raw === undefined) return undefined;
@@ -281,6 +290,48 @@ async function handleGetEvent(
   const calendar = decodeSegment(calendarSegment, "calendar");
   const id = decodeSegment(idSegment, "event id");
   return json(await getEvent(env, { calendar, id, from: queryValue(url, "from") }));
+}
+
+/** GET /v1/reminder-lists/:list/reminders?includeCompleted=&dueFrom=&dueTo= */
+async function handleListReminders(
+  url: URL,
+  listSegment: string,
+  env: Env,
+): Promise<Response> {
+  if (!reminderListsEnabled(env)) {
+    return errorBody(
+      "not_supported",
+      "reminder lists are disabled: ALLOWED_REMINDER_LISTS is empty",
+      404,
+    );
+  }
+  const reminderList = decodeSegment(listSegment, "reminder list");
+  return json(
+    await listReminders(env, {
+      reminderList,
+      includeCompleted: queryBoolean(url, "includeCompleted"),
+      dueFrom: queryValue(url, "dueFrom"),
+      dueTo: queryValue(url, "dueTo"),
+    }),
+  );
+}
+
+/** GET /v1/reminder-lists/:list/reminders/:id */
+async function handleGetReminder(
+  listSegment: string,
+  idSegment: string,
+  env: Env,
+): Promise<Response> {
+  if (!reminderListsEnabled(env)) {
+    return errorBody(
+      "not_supported",
+      "reminder lists are disabled: ALLOWED_REMINDER_LISTS is empty",
+      404,
+    );
+  }
+  const reminderList = decodeSegment(listSegment, "reminder list");
+  const id = decodeSegment(idSegment, "reminder id");
+  return json(await getReminder(env, { reminderList, id }));
 }
 
 /**
@@ -352,6 +403,28 @@ export async function handleRest(request: Request, env: Env): Promise<Response> 
       segments[3] === "events"
     ) {
       return await handleListEvents(url, segments[2], env);
+    }
+
+    // GET /v1/reminder-lists/:list/reminders/:id
+    if (
+      request.method === "GET" &&
+      segments.length === 5 &&
+      segments[0] === "v1" &&
+      segments[1] === "reminder-lists" &&
+      segments[3] === "reminders"
+    ) {
+      return await handleGetReminder(segments[2], segments[4], env);
+    }
+
+    // GET /v1/reminder-lists/:list/reminders
+    if (
+      request.method === "GET" &&
+      segments.length === 4 &&
+      segments[0] === "v1" &&
+      segments[1] === "reminder-lists" &&
+      segments[3] === "reminders"
+    ) {
+      return await handleListReminders(url, segments[2], env);
     }
 
     // POST /v1/search

@@ -12,14 +12,10 @@
 
 import {
   CalDavError,
-  calendarMultiget,
   calendarQuery,
   collectionPath,
   createCalDav,
   parseMultistatus,
-  propText,
-  resourcePath,
-  type DavResponse,
 } from "./caldav";
 import {
   DEFAULT_TIME_ZONE,
@@ -28,6 +24,27 @@ import {
   type CalendarLimits,
 } from "./calendar-config";
 import { resolveCollection, type CollectionInfo } from "./calendar-core";
+import {
+  byteLength,
+  calendarData,
+  icalCaps,
+  isResourceId,
+  readOnlyReasonOf,
+  readResource,
+  resourceIdFromHref,
+  type ReadOnlyReason,
+} from "./calendar-resource";
+import {
+  DAY_MS,
+  assertSupportedYear,
+  formatAbsolute,
+  formatRecurrenceId,
+  formatWall,
+  icsUtc,
+  midnight,
+  resolveBound,
+  today,
+} from "./calendar-time";
 import { ApiError } from "./core";
 import {
   componentEnd,
@@ -36,35 +53,13 @@ import {
   parseResource,
   type ExpandedOccurrence,
   type ExpansionTruncation,
-  type IcalCaps,
-  type IcalTime,
   type ParsedResource,
 } from "./ical";
-import {
-  addDays,
-  assertWallClock,
-  dateOf,
-  daysBetween,
-  isoDate,
-  isoInZone,
-  isoWall,
-  wallAsUtcMs,
-  wallClockInZone,
-  wallClockToUtc,
-  wallFromUtcMs,
-  type DateParts,
-  type WallClock,
-} from "./tz";
+import { addDays, dateOf, daysBetween, isoInZone } from "./tz";
 import type { Env } from "./types";
 
-const DAY_MS = 86_400_000;
-const DATE_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
-const DATE_TIME_RE = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(Z|[+-]\d{2}:\d{2})?$/;
-const RESOURCE_ID = /^[A-Za-z0-9._-]{1,128}$/;
-const ETAG = /^(?:W\/)?"[\x20-\x21\x23-\x7e]*"$/;
-
-export type ReadOnlyReason = "recurring" | "scheduling";
 export type EventTruncation = ExpansionTruncation | "limit";
+export type { ReadOnlyReason };
 
 export interface ListEventsInput {
   calendar: string;
@@ -171,11 +166,6 @@ export interface EventDetail {
   unsupportedRange: boolean;
 }
 
-interface Bound {
-  instant: number;
-  date: DateParts;
-}
-
 interface Window {
   from: number;
   to: number;
@@ -183,99 +173,8 @@ interface Window {
   toIso: string;
 }
 
-function invalid(message: string): never {
-  throw new ApiError(400, "invalid_request", message);
-}
-
 function disabled(): never {
   throw new ApiError(404, "not_supported", "calendars are disabled: ALLOWED_CALENDARS is empty");
-}
-
-function capsOf(limits: CalendarLimits): IcalCaps {
-  return {
-    maxRdateExdate: limits.maxRdateExdate,
-    maxRecurrenceCandidatesPerRule: limits.maxRecurrenceCandidatesPerRule,
-    maxRecurrenceCandidatesPerRequest: limits.maxRecurrenceCandidatesPerRequest,
-    maxOccurrencesPerResource: limits.maxOccurrencesPerResource,
-  };
-}
-
-/** Parse a strict YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS[Z|±HH:MM] value. */
-function parseBoundValue(
-  value: string,
-  label: string,
-): { wall: WallClock; offsetMinutes: number | null } {
-  const date = DATE_RE.exec(value);
-  if (date !== null) {
-    const wall = {
-      year: Number(date[1]),
-      month: Number(date[2]),
-      day: Number(date[3]),
-      hour: 0,
-      minute: 0,
-      second: 0,
-    };
-    try {
-      assertWallClock(wall);
-    } catch {
-      invalid(`${label} is not a valid date: ${JSON.stringify(value)}`);
-    }
-    return { wall, offsetMinutes: null };
-  }
-
-  const dateTime = DATE_TIME_RE.exec(value);
-  if (dateTime === null) {
-    invalid(`${label} must be YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS[Z|±HH:MM]`);
-  }
-  const wall = {
-    year: Number(dateTime[1]),
-    month: Number(dateTime[2]),
-    day: Number(dateTime[3]),
-    hour: Number(dateTime[4]),
-    minute: Number(dateTime[5]),
-    second: Number(dateTime[6]),
-  };
-  try {
-    assertWallClock(wall);
-  } catch {
-    invalid(`${label} is not a valid date-time: ${JSON.stringify(value)}`);
-  }
-
-  const zone = dateTime[7];
-  if (zone === undefined) return { wall, offsetMinutes: null };
-  if (zone === "Z") return { wall, offsetMinutes: 0 };
-  const sign = zone.startsWith("-") ? -1 : 1;
-  const hours = Number(zone.slice(1, 3));
-  const minutes = Number(zone.slice(4, 6));
-  if (hours > 23 || minutes > 59) invalid(`${label} has an invalid UTC offset: ${JSON.stringify(value)}`);
-  return { wall, offsetMinutes: sign * (hours * 60 + minutes) };
-}
-
-function resolveBound(value: string, label: string, zone: string): Bound {
-  const parsed = parseBoundValue(value, label);
-  const instant =
-    parsed.offsetMinutes === null
-      ? wallClockToUtc(zone, parsed.wall)
-      : wallAsUtcMs(parsed.wall) - parsed.offsetMinutes * 60_000;
-  return { instant, date: dateOf(wallClockInZone(zone, instant)) };
-}
-
-function midnight(date: DateParts, zone: string): number {
-  return wallClockToUtc(zone, { ...date, hour: 0, minute: 0, second: 0 });
-}
-
-function assertSupportedYear(date: DateParts, label: string): void {
-  if (date.year < 2 || date.year > 9998) {
-    throw new ApiError(
-      400,
-      "invalid_request",
-      `${label} is outside the supported years (2-9998)`,
-    );
-  }
-}
-
-function today(now: number, zone: string): DateParts {
-  return dateOf(wallClockInZone(zone, now));
 }
 
 function resolveWindow(input: ListEventsInput, now: number, limits: CalendarLimits): Window {
@@ -313,70 +212,6 @@ function resolveWindow(input: ListEventsInput, now: number, limits: CalendarLimi
   };
 }
 
-/** UTC iCalendar timestamp for a CalDAV time-range. */
-function icsUtc(instant: number): string {
-  const wall = wallFromUtcMs(instant);
-  const pad = (value: number, width: number) => String(value).padStart(width, "0");
-  return (
-    `${pad(wall.year, 4)}${pad(wall.month, 2)}${pad(wall.day, 2)}` +
-    `T${pad(wall.hour, 2)}${pad(wall.minute, 2)}${pad(wall.second, 2)}Z`
-  );
-}
-
-function byteLength(value: string): number {
-  return new TextEncoder().encode(value).byteLength;
-}
-
-function resourceIdFromHref(href: string, collectionId: string): string | null {
-  let url: URL;
-  try {
-    url = new URL(href, "https://caldav.icloud.com/");
-  } catch {
-    return null;
-  }
-  const marker = `/${collectionId}/`;
-  const index = url.pathname.lastIndexOf(marker);
-  if (index === -1) return null;
-  const tail = url.pathname.slice(index + marker.length);
-  if (tail === "" || tail.includes("/")) return null;
-  let decoded: string;
-  try {
-    decoded = decodeURIComponent(tail);
-  } catch {
-    return null;
-  }
-  if (!decoded.endsWith(".ics")) return null;
-  const id = decoded.slice(0, -4);
-  return RESOURCE_ID.test(id) && id !== "." && id !== ".." ? id : null;
-}
-
-function calendarData(response: DavResponse): string | null {
-  const raw = propText(response, "calendar-data");
-  return raw === null ? null : raw.trim();
-}
-
-function readOnlyReason(parsed: ParsedResource): ReadOnlyReason | null {
-  if (parsed.recurring) return "recurring";
-  if (parsed.scheduling) return "scheduling";
-  return null;
-}
-
-function formatAbsolute(time: IcalTime): string | null {
-  if (time.dateOnly) return isoDate(dateOf(time.wall));
-  if (time.utc === null) return null;
-  return isoInZone(time.utc, time.timeZone ?? "UTC");
-}
-
-function formatWall(time: IcalTime): string {
-  return time.dateOnly ? `${isoDate(dateOf(time.wall))}T00:00:00` : isoWall(time.wall);
-}
-
-function formatRecurrenceId(time: IcalTime): string {
-  if (time.dateOnly) return isoDate(dateOf(time.wall));
-  if (time.utc === null) return isoWall(time.wall);
-  return isoInZone(time.utc, time.timeZone ?? "UTC");
-}
-
 function listedEvent(
   collection: CollectionInfo,
   resourceId: string,
@@ -399,7 +234,7 @@ function listedEvent(
     timeZoneUnresolved: occurrence.timeZoneUnresolved,
     isOverride: occurrence.override,
     unsupportedRange: parsed.unsupportedRange,
-    readOnlyReason: readOnlyReason(parsed),
+    readOnlyReason: readOnlyReasonOf(parsed),
   };
 }
 
@@ -476,7 +311,7 @@ export async function listEvents(
   const limits = calendarLimits(env);
   const window = resolveWindow(input, options.now ?? Date.now(), limits);
   const limit = validateLimit(input.limit, limits);
-  const caps = capsOf(limits);
+  const caps = icalCaps(limits);
 
   const collection = await resolveCollection(env, "calendar", input.calendar, {
     fetchImpl: options.fetchImpl,
@@ -575,12 +410,12 @@ export async function getEvent(
   options: CalendarReadOptions = {},
 ): Promise<EventDetail> {
   assertCalendarsEnabled(env);
-  if (!RESOURCE_ID.test(input.id) || input.id === "." || input.id === "..") {
+  if (!isResourceId(input.id)) {
     throw new ApiError(400, "invalid_request", `invalid event id ${JSON.stringify(input.id)}`);
   }
 
   const limits = calendarLimits(env);
-  const caps = capsOf(limits);
+  const caps = icalCaps(limits);
   const zone = DEFAULT_TIME_ZONE;
   const now = options.now ?? Date.now();
   const fromDate = today(now, zone);
@@ -596,57 +431,7 @@ export async function getEvent(
   const collection = await resolveCollection(env, "calendar", input.calendar, {
     fetchImpl: options.fetchImpl,
   });
-  const caldav = createCalDav(env, { fetchImpl: options.fetchImpl });
-  const { homeUrl } = await caldav.discover();
-  const href = new URL(resourcePath(collection.id, input.id), homeUrl).pathname;
-  const response = await caldav.report(
-    collectionPath(collection.id),
-    calendarMultiget([href]),
-    1,
-  );
-  const entries = parseMultistatus(response.body);
-
-  let match: DavResponse | null = null;
-  for (const entry of entries) {
-    const entryId = resourceIdFromHref(entry.href, collection.id);
-    if (entryId !== input.id) {
-      throw new CalDavError("malformed", 0, "the calendar-multiget returned an unrelated href");
-    }
-    if (match !== null) {
-      throw new CalDavError("malformed", 0, "the calendar-multiget returned the event more than once");
-    }
-    match = entry;
-  }
-  if (match === null || match.status === 404) {
-    throw new CalDavError("not_found", 404, `the event ${JSON.stringify(input.id)} was not found`);
-  }
-  if (match.status !== null && match.status >= 400) {
-    throw new CalDavError(
-      match.status === 403 ? "forbidden" : "upstream_error",
-      match.status,
-      `iCloud returned ${match.status} for the event ${JSON.stringify(input.id)}`,
-    );
-  }
-
-  const ics = calendarData(match);
-  if (ics === null) {
-    throw new CalDavError("malformed", 0, "the event response has no calendar-data");
-  }
-  const rawBytes = byteLength(ics);
-  if (rawBytes > limits.maxResourceBytes) {
-    throw new ApiError(
-      422,
-      "resource_too_large",
-      `resource ${JSON.stringify(input.id)} is ${rawBytes} bytes; MAX_RESOURCE_BYTES is ` +
-        `${limits.maxResourceBytes}.`,
-    );
-  }
-
-  const etag = propText(match, "getetag")?.trim() ?? "";
-  if (etag === "" || !ETAG.test(etag)) {
-    throw new CalDavError("malformed", 0, "the event has no usable ETag");
-  }
-
+  const { ics, etag } = await readResource(env, collection, input.id, "event", options);
   const parsed = parseResource(ics, caps);
   if (parsed.kind !== "VEVENT") {
     throw new CalDavError("malformed", 0, "the resource is not a VEVENT");
@@ -677,7 +462,7 @@ export async function getEvent(
     etag,
     recurring: parsed.recurring,
     scheduling: parsed.scheduling,
-    readOnlyReason: readOnlyReason(parsed),
+    readOnlyReason: readOnlyReasonOf(parsed),
     recurrenceRule: parsed.master.rruleText,
     allDay: start.dateOnly,
     start: formatAbsolute(start),
