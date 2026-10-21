@@ -64,7 +64,7 @@ export interface ReminderReadOptions {
   fetchImpl?: typeof fetch;
 }
 
-interface ReminderFields {
+export interface ReminderFields {
   collectionId: string;
   resourceId: string;
   uid: string;
@@ -163,7 +163,7 @@ function dueInstant(due: ParsedComponent["due"]): number | null {
   return due.utc;
 }
 
-function fieldsOf(
+export function reminderFieldsOf(
   collection: CollectionInfo,
   resourceId: string,
   parsed: ParsedResource,
@@ -261,7 +261,7 @@ export async function listReminders(
 
     const parsed = parseResource(ics, caps);
     if (parsed.kind !== "VTODO") continue;
-    const fields = fieldsOf(collection, resourceId, parsed);
+    const fields = reminderFieldsOf(collection, resourceId, parsed);
     if (fields.isCancelled) continue;
     if (input.includeCompleted !== true && fields.isCompleted) continue;
 
@@ -308,7 +308,7 @@ export async function getReminder(
 
   return {
     reminderList: collection.name,
-    ...fieldsOf(collection, input.id, parsed),
+    ...reminderFieldsOf(collection, input.id, parsed),
     etag,
     recurring: parsed.recurring,
     scheduling: parsed.scheduling,

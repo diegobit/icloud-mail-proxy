@@ -52,8 +52,8 @@ export function assertStrongEtag(value: string): string {
     throw new ApiError(
       400,
       "invalid_etag",
-      "etag must be exactly one strong, quoted ETag returned by get_event; " +
-        "W/, *, and comma-separated lists are refused",
+      "etag must be exactly one strong, quoted ETag returned by get_event or " +
+        "get_reminder; W/, *, and comma-separated lists are refused",
     );
   }
   return value;

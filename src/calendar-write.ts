@@ -22,7 +22,7 @@ import {
   calendarWritesEnabled,
   type CalendarLimits,
 } from "./calendar-config";
-import { resolveCollection, type CollectionInfo } from "./calendar-core";
+import { resolveCollection } from "./calendar-core";
 import {
   assertStrongEtag,
   byteLength,
@@ -38,6 +38,18 @@ import {
   parseDateOnly,
   parseWallDateTime,
 } from "./calendar-time";
+import {
+  FORBIDDEN_WRITE_PROPERTIES,
+  auditWrite,
+  escapeIcalText,
+  normalizeSummary,
+  normalizeText,
+  readOnlyCollectionError,
+  reconcileMutationError,
+  serializeIcal,
+  withWriteLimit,
+  type WriteOptions,
+} from "./calendar-write-core";
 import { ApiError } from "./core";
 import {
   componentEnd,
@@ -48,18 +60,8 @@ import {
 import { compareDates, dateOf, isoDate, isoInZone, wallClockToUtc, type DateParts } from "./tz";
 import type { Env } from "./types";
 
-const SUMMARY_MAX_CHARS = 200;
-const TEXT_MAX_BYTES = 8 * 1024;
 const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/;
 const WALL_DATE_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/;
-const FORBIDDEN_PROPERTIES = new Set([
-  "rrule",
-  "rdate",
-  "exdate",
-  "recurrence-id",
-  "attendee",
-  "organizer",
-]);
 
 export interface CreateEventInput {
   calendar: string;
@@ -94,16 +96,8 @@ export interface UpdateEventInput {
   description?: string | null;
 }
 
-export interface CalendarWriteOptions {
-  /** Recorded in the audit line; defaults to "unknown". */
-  principal?: string;
-  /** Injected for tests; production uses the Worker's fetch. */
-  fetchImpl?: typeof fetch;
-  /** Injected for tests; the default is Date.now(). */
-  now?: number;
-  /** Per-IP bucket for CALENDAR_WRITE_LIMITER. */
-  rateLimitKey?: string;
-}
+/** Kept as the event module's public name for the shared write options. */
+export type CalendarWriteOptions = WriteOptions;
 
 export interface EventWriteResult {
   calendar: string;
@@ -211,73 +205,6 @@ function resolveEventTime(
   };
 }
 
-function normalizeSummary(value: string): string {
-  const summary = value.trim();
-  if (summary === "") throw new ApiError(400, "invalid_request", "summary must not be empty");
-  const chars = [...summary].length;
-  if (chars > SUMMARY_MAX_CHARS) {
-    throw new ApiError(
-      400,
-      "invalid_request",
-      `summary is ${chars} characters; the limit is ${SUMMARY_MAX_CHARS}`,
-    );
-  }
-  return summary;
-}
-
-function normalizeText(
-  value: string | null | undefined,
-  label: string,
-): string | null | undefined {
-  if (value === undefined || value === null) return value;
-  const bytes = byteLength(value);
-  if (bytes > TEXT_MAX_BYTES) {
-    throw new ApiError(
-      400,
-      "invalid_request",
-      `${label} is ${bytes} bytes; the limit is ${TEXT_MAX_BYTES}`,
-    );
-  }
-  return value;
-}
-
-function escapeIcalText(value: string): string {
-  return value
-    .replace(/\r\n|\r/g, "\n")
-    .replace(/\\/g, "\\\\")
-    .replace(/;/g, "\\;")
-    .replace(/,/g, "\\,")
-    .replace(/\n/g, "\\n");
-}
-
-/** Fold one content line at 75 octets without splitting a UTF-8 sequence. */
-function foldIcalLine(line: string): string[] {
-  const encoder = new TextEncoder();
-  if (encoder.encode(line).byteLength <= 75) return [line];
-  const folded: string[] = [];
-  let current = "";
-  let bytes = 0;
-  for (const char of line) {
-    const size = encoder.encode(char).byteLength;
-    // A continuation line starts with one space, so it carries 74 octets.
-    const limit = folded.length === 0 ? 75 : 74;
-    if (bytes + size > limit) {
-      folded.push(current);
-      current = ` ${char}`;
-      bytes = 1 + size;
-    } else {
-      current += char;
-      bytes += size;
-    }
-  }
-  if (current !== "") folded.push(current);
-  return folded;
-}
-
-function serializeIcal(lines: readonly string[]): string {
-  return lines.flatMap(foldIcalLine).join("\r\n") + "\r\n";
-}
-
 function buildEventIcs(input: {
   uid: string;
   summary: string;
@@ -329,7 +256,7 @@ function validateCreatedEvent(
   if (
     parsed.recurring ||
     parsed.scheduling ||
-    parsed.master.jcal[1].some(([name]) => FORBIDDEN_PROPERTIES.has(name))
+    parsed.master.jcal[1].some(([name]) => FORBIDDEN_WRITE_PROPERTIES.has(name))
   ) {
     throw new ApiError(
       400,
@@ -379,92 +306,6 @@ function assertCalendarWriteEnabled(env: Env): void {
   );
 }
 
-async function withWriteLimit<T>(
-  env: Env,
-  key: string | undefined,
-  fn: () => Promise<T>,
-): Promise<T> {
-  const limiter = env.CALENDAR_WRITE_LIMITER;
-  if (limiter === undefined || limiter === null) {
-    throw new ApiError(
-      500,
-      "configuration_error",
-      "CALENDAR_WRITE_LIMITER is not configured; calendar writes are disabled",
-    );
-  }
-  const { success } = await limiter.limit({ key: key ?? "unknown" });
-  if (!success) {
-    throw new ApiError(429, "rate_limited", "too many calendar writes; retry in a minute");
-  }
-  return fn();
-}
-
-function readOnlyCollectionError(collection: CollectionInfo): ApiError {
-  return new ApiError(
-    403,
-    "read_only_collection",
-    `the calendar ${JSON.stringify(collection.name)} is read-only for this account`,
-  );
-}
-
-function outcomeOf(error: unknown): string {
-  if (error instanceof ApiError) return error.code;
-  if (error instanceof CalDavError) return error.code;
-  return "internal_error";
-}
-
-async function auditWrite<T>(
-  options: CalendarWriteOptions,
-  action: "create_event" | "update_event",
-  collectionId: string,
-  resourceId: string,
-  fn: () => Promise<T>,
-): Promise<T> {
-  try {
-    const result = await fn();
-    logWrite(options.principal, action, collectionId, resourceId, "ok");
-    return result;
-  } catch (error) {
-    logWrite(options.principal, action, collectionId, resourceId, outcomeOf(error));
-    throw error;
-  }
-}
-
-function logWrite(
-  principal: string | undefined,
-  action: string,
-  collectionId: string,
-  resourceId: string,
-  outcome: string,
-): void {
-  console.log(
-    "calendar_write",
-    JSON.stringify({
-      principal: principal ?? "unknown",
-      action,
-      calendar: collectionId,
-      resource: resourceId,
-      outcome,
-    }),
-  );
-}
-
-function reconcileMutationError(
-  error: unknown,
-  verb: "create" | "update",
-  id: string,
-): unknown {
-  if (error instanceof CalDavError && error.code === "mutation_state_unknown") {
-    return new CalDavError(
-      "mutation_state_unknown",
-      error.status,
-      `${error.message} Reconcile with get_event on ${JSON.stringify(id)} before retrying; ` +
-        `the ${verb} may already have landed.`,
-    );
-  }
-  return error;
-}
-
 export async function createEvent(
   env: Env,
   input: CreateEventInput,
@@ -507,7 +348,7 @@ export async function createEvent(
     const collection = await resolveCollection(env, "calendar", input.calendar, {
       fetchImpl: options.fetchImpl,
     });
-    if (collection.readOnly) throw readOnlyCollectionError(collection);
+    if (collection.readOnly) throw readOnlyCollectionError(collection, "calendar");
 
     return auditWrite(options, "create_event", collection.id, id, async () => {
       const caldav = createCalDav(env, { fetchImpl: options.fetchImpl });
@@ -525,7 +366,7 @@ export async function createEvent(
               "instead of creating a second copy",
           );
         }
-        throw reconcileMutationError(error, "create", id);
+        throw reconcileMutationError(error, "create", id, "get_event");
       }
       return {
         calendar: collection.name,
@@ -585,7 +426,7 @@ export async function updateEvent(
     const collection = await resolveCollection(env, "calendar", input.calendar, {
       fetchImpl: options.fetchImpl,
     });
-    if (collection.readOnly) throw readOnlyCollectionError(collection);
+    if (collection.readOnly) throw readOnlyCollectionError(collection, "calendar");
 
     return auditWrite(options, "update_event", collection.id, input.id, async () => {
       const current = await readResource(env, collection, input.id, "event", {
@@ -676,7 +517,7 @@ export async function updateEvent(
             "the event changed since you read it; call get_event again",
           );
         }
-        throw reconcileMutationError(error, "update", input.id);
+        throw reconcileMutationError(error, "update", input.id, "get_event");
       }
 
       const start = updated.master.start;

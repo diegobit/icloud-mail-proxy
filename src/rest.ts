@@ -8,9 +8,11 @@ import {
   calendarWritesEnabled,
   calendarsEnabled,
   reminderListsEnabled,
+  reminderWritesEnabled,
 } from "./calendar-config";
 import { listCollections, type CollectionKind } from "./calendar-core";
 import { getEvent, listEvents } from "./calendar-events";
+import { completeReminder, createReminder, updateReminder } from "./calendar-reminder-write";
 import { getReminder, listReminders } from "./calendar-reminders";
 import { createEvent, updateEvent } from "./calendar-write";
 import {
@@ -97,6 +99,54 @@ const UPDATE_EVENT_FIELDS = new Set([
   "location",
   "description",
 ]);
+
+const createReminderBodySchema = z
+  .object({
+    id: z.string().min(1).optional(),
+    summary: z.string().min(1),
+    notes: z.string().nullable().optional(),
+    due: z.string().min(1).nullable().optional(),
+    timeZone: z.string().min(1).optional(),
+    priority: z.number().int().min(0).max(9).nullable().optional(),
+  })
+  .strict();
+
+const updateReminderBodySchema = z
+  .object({
+    etag: z.string().min(1),
+    summary: z.string().min(1).optional(),
+    notes: z.string().nullable().optional(),
+    due: z.string().min(1).nullable().optional(),
+    timeZone: z.string().min(1).optional(),
+    priority: z.number().int().min(0).max(9).nullable().optional(),
+    completed: z.boolean().optional(),
+  })
+  .strict();
+
+const completeReminderBodySchema = z
+  .object({
+    etag: z.string().min(1),
+  })
+  .strict();
+
+const CREATE_REMINDER_FIELDS = new Set([
+  "id",
+  "summary",
+  "notes",
+  "due",
+  "timeZone",
+  "priority",
+]);
+const UPDATE_REMINDER_FIELDS = new Set([
+  "etag",
+  "summary",
+  "notes",
+  "due",
+  "timeZone",
+  "priority",
+  "completed",
+]);
+const COMPLETE_REMINDER_FIELDS = new Set(["etag"]);
 
 /** Translate any thrown value into a JSON error Response. */
 function mapError(e: unknown): Response {
@@ -424,6 +474,90 @@ async function handleUpdateEvent(
   return json(result);
 }
 
+/** Reminder writes require the domain and its write flag. */
+function reminderWriteDisabled(env: Env): Response | null {
+  if (reminderWritesEnabled(env)) return null;
+  return errorBody(
+    "not_supported",
+    reminderListsEnabled(env)
+      ? "reminder writes are disabled: set REMINDERS_WRITE to 1"
+      : "reminder lists are disabled: ALLOWED_REMINDER_LISTS is empty",
+    404,
+  );
+}
+
+async function handleCreateReminder(
+  request: Request,
+  listSegment: string,
+  env: Env,
+): Promise<Response> {
+  const disabled = reminderWriteDisabled(env);
+  if (disabled !== null) return disabled;
+  const reminderList = decodeSegment(listSegment, "reminder list");
+  const raw = await readJsonBody(request);
+  assertKnownFields(raw, CREATE_REMINDER_FIELDS, "create_reminder");
+  const body = createReminderBodySchema.parse(raw);
+  const result = await createReminder(
+    env,
+    { reminderList, ...body },
+    {
+      principal: "bearer",
+      rateLimitKey: request.headers.get("CF-Connecting-IP") ?? "unknown",
+    },
+  );
+  return json(result, 201);
+}
+
+/** PUT /v1/reminder-lists/:list/reminders/:id */
+async function handleUpdateReminder(
+  request: Request,
+  listSegment: string,
+  idSegment: string,
+  env: Env,
+): Promise<Response> {
+  const disabled = reminderWriteDisabled(env);
+  if (disabled !== null) return disabled;
+  const reminderList = decodeSegment(listSegment, "reminder list");
+  const id = decodeSegment(idSegment, "reminder id");
+  const raw = await readJsonBody(request);
+  assertKnownFields(raw, UPDATE_REMINDER_FIELDS, "update_reminder");
+  const body = updateReminderBodySchema.parse(raw);
+  const result = await updateReminder(
+    env,
+    { reminderList, id, ...body },
+    {
+      principal: "bearer",
+      rateLimitKey: request.headers.get("CF-Connecting-IP") ?? "unknown",
+    },
+  );
+  return json(result);
+}
+
+/** POST /v1/reminder-lists/:list/reminders/:id/complete */
+async function handleCompleteReminder(
+  request: Request,
+  listSegment: string,
+  idSegment: string,
+  env: Env,
+): Promise<Response> {
+  const disabled = reminderWriteDisabled(env);
+  if (disabled !== null) return disabled;
+  const reminderList = decodeSegment(listSegment, "reminder list");
+  const id = decodeSegment(idSegment, "reminder id");
+  const raw = await readJsonBody(request);
+  assertKnownFields(raw, COMPLETE_REMINDER_FIELDS, "complete_reminder");
+  const body = completeReminderBodySchema.parse(raw);
+  const result = await completeReminder(
+    env,
+    { reminderList, id, ...body },
+    {
+      principal: "bearer",
+      rateLimitKey: request.headers.get("CF-Connecting-IP") ?? "unknown",
+    },
+  );
+  return json(result);
+}
+
 /** GET /v1/reminder-lists/:list/reminders?includeCompleted=&dueFrom=&dueTo= */
 async function handleListReminders(
   url: URL,
@@ -570,6 +704,29 @@ export async function handleRest(request: Request, env: Env): Promise<Response> 
       return await handleGetReminder(segments[2], segments[4], env);
     }
 
+    // POST /v1/reminder-lists/:list/reminders/:id/complete
+    if (
+      request.method === "POST" &&
+      segments.length === 6 &&
+      segments[0] === "v1" &&
+      segments[1] === "reminder-lists" &&
+      segments[3] === "reminders" &&
+      segments[5] === "complete"
+    ) {
+      return await handleCompleteReminder(request, segments[2], segments[4], env);
+    }
+
+    // PUT /v1/reminder-lists/:list/reminders/:id
+    if (
+      request.method === "PUT" &&
+      segments.length === 5 &&
+      segments[0] === "v1" &&
+      segments[1] === "reminder-lists" &&
+      segments[3] === "reminders"
+    ) {
+      return await handleUpdateReminder(request, segments[2], segments[4], env);
+    }
+
     // GET /v1/reminder-lists/:list/reminders
     if (
       request.method === "GET" &&
@@ -579,6 +736,17 @@ export async function handleRest(request: Request, env: Env): Promise<Response> 
       segments[3] === "reminders"
     ) {
       return await handleListReminders(url, segments[2], env);
+    }
+
+    // POST /v1/reminder-lists/:list/reminders
+    if (
+      request.method === "POST" &&
+      segments.length === 4 &&
+      segments[0] === "v1" &&
+      segments[1] === "reminder-lists" &&
+      segments[3] === "reminders"
+    ) {
+      return await handleCreateReminder(request, segments[2], env);
     }
 
     // POST /v1/search
