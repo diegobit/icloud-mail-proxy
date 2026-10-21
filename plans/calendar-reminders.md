@@ -614,9 +614,11 @@ review surfaced.
 
 ## Review
 
-Rounds 1–3: Codex `gpt-6.1-sol`, reasoning high, 2026-10-21. Round 1 verdict
+Rounds 1–6: Codex `gpt-6.1-sol`, reasoning high, 2026-10-21. Round 1 verdict
 *ready after fixes* (3 P0s, 14 P1s); round 2 *ready after these fixes* (2 P0s,
-6 P1s, wording); round 3 *fix first* (1 P0, 2 P1s), all folded in below.
+6 P1s, wording); round 3 *fix first* (1 P0, 2 P1s); round 4 two residual holes;
+round 5 one unbounded case. Round 6 closed it: **implement as is**. Every finding
+is folded in below.
 Round 3 closed the scope-minting and setup-bootstrap P0s, then found that the
 destination guard still trusted an unvalidated home URL, that the accepted rule
 subset did not actually bound `ical.js`'s internal search, and that setup
@@ -656,6 +658,9 @@ with no `Event`/`Time`/`Timezone` use, `COUNT` rules expand from `DTSTART`
   UTF-8 bytes, and event rules are counted separately from VTIMEZONE rules
   (which had inflated the earlier RRULE figure 20×). Both files are committed on
   this branch, so "committed" is true.
+- Round 6 confirmed the candidate caps bound every accepted rule: `UNTIL` stays
+  window-bounded, an old `DTSTART` with `COUNT` stops at 50,000 candidates per
+  rule, and 300 resources share the 200,000-candidate request budget.
 
 ## Verification log
 
