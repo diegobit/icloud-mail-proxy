@@ -117,6 +117,17 @@ export function fakeVerify(outcome = { ok: true, checks: [{ name: "all", ok: tru
   return fn;
 }
 
+/** Discovery stub: returns fixed collections and records what it was asked. */
+export function fakeDiscover(result = { calendars: [], reminderLists: [] }) {
+  const calls = [];
+  const fn = async (args) => {
+    calls.push(args);
+    return typeof result === "function" ? result(args) : result;
+  };
+  fn.calls = calls;
+  return fn;
+}
+
 /** Fake fetch driven by a list of [urlSubstringOrMatcher, response(s)] rules. */
 export function fakeFetch(rules) {
   const requests = [];

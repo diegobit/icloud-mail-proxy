@@ -38,10 +38,18 @@ Setup asks its way through the whole deployment: it logs you in to Cloudflare
 through `wrangler login` (in your browser), picks the account and the Worker
 name, takes your iCloud address and app-specific password, asks which folders
 the proxy may read, generates the API bearer token, uploads the three secrets,
-deploys to `<worker>.<your-subdomain>.workers.dev`, and verifies the live
-endpoint over both REST and MCP. It prints the client snippets for Claude
-Code, opencode and Codex CLI at the end, plus how to connect ChatGPT and
-claude.ai over OAuth.
+and deploys to `<worker>.<your-subdomain>.workers.dev`. That first deploy
+exists partly to discover the account's calendar and reminder collections:
+setup prints their names and kinds, asks which to allow (`*` for all, or
+`none` to disable the domain), persists the allowlists, and deploys again with
+them before verifying the live endpoint over both REST and MCP. It prints the
+client snippets for Claude Code, opencode and Codex CLI at the end, plus how to
+connect ChatGPT and claude.ai over OAuth.
+
+Calendar and reminder **writes** follow `CALENDAR_WRITE` and `REMINDERS_WRITE`,
+which are `0` in the tracked defaults, so a standard guided setup enables the
+selected collections read-only. Set either to `1` in the deployment config
+(the `production` profile does) when you want writes.
 
 Four things worth knowing before you run it:
 
@@ -50,21 +58,24 @@ Four things worth knowing before you run it:
   secret's value. If you lose it, run `npm run setup` again and choose to
   rotate it — every client then needs the new value. The Apple app-specific
   password is never printed.
-- **Folder names must match iCloud exactly**, spaces included. The default is
+- **Folder, calendar and reminder-list names must match iCloud exactly**,
+  spaces and emoji included. The default folder list is
   `INBOX,Archive,Sent Messages`. Setup checks the first folder with a bounded
-  search (one message, metadata only); verification fails until that folder
+  search (one message, metadata only), and verification fails until that folder
   can be read.
 - **Ctrl-C is safe.** Run `npm run setup` again and it resumes with the same
-  account, Worker and secrets, and only changes credentials or the token if
-  you ask it to. Each run deploys the Worker again, then verifies.
+  account, Worker and secrets, and only changes credentials, the token, folders
+  or calendar/reminder access if you ask it to. A run that discovers collections
+  deploys, asks, then redeploys before verifying.
 - **The Apple password never touches the repository.** It goes to Wrangler on
   stdin, never as a command-line argument, and is not written to disk or
   printed. The API token is shown only if you ask to see it. `.deploy/`
   (gitignored) holds the generated wrangler config and a record of the
-  account, Worker and folders you chose — no secrets.
+  account, Worker, folders and allowlists you chose — no secrets.
 
-Re-run setup to change folders, replace the Apple password, or rotate the
-token. To deploy new code afterwards, `npm run deploy` reuses the same target.
+Re-run setup to change folders, calendar/reminder access, replace the Apple
+password, or rotate the token. To deploy new code afterwards, `npm run deploy`
+reuses the same target.
 
 ## Let your agent walk you through it
 

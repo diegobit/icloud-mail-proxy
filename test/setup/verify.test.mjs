@@ -1,8 +1,19 @@
 import { describe, expect, it } from "vitest";
-import { parseJsonRpc, verifyDeployment } from "../../scripts/lib/verify.mjs";
+import { discoverCollections, parseJsonRpc, verifyDeployment } from "../../scripts/lib/verify.mjs";
 import { fakeFetch } from "./helpers.mjs";
 
 const TOKEN = "test-token";
+
+const MAIL_TOOLS = [
+  "list_mailboxes",
+  "search_mail",
+  "get_mail_message",
+  "get_mail_attachment",
+  "archive_mail",
+  "delete_mail",
+  "send_mail",
+  "save_draft",
+];
 
 const okMcp = [
   "/mcp",
@@ -20,7 +31,11 @@ const okMcp = [
       headers: { "content-type": "text/event-stream" },
       body:
         "event: message\ndata: " +
-        JSON.stringify({ jsonrpc: "2.0", id: 2, result: { tools: [{ name: "search_mail" }, { name: "list_mailboxes" }] } }) +
+        JSON.stringify({
+          jsonrpc: "2.0",
+          id: 2,
+          result: { tools: MAIL_TOOLS.map((name) => ({ name })) },
+        }) +
         "\n\n",
     },
   ],
@@ -108,7 +123,14 @@ describe("successful verification", () => {
         "/mcp",
         [
           { status: 200, body: { jsonrpc: "2.0", id: 1, result: { protocolVersion: "2025-06-18" } } },
-          { status: 200, body: { jsonrpc: "2.0", id: 2, result: { tools: [{ name: "search_mail" }] } } },
+          {
+            status: 200,
+            body: {
+              jsonrpc: "2.0",
+              id: 2,
+              result: { tools: MAIL_TOOLS.map((name) => ({ name })) },
+            },
+          },
         ],
       ],
     ]);
@@ -466,5 +488,265 @@ describe("per-attempt deadline", () => {
     expect(result.ok).toBe(false);
     expect(result.checks[0]).toMatchObject({ kind: "propagation" });
     expect(result.checks[0].detail).toContain("cannot read body");
+  });
+});
+
+const CALENDAR_READ_TOOLS = ["list_calendars", "list_events", "get_event"];
+const CALENDAR_WRITE_TOOLS = ["create_event", "update_event"];
+const REMINDER_READ_TOOLS = ["list_reminder_lists", "list_reminders", "get_reminder"];
+const REMINDER_WRITE_TOOLS = ["create_reminder", "update_reminder", "complete_reminder"];
+
+function mcpRules(names) {
+  return [
+    "/mcp",
+    [
+      {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+        body:
+          "event: message\ndata: " +
+          JSON.stringify({ jsonrpc: "2.0", id: 1, result: { protocolVersion: "2025-06-18" } }) +
+          "\n\n",
+      },
+      {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+        body:
+          "event: message\ndata: " +
+          JSON.stringify({ jsonrpc: "2.0", id: 2, result: { tools: names.map((name) => ({ name })) } }) +
+          "\n\n",
+      },
+    ],
+  ];
+}
+
+function calendarEndpoint({
+  tools = [...MAIL_TOOLS, ...CALENDAR_READ_TOOLS],
+  allCalendars = { status: 200, body: { calendars: [{ name: "Scratch", kind: "calendar", readOnly: false }] } },
+  allReminders = { status: 200, body: { reminderLists: [{ name: "Reminders", kind: "reminders", readOnly: false }] } },
+  eventResponse = {
+    status: 200,
+    body: {
+      calendar: "Scratch",
+      from: "2026-10-21T00:00:00+02:00",
+      to: "2026-10-28T00:00:00+02:00",
+      events: [],
+      total: 0,
+      truncated: false,
+      truncatedReason: null,
+      unsupportedRange: false,
+    },
+  },
+} = {}) {
+  return fakeFetch([
+    ["/v1/calendars?all=1", allCalendars],
+    ["/v1/reminder-lists?all=1", allReminders],
+    ["/v1/calendars/Scratch/events", eventResponse],
+    ["/v1/calendars", { status: 200, body: { calendars: [{ name: "Scratch", kind: "calendar", readOnly: false }] } }],
+    healthzRules({ status: 200, body: { ok: true } }),
+    ...okOAuth,
+    mcpRules(tools),
+  ]);
+}
+
+describe("calendar verification", () => {
+  it("checks ?all=1 and a read-only 7-day list_events when calendars are enabled", async () => {
+    const fetchImpl = calendarEndpoint({
+      tools: [...MAIL_TOOLS, ...CALENDAR_READ_TOOLS, ...REMINDER_READ_TOOLS],
+    });
+    const result = await verifyDeployment({
+      url: ORIGIN,
+      token: TOKEN,
+      calendars: "*",
+      reminderLists: "Reminders",
+      fetchImpl,
+      sleep: noSleep,
+    });
+
+    expect(result.ok).toBe(true);
+    const discovery = result.checks.find((check) => check.name.includes("?all=1"));
+    expect(discovery).toMatchObject({ ok: true });
+    expect(discovery.detail).toContain("1 calendar(s)");
+    const events = result.checks.find((check) => check.name.includes("readable over 7 days"));
+    expect(events).toMatchObject({ ok: true });
+    expect(events.detail).toContain("list_events");
+
+    // Verification is read-only: nothing but GET reaches the calendar routes.
+    const calendarRequests = fetchImpl.requests.filter((request) => request.url.includes("/v1/calendars"));
+    expect(calendarRequests.length).toBeGreaterThan(0);
+    expect(calendarRequests.every((request) => request.options.method === "GET")).toBe(true);
+    const eventRequest = fetchImpl.requests.find((request) => request.url.includes("/v1/calendars/Scratch/events"));
+    expect(eventRequest.url).not.toContain("from=");
+    expect(eventRequest.url).not.toContain("to=");
+  });
+
+  it("expects all five write tools when both write flags are on", async () => {
+    const tools = [
+      ...MAIL_TOOLS,
+      ...CALENDAR_READ_TOOLS,
+      ...CALENDAR_WRITE_TOOLS,
+      ...REMINDER_READ_TOOLS,
+      ...REMINDER_WRITE_TOOLS,
+    ];
+    const fetchImpl = calendarEndpoint({ tools });
+    const result = await verifyDeployment({
+      url: ORIGIN,
+      token: TOKEN,
+      calendars: "*",
+      reminderLists: "*",
+      calendarWrite: true,
+      reminderWrite: true,
+      fetchImpl,
+      sleep: noSleep,
+    });
+
+    expect(result.ok).toBe(true);
+    const mcp = result.checks.find((check) => check.name === "MCP initialize and tools/list");
+    expect(mcp.detail).toContain("19 tools");
+    expect(mcp.detail).toContain("create_event");
+    expect(mcp.detail).toContain("complete_reminder");
+  });
+
+  it("fails containment when a write tool appears while its flag is off", async () => {
+    const tools = [...MAIL_TOOLS, ...CALENDAR_READ_TOOLS, "create_event"];
+    const fetchImpl = calendarEndpoint({ tools });
+    const result = await verifyDeployment({
+      url: ORIGIN,
+      token: TOKEN,
+      calendars: "*",
+      fetchImpl,
+      sleep: noSleep,
+    });
+
+    expect(result.ok).toBe(false);
+    const mcp = result.checks.find((check) => check.name === "MCP initialize and tools/list");
+    expect(mcp).toMatchObject({ ok: false, kind: "protocol" });
+    expect(mcp.detail).toContain("present but disabled: create_event");
+  });
+
+  it("fails containment when enabled read tools are missing", async () => {
+    const fetchImpl = calendarEndpoint({ tools: MAIL_TOOLS });
+    const result = await verifyDeployment({
+      url: ORIGIN,
+      token: TOKEN,
+      calendars: "*",
+      fetchImpl,
+      sleep: noSleep,
+    });
+
+    expect(result.ok).toBe(false);
+    const mcp = result.checks.find((check) => check.name === "MCP initialize and tools/list");
+    expect(mcp).toMatchObject({ ok: false, kind: "protocol" });
+    expect(mcp.detail).toContain("missing list_calendars");
+    expect(mcp.detail).toContain("get_event");
+  });
+
+  it("fails when ?all=1 is unavailable while calendars are enabled", async () => {
+    const fetchImpl = calendarEndpoint({
+      allCalendars: { status: 404, body: { error: { code: "not_supported", message: "calendars are disabled" } } },
+    });
+    const result = await verifyDeployment({
+      url: ORIGIN,
+      token: TOKEN,
+      calendars: "*",
+      fetchImpl,
+      sleep: noSleep,
+    });
+
+    expect(result.ok).toBe(false);
+    const discovery = result.checks.find((check) => check.name.includes("?all=1"));
+    expect(discovery).toMatchObject({ ok: false, kind: "calendar" });
+    expect(discovery.detail).toContain("does not expose");
+  });
+
+  it("fails when list_events cannot read the first allowed calendar", async () => {
+    const fetchImpl = calendarEndpoint({
+      eventResponse: { status: 502, body: { error: { code: "upstream_error", message: "CalDAV timed out" } } },
+    });
+    const result = await verifyDeployment({
+      url: ORIGIN,
+      token: TOKEN,
+      calendars: "*",
+      fetchImpl,
+      sleep: noSleep,
+    });
+
+    expect(result.ok).toBe(false);
+    const events = result.checks.find((check) => check.name === "calendar events are readable");
+    expect(events).toMatchObject({ ok: false, kind: "calendar" });
+    expect(events.detail).toContain("CalDAV timed out");
+    expect(events.detail).toContain("Mail is unaffected");
+  });
+
+  it("prefers the calendar setup discovered when it is still allowed", async () => {
+    const fetchImpl = fakeFetch([
+      ["/v1/calendars?all=1", { status: 200, body: { calendars: [] } }],
+      ["/v1/reminder-lists?all=1", { status: 200, body: { reminderLists: [] } }],
+      [
+        "/v1/calendars/Family/events",
+        {
+          status: 200,
+          body: { calendar: "Family", events: [], total: 0, truncated: false, truncatedReason: null, unsupportedRange: false },
+        },
+      ],
+      [
+        "/v1/calendars",
+        {
+          status: 200,
+          body: {
+            calendars: [
+              { name: "Lavoro", kind: "calendar", readOnly: false },
+              { name: "Family", kind: "calendar", readOnly: false },
+            ],
+          },
+        },
+      ],
+      healthzRules({ status: 200, body: { ok: true } }),
+      ...okOAuth,
+      mcpRules([...MAIL_TOOLS, ...CALENDAR_READ_TOOLS]),
+    ]);
+    const result = await verifyDeployment({
+      url: ORIGIN,
+      token: TOKEN,
+      calendars: "Lavoro,Family",
+      calendar: "Family",
+      fetchImpl,
+      sleep: noSleep,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.checks.some((check) => check.name.includes('"Family"'))).toBe(true);
+  });
+});
+
+describe("collection discovery", () => {
+  it("returns names, kinds and read-only state from both domains", async () => {
+    const fetchImpl = fakeFetch([
+      [
+        "/v1/calendars?all=1",
+        { status: 200, body: { calendars: [{ name: "Scratch", kind: "calendar", readOnly: false }] } },
+      ],
+      [
+        "/v1/reminder-lists?all=1",
+        { status: 200, body: { reminderLists: [{ name: "Reminders", kind: "reminders", readOnly: true }] } },
+      ],
+    ]);
+    const result = await discoverCollections({ url: ORIGIN, token: TOKEN, fetchImpl, sleep: noSleep });
+
+    expect(result).toEqual({
+      calendars: [{ name: "Scratch", kind: "calendar", readOnly: false }],
+      reminderLists: [{ name: "Reminders", kind: "reminders", readOnly: true }],
+    });
+    expect(fetchImpl.requests.every((request) => request.options.headers.Authorization === `Bearer ${TOKEN}`)).toBe(true);
+  });
+
+  it("reports an HTTP error instead of returning a partial list", async () => {
+    const fetchImpl = fakeFetch([
+      ["/v1/calendars?all=1", { status: 403, body: { error: { code: "unauthorized", message: "forbidden" } } }],
+      ["/v1/reminder-lists?all=1", { status: 200, body: { reminderLists: [] } }],
+    ]);
+    await expect(discoverCollections({ url: ORIGIN, token: TOKEN, fetchImpl, sleep: noSleep })).rejects.toThrow(
+      /HTTP 403/,
+    );
   });
 });

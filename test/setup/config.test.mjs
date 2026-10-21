@@ -98,6 +98,22 @@ describe("composing a deployable config", () => {
     expect(config.vars.MAX_RESULTS).toBe(base.vars.MAX_RESULTS);
   });
 
+  it("carries recorded calendar and reminder allowlists, including an explicit empty value", () => {
+    const fragment = stateFragment({
+      accountId: "acc-9",
+      workerName: "my-mail",
+      allowedMailboxes: "INBOX",
+      allowedCalendars: "Lavoro,Family",
+      allowedReminderLists: "",
+    });
+    const config = composeConfig(base, fragment, path.join(repoRoot, ".deploy"));
+    expect(config.vars.ALLOWED_CALENDARS).toBe("Lavoro,Family");
+    expect(config.vars.ALLOWED_REMINDER_LISTS).toBe("");
+    // A state written before calendars existed must not add either key.
+    const old = stateFragment({ accountId: "acc-9", workerName: "my-mail", allowedMailboxes: "INBOX" });
+    expect(old.vars).toEqual({ ALLOWED_MAILBOXES: "INBOX" });
+  });
+
   it("refuses a target with a typo or no Worker name", () => {
     expect(() => composeConfig(base, { label: "x", name: "a", route: "oops" }, "/tmp")).toThrow(/unsupported key "route"/);
     expect(() => composeConfig(base, { label: "x" }, "/tmp")).toThrow(/missing a Worker name/);

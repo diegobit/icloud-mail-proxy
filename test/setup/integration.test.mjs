@@ -67,7 +67,22 @@ function endpoint() {
       "/mcp",
       [
         sseFrame({ jsonrpc: "2.0", id: 1, result: { protocolVersion: "2025-06-18" } }),
-        sseFrame({ jsonrpc: "2.0", id: 2, result: { tools: [{ name: "search_mail" }, { name: "get_mail_message" }] } }),
+        sseFrame({
+          jsonrpc: "2.0",
+          id: 2,
+          result: {
+            tools: [
+              { name: "list_mailboxes" },
+              { name: "search_mail" },
+              { name: "get_mail_message" },
+              { name: "get_mail_attachment" },
+              { name: "archive_mail" },
+              { name: "delete_mail" },
+              { name: "send_mail" },
+              { name: "save_draft" },
+            ],
+          },
+        }),
       ],
     ],
     ["/v1/search", { status: 200, body: { mailbox: "INBOX", total: 7, messages: [], nextBeforeUid: null } }],
@@ -96,6 +111,7 @@ describe("first guided setup, end to end", () => {
       wrangler: createWranglerAdapter({ bin: fakeBin, secrets }),
       state: { read: () => store.read(), write: (state) => store.write(state, secrets), path: statePath },
       verify: (args) => verifyDeployment({ ...args, fetchImpl, sleep: async () => {} }),
+      discover: async () => ({ calendars: [], reminderLists: [] }),
       writeConfig: (fragment) => writeGeneratedConfig(fragment, { base: readBaseConfig(), dir: workdir }),
       baseConfig: readBaseConfig(),
       generateToken: () => "integration-token-abcdefghij",

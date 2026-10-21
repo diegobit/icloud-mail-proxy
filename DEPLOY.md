@@ -13,7 +13,7 @@ Three pieces decide what a deploy does:
 | --- | --- | --- |
 | `wrangler.base.jsonc` | yes | Shared defaults: entry point, compatibility date, `workers_dev: true`, folder list and the size/result/look-back caps. No account ID, no routes. |
 | `deploy-profiles.jsonc` | yes | Named targets whose routing has to survive a fresh clone — currently `production` (the `icloud-mail.diegobit.com` custom domain). |
-| `.deploy/` | no (gitignored) | `state.json`: the account, Worker and folders `npm run setup` chose, plus how far the last run got. `wrangler.<target>.jsonc`: the composed config, rewritten on every deploy. |
+| `.deploy/` | no (gitignored) | `state.json`: the account, Worker, folders and calendar/reminder allowlists `npm run setup` chose, plus how far the last run got. `wrangler.<target>.jsonc`: the composed config, rewritten on every deploy. |
 
 Every deploy composes the base defaults with exactly one target, so the limits
 exist in one place. Selection is always explicit:
@@ -181,16 +181,20 @@ Worker named explicitly — `--name <worker>`, or
 
 ## Re-running setup
 
-`npm run setup` is safe to run again and is the way to change folders, replace
-the Apple credentials, or rotate the token. A re-run:
+`npm run setup` is safe to run again and is the way to change folders,
+calendar/reminder access, replace the Apple credentials, or rotate the token. A
+re-run:
 
-- keeps the account, Worker name and folders from last time as the defaults;
+- keeps the account, Worker name, folders and allowlists from last time as the
+  defaults;
 - keeps every secret already stored in the Worker unless you explicitly ask to
   replace the credentials or rotate the token;
 - asks before adopting a Worker it doesn't recognize, so a name typo cannot
   overwrite an unrelated deployment;
-- re-deploys the current code, then re-verifies the endpoint, and exits
-  non-zero if a check fails. A rerun is never a verification-only retry.
+- deploys once to discover collections when it has an API token, asks which
+  calendars and reminder lists to allow, redeploys with the chosen allowlists,
+  then re-verifies the endpoint and exits non-zero if a check fails. A rerun is
+  never a verification-only retry.
 
 Cloudflare's API cannot return a secret's value, so setup works from secret *names*: it
 can tell that `API_TOKEN` exists but not what it is. When verification needs
@@ -322,21 +326,25 @@ generate a new token, because that would break every existing client.
 ## Recovering an interrupted setup
 
 Setup records its progress in `.deploy/state.json` (nonsecret: account ID,
-Worker name, folders, timestamps) before it changes anything in Cloudflare.
-Run `npm run setup` again and it continues from there.
+Worker name, folders, calendar/reminder allowlists, timestamps) before it
+changes anything in Cloudflare. Run `npm run setup` again and it continues from
+there.
 
 | Where it stopped | What exists | What the re-run does |
 | --- | --- | --- |
 | Before the confirmation | nothing | Asks again; Cloudflare was never touched. |
 | Secrets uploaded, deploy failed | a Worker holding the secrets, no code (or the previous code) | Recognizes the Worker as yours, keeps the secrets unless you replace them, deploys again, then verifies. |
+| Calendar discovery or the second deploy failed | a live Worker, possibly with the previous allowlists; any choices you already made are in state | Uses the saved choices as the bootstrap defaults, discovers again, redeploys with the allowlists, then verifies. |
 | Deployed, verification failed | a live Worker | Keeps secrets, deploys again, then re-runs the checks, and prints a hint for the specific failure. |
 | Deployed, token unknown | a live Worker | Deploys, reports "not verified", and exits nonzero until you paste the token or rotate it. |
 
-The failure hint distinguishes the three worlds that look alike from the
-terminal: a Cloudflare error (login, deploy), an HTTP authorization error (the
-token doesn't match), and an upstream IMAP failure (`/healthz` returns 503 with
+The failure hint distinguishes the worlds that look alike from the terminal: a
+Cloudflare error (login, deploy), an HTTP authorization error (the token
+doesn't match), an upstream IMAP failure (`/healthz` returns 503 with
 `ok: false` and an IMAP `error.code` of `NO`, `BAD`, `BYE`, `TIMEOUT`,
-`PARSE`, or `LIMIT`).
+`PARSE`, or `LIMIT`), and a CalDAV/allowlist failure in the calendar checks
+(`?all=1`, or the 7-day `list_events`). A calendar failure leaves mail working;
+the hint says so.
 For IMAP `NO`/`BAD`/`BYE`/`PARSE` the message keeps the uncertainty — iCloud
 reports a failed login the same way whether the app-specific password is wrong,
 revoked, or the server is having a bad day. A `TIMEOUT` is not a reason to
