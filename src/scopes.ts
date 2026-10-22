@@ -6,9 +6,10 @@
 // to an empty array there, so `props.via === "bearer"` is the owner and holds
 // every scope. A naive `scope.includes(...)` would break every bearer client.
 //
-// `calendar:write` implies `calendar:read`, so a grant widened to write can
-// also read. The consent page offers read and write separately; the implication
-// only ever widens the check, never the stored grant.
+// `calendar:write` and `calendar:delete` each imply `calendar:read`, so a grant
+// can read the ETag it needs. They do not imply each other: a connector that
+// approved create/update before delete existed cannot delete until it
+// reconnects and the owner approves `calendar:delete`.
 
 import { ApiError } from "./core";
 
@@ -16,6 +17,7 @@ export const SCOPES = [
   "mail:read",
   "calendar:read",
   "calendar:write",
+  "calendar:delete",
   "offline_access",
 ] as const;
 
@@ -46,7 +48,12 @@ export function authorityOf(
 export function hasScope(authority: Authority, scope: ResourceScope): boolean {
   if (authority.via === "bearer") return true;
   if (authority.scopes.includes(scope)) return true;
-  if (scope === "calendar:read") return authority.scopes.includes("calendar:write");
+  if (scope === "calendar:read") {
+    return (
+      authority.scopes.includes("calendar:write") ||
+      authority.scopes.includes("calendar:delete")
+    );
+  }
   return false;
 }
 

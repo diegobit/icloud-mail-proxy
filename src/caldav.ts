@@ -654,11 +654,15 @@ export function createCalDav(env: Env, options: CalDavOptions = {}): CalDav {
           mutation: true,
         }),
       );
-      if (response.status === 202) {
+      const status = response.status;
+      if (
+        (status >= 200 && status < 300 && status !== 200 && status !== 204) ||
+        status >= 500
+      ) {
         throw new CalDavError(
           "mutation_state_unknown",
-          202,
-          "iCloud accepted the DELETE with HTTP 202; it may still be processing",
+          status,
+          `iCloud answered HTTP ${status} to the DELETE; it may or may not have been applied`,
         );
       }
       assertStatus(response, [200, 204]);

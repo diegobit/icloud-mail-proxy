@@ -268,6 +268,7 @@ describe("POST /authorize", () => {
     expect(body).toContain("Read and manage mail (mail:read)");
     expect(body).toContain('name="scope" value="mail:read" checked');
     expect(body).not.toContain('name="scope" value="calendar:read"');
+    expect(body).not.toContain('name="scope" value="calendar:delete"');
   });
 
   it("offers the calendar scopes this deployment enabled", async () => {
@@ -281,7 +282,9 @@ describe("POST /authorize", () => {
     const body = await response.text();
     expect(body).toContain('name="scope" value="calendar:read"');
     expect(body).toContain('name="scope" value="calendar:write"');
-    expect(body).toContain("Create, update and delete events (calendar:write)");
+    expect(body).toContain('name="scope" value="calendar:delete"');
+    expect(body).toContain("Create and update events (calendar:write)");
+    expect(body).toContain("Delete events (calendar:delete)");
   });
 
   it("rejects a token submission without an S256 challenge before consent", async () => {
@@ -432,7 +435,13 @@ describe("POST /authorize/consent", () => {
       ALLOWED_CALENDARS: "*",
       CALENDAR_WRITE: "1",
     });
-    const selected = ["mail:read", "calendar:read", "calendar:write", "calendar:read"];
+    const selected = [
+      "mail:read",
+      "calendar:read",
+      "calendar:write",
+      "calendar:delete",
+      "calendar:read",
+    ];
     const response = await handleAuthorize(
       postForm(
         "/authorize/consent",
@@ -443,7 +452,7 @@ describe("POST /authorize/consent", () => {
     );
 
     expect(response.status).toBe(302);
-    const expected = ["mail:read", "calendar:read", "calendar:write"];
+    const expected = ["mail:read", "calendar:read", "calendar:write", "calendar:delete"];
     const [, , approveOptions] = helpers.approveConsent.mock.calls[0]!;
     expect(approveOptions?.scope).toEqual(expected);
     const [authOptions] = helpers.completeAuthorization.mock.calls[0]!;

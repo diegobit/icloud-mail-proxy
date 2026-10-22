@@ -648,8 +648,8 @@ current ETag and uses `If-Match`:
 - `422 not_an_event` — the resource is a `VTODO`, not a calendar event.
 - `403 read_only_collection` — the collection is not writable for the account.
 - `502 mutation_state_unknown` — the PUT or DELETE was sent and its response
-  never arrived, or iCloud answered `202 Accepted` for a DELETE. It may have
-  landed; reconcile with `get_event`, never blind-retry.
+  never arrived, or iCloud answered an unexpected 2xx or a 5xx to a DELETE. It
+  may have landed; reconcile with `get_event`, never blind-retry.
 - `429 rate_limited` — more than 30 writes per minute from the same IP.
 
 `DELETE .../:id` takes no body. It requires the exact strong ETag in an
@@ -699,14 +699,17 @@ connectors that cannot send custom headers (ChatGPT developer mode, claude.ai).
 The server publishes its OAuth metadata under `/.well-known/`; the consent flow
 asks for the API token once per connector and binds the grant to it. The
 consent page offers the scopes this deployment has enabled — `mail:read`, plus
-`calendar:read` / `calendar:write` — preselected with what the client requested,
-and the owner may deselect. The stored grant can only narrow that offer.
-`mail:read` is the umbrella for all eight mail tools, including sending and
-filing; `calendar:write` implies `calendar:read`. Every authorization request
-must carry a PKCE `S256`
-challenge: requests without one are refused before the consent page. A grant
-minted before calendars existed holds only `mail:read`, so the connector must
-reconnect once before the calendar tools work.
+`calendar:read`, `calendar:write` and `calendar:delete` — preselected with what
+the client requested, and the owner may deselect. The stored grant can only
+narrow that offer. `mail:read` is the umbrella for all eight mail tools,
+including sending and filing; `calendar:write` and `calendar:delete` each imply
+`calendar:read`, but not each other. In particular, a grant that approved only
+`calendar:write` before `delete_event` existed cannot delete: it must reconnect
+and the owner must approve `calendar:delete` explicitly. Every authorization
+request must carry a PKCE `S256` challenge: requests without one are refused
+before the consent page. A grant minted before calendars existed holds only
+`mail:read`, so the connector must reconnect once before the calendar tools
+work.
 
 Connect from Claude Code (single-quote the header so the shell does not expand
 the token; this CLI may store an expanded header value):
@@ -833,12 +836,14 @@ a deployment with calendars and writes on:
 | Tool | Scope | Enabled by |
 | --- | --- | --- |
 | `list_calendars`, `list_events`, `get_event` | `calendar:read` | `ALLOWED_CALENDARS` |
-| `create_event`, `update_event`, `delete_event` | `calendar:write` | `ALLOWED_CALENDARS` + `CALENDAR_WRITE=1` |
+| `create_event`, `update_event` | `calendar:write` | `ALLOWED_CALENDARS` + `CALENDAR_WRITE=1` |
+| `delete_event` | `calendar:delete` | `ALLOWED_CALENDARS` + `CALENDAR_WRITE=1` |
 | the eight mail tools | `mail:read` | always |
 
 The static bearer token reaches every enabled tool. OAuth connectors get the
 scopes selected on the consent page, which is why an older grant holding only
-`mail:read` must reconnect before using calendars.
+`mail:read` must reconnect before using calendars, and an older `calendar:write`
+grant must reconnect before using `delete_event`.
 
 ### Reads
 
@@ -865,8 +870,9 @@ which, and writes refuse them.
 
 ### Writes
 
-Three tools write: `create_event`, `update_event` and `delete_event`. Deletion
-is immediate: unlike mail there is no trash. Only one-off events can be deleted;
+Three tools write: `create_event` and `update_event` under `calendar:write`,
+and `delete_event` under the separate `calendar:delete` scope. Deletion is
+immediate: unlike mail there is no trash. Only one-off events can be deleted;
 recurring and scheduling (`ORGANIZER`/`ATTENDEE`) resources remain read-only.
 There is no recurrence editing, no invitations, free/busy, sharing or contacts.
 A created event never carries a `VALARM`; an existing one is preserved by an
@@ -890,8 +896,9 @@ Writes are structured and narrow:
   event, checks the ETag, refuses a recurring, scheduling or non-VEVENT
   resource, then sends `DELETE` with `If-Match`. Deletion is immediate and
   there is no trash. A DELETE whose response never arrived, or that returned
-  `202 Accepted`, returns `502 mutation_state_unknown`; reconcile with
-  `get_event`, where `404` means the event is gone.
+  `202 Accepted`, another unexpected 2xx, or a 5xx, returns `502
+  mutation_state_unknown`; reconcile with `get_event`, where `404` means the
+  event is gone.
 - Creates accept an optional `id`; a retry that hits an existing resource
   returns `409 already_exists` instead of making a second copy. A calendar that
   is read-only for the account returns `403 read_only_collection`.
@@ -974,10 +981,12 @@ EventKit companion on a Mac); it is not part of this Worker.
   on, only allowlisted calendars are reachable, only one-off resources without
   an organizer or attendees can be created, changed or deleted, every update
   and delete requires a strong ETag and a fresh read, a per-IP limiter allows
-  30 writes per minute, and each attempt logs metadata only. Deletion is
-  immediate and there is no trash. The app password itself still grants broader
-  access to the account, so the allowlist and flag bound this code, not the
-  credential.
+  30 writes per minute, and each attempt logs metadata only. Deletion needs the
+  separate `calendar:delete` OAuth scope, so a pre-existing `calendar:write`
+  grant cannot delete until it reconnects and the owner approves it. Deletion
+  is immediate and there is no trash. The app password itself still grants
+  broader access to the account, so the allowlist and flag bound this code, not
+  the credential.
 - **No caching, no content logging.** All responses set
   `Cache-Control: private, no-store`. Unexpected-error logging only ever
   includes an error message, never a request body or message content.

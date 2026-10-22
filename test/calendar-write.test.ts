@@ -792,7 +792,7 @@ describe("updateEvent", () => {
   });
 
   it("refuses recurring and scheduling resources", async () => {
-    stubFetch({
+    const recurringCalls = stubFetch({
       multiget: multistatus("cal-lavoro", [
         { id: "recurring", ics: RECURRING, etag: '"etag-recurring"' },
       ]),
@@ -805,9 +805,10 @@ describe("updateEvent", () => {
         summary: "X",
       }),
     ).rejects.toSatisfy((error: unknown) => errorCode(error) === "recurring_not_supported");
+    expect(recurringCalls.some((call) => call.method === "PUT")).toBe(false);
 
     clearCalDavDiscoveryCache();
-    stubFetch({
+    const scheduledCalls = stubFetch({
       multiget: multistatus("cal-lavoro", [
         { id: "scheduled", ics: SCHEDULED, etag: '"etag-scheduled"' },
       ]),
@@ -820,6 +821,22 @@ describe("updateEvent", () => {
         summary: "X",
       }),
     ).rejects.toSatisfy((error: unknown) => errorCode(error) === "scheduling_not_supported");
+    expect(scheduledCalls.some((call) => call.method === "PUT")).toBe(false);
+  });
+
+  it("returns not_an_event for a VTODO update without a PUT", async () => {
+    const calls = stubFetch({
+      multiget: multistatus("cal-lavoro", [{ id: "todo", ics: VTODO, etag: '"etag-todo"' }]),
+    });
+    await expect(
+      update(makeEnv(), {
+        calendar: "Lavoro",
+        id: "todo",
+        etag: '"etag-todo"',
+        summary: "X",
+      }),
+    ).rejects.toSatisfy((error: unknown) => errorCode(error) === "not_an_event");
+    expect(calls.some((call) => call.method === "PUT")).toBe(false);
   });
 
   it("turns a 412 from the PUT into conflict and logs it", async () => {
@@ -993,7 +1010,7 @@ describe("deleteEvent", () => {
   });
 
   it("refuses recurring, scheduling and non-event resources", async () => {
-    stubFetch({
+    const recurringCalls = stubFetch({
       multiget: multistatus("cal-lavoro", [
         { id: "recurring", ics: RECURRING, etag: '"etag-recurring"' },
       ]),
@@ -1005,9 +1022,10 @@ describe("deleteEvent", () => {
         etag: '"etag-recurring"',
       }),
     ).rejects.toSatisfy((error: unknown) => errorCode(error) === "recurring_not_supported");
+    expect(recurringCalls.some((call) => call.method === "DELETE")).toBe(false);
 
     clearCalDavDiscoveryCache();
-    stubFetch({
+    const scheduledCalls = stubFetch({
       multiget: multistatus("cal-lavoro", [
         { id: "scheduled", ics: SCHEDULED, etag: '"etag-scheduled"' },
       ]),
@@ -1019,6 +1037,7 @@ describe("deleteEvent", () => {
         etag: '"etag-scheduled"',
       }),
     ).rejects.toSatisfy((error: unknown) => errorCode(error) === "scheduling_not_supported");
+    expect(scheduledCalls.some((call) => call.method === "DELETE")).toBe(false);
 
     clearCalDavDiscoveryCache();
     const todoCalls = stubFetch({
@@ -1028,6 +1047,29 @@ describe("deleteEvent", () => {
       remove(makeEnv(), { calendar: "Lavoro", id: "todo", etag: '"etag-todo"' }),
     ).rejects.toSatisfy((error: unknown) => errorCode(error) === "not_an_event");
     expect(todoCalls.some((call) => call.method === "DELETE")).toBe(false);
+  });
+
+  it("rejects an unsafe id and a calendar outside the allowlist", async () => {
+    const calls = stubFetch();
+    await expect(
+      remove(makeEnv(), { calendar: "Lavoro", id: "../escape", etag: '"etag-plain"' }),
+    ).rejects.toSatisfy((error: unknown) => errorCode(error) === "invalid_request");
+
+    clearCalDavDiscoveryCache();
+    const allowlistCalls = stubFetch({
+      multiget: multistatus("cal-lavoro", [
+        { id: "plain", ics: PLAIN, etag: '"etag-plain"' },
+      ]),
+    });
+    await expect(
+      remove(makeEnv({ ALLOWED_CALENDARS: "Lavoro" }), {
+        calendar: "Casa SP",
+        id: "plain",
+        etag: '"etag-plain"',
+      }),
+    ).rejects.toSatisfy((error: unknown) => errorCode(error) === "calendar_not_allowed");
+    expect(calls.some((call) => call.method === "DELETE")).toBe(false);
+    expect(allowlistCalls.some((call) => call.method === "DELETE")).toBe(false);
   });
 
   it("refuses a read-only collection and a missing event", async () => {
@@ -1137,6 +1179,24 @@ describe("deleteEvent", () => {
         { id: "plain", ics: PLAIN, etag: '"etag-plain"' },
       ]),
       delete: () => new Response("", { status: 202 }),
+    });
+    const logs = captureLogs();
+    await expect(
+      remove(makeEnv(), { calendar: "Lavoro", id: "plain", etag: '"etag-plain"' }),
+    ).rejects.toSatisfy((error: unknown) => {
+      expect(errorCode(error)).toBe("mutation_state_unknown");
+      expect((error as Error).message).toContain("get_event");
+      return true;
+    });
+    expect(logs[0]).toContain('"outcome":"mutation_state_unknown"');
+  });
+
+  it("does not report a 5xx DELETE as a plain upstream failure", async () => {
+    stubFetch({
+      multiget: multistatus("cal-lavoro", [
+        { id: "plain", ics: PLAIN, etag: '"etag-plain"' },
+      ]),
+      delete: () => new Response("", { status: 504 }),
     });
     const logs = captureLogs();
     await expect(

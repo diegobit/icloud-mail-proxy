@@ -113,11 +113,13 @@ for 14.
 | Tool | Scope | Enabled by |
 | --- | --- | --- |
 | `list_calendars`, `list_events`, `get_event` | `calendar:read` | `ALLOWED_CALENDARS` |
-| `create_event`, `update_event`, `delete_event` | `calendar:write` | `ALLOWED_CALENDARS` + `CALENDAR_WRITE=1` |
+| `create_event`, `update_event` | `calendar:write` | `ALLOWED_CALENDARS` + `CALENDAR_WRITE=1` |
+| `delete_event` | `calendar:delete` | `ALLOWED_CALENDARS` + `CALENDAR_WRITE=1` |
 | the eight mail tools | `mail:read` | always |
 
 The static bearer reaches every enabled tool. OAuth grants hold the scopes the
-owner selected on the consent page; `calendar:write` implies `calendar:read`.
+owner selected on the consent page; `calendar:write` and `calendar:delete` each
+imply `calendar:read`, but not each other.
 An older grant holding only `mail:read` must reconnect before using calendars.
 
 ## Design
@@ -208,8 +210,9 @@ An older grant holding only `mail:read` must reconnect before using calendars.
 ### Scopes and consent
 
 - Scopes are `mail:read`, `calendar:read`, `calendar:write`,
-  `offline_access`.
-- `calendar:write` implies `calendar:read`; the stored grant is never widened.
+  `calendar:delete`, `offline_access`.
+- `calendar:write` and `calendar:delete` each imply `calendar:read`; neither
+  implies the other. The stored grant is never widened.
 - The consent page offers only the scopes the deployment enables and
   preselects what the client requested. The owner may deselect.
 - The static bearer is the owner and holds every enabled scope.
@@ -315,6 +318,12 @@ longer exists.
   11 with writes off. It deletes one non-recurring `VEVENT` after a strong ETag
   check; recurring/scheduling resources and `VTODO` cleanup remain out of
   scope, and there is no trash.
+- 2026-10-23, delete consent fix: `delete_event` now requires a separate
+  `calendar:delete` OAuth scope, deployed as version
+  `132e3a24-d020-4a6d-b8e7-1d7230ebb276`, so a pre-existing `calendar:write`
+  grant cannot delete until it reconnects and the owner approves it. The same
+  follow-up treats unexpected DELETE responses as `mutation_state_unknown` and
+  corrects the VTODO update error.
 
 ## Open items
 

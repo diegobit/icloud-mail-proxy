@@ -460,10 +460,10 @@ export async function updateEvent(
 
       const parsed = parseResource(current.ics, icalCaps(limits));
       if (parsed.kind !== "VEVENT") {
-        throw new CalDavError(
-          "malformed",
-          0,
-          `resource ${JSON.stringify(input.id)} is not a VEVENT`,
+        throw new ApiError(
+          422,
+          "not_an_event",
+          "this resource is not a VEVENT; update_event only updates calendar events",
         );
       }
       if (parsed.recurring) {

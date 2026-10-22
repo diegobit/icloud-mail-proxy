@@ -2,7 +2,7 @@
 //
 // The contract:
 // - structured fields only, never raw iCalendar;
-// - strong ETags only for updates, with a re-read before the PUT;
+// - strong ETags for updates and deletes, with a re-read before the mutation;
 // - one written resource per call;
 // - a per-IP rate limit before any network work;
 // - one audit line per attempted write, never with user text.
@@ -183,10 +183,11 @@ export function reconcileMutationError(
   readTool: "get_event",
 ): unknown {
   if (error instanceof CalDavError && error.code === "mutation_state_unknown") {
+    const detail = /[.!?]$/.test(error.message) ? error.message : `${error.message}.`;
     return new CalDavError(
       "mutation_state_unknown",
       error.status,
-      `${error.message} Reconcile with ${readTool} on ${JSON.stringify(id)} before retrying; ` +
+      `${detail} Reconcile with ${readTool} on ${JSON.stringify(id)} before retrying; ` +
         `the ${action} may already have landed.`,
     );
   }

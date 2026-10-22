@@ -32,10 +32,14 @@ const SCOPE_COPY: Record<ResourceScope, { label: string; detail: string }> = {
     detail: "List calendars and read events and their details.",
   },
   "calendar:write": {
-    label: "Create, update and delete events",
+    label: "Create and update events",
+    detail: "Add events and change existing ones. Deleting is not included.",
+  },
+  "calendar:delete": {
+    label: "Delete events",
     detail:
-      "Add events, change existing ones, and delete one-off events. Deletion is immediate " +
-      "and there is no trash; recurring and scheduling events stay read-only.",
+      "Delete one-off events. Deletion is immediate and there is no trash; recurring and " +
+      "scheduling events stay read-only.",
   },
 };
 
