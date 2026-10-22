@@ -586,6 +586,16 @@ describe("writes", () => {
     );
   });
 
+  it("treats other 2xx and 5xx DELETE responses as unknown", async () => {
+    for (const status of [207, 500, 504]) {
+      clearCalDavDiscoveryCache();
+      const { caldav } = await ready([xml("", status)]);
+      expect(await codeOf(caldav.delete(resourcePath(COLLECTION_ID, UID), '"old"'))).toBe(
+        "mutation_state_unknown",
+      );
+    }
+  });
+
   it("refuses a weak DELETE ETag before any request", async () => {
     const { caldav, calls } = await ready([]);
     expect(await codeOf(caldav.delete(resourcePath(COLLECTION_ID, UID), 'W/"old"'))).toBe(

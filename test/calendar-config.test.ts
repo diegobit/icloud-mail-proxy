@@ -92,7 +92,13 @@ describe("scopes", () => {
     expect(enabledResourceScopes(reads)).toEqual(["mail:read", "calendar:read"]);
 
     const writes = makeEnv({ ALLOWED_CALENDARS: "*", CALENDAR_WRITE: "1" });
-    expect(enabledResourceScopes(writes)).toEqual(["mail:read", "calendar:read", "calendar:write"]);
+    expect(enabledResourceScopes(writes)).toEqual([
+      "mail:read",
+      "calendar:read",
+      "calendar:write",
+      "calendar:delete",
+    ]);
+    expect(supportedScopes(writes)).toContain("calendar:delete");
     expect(supportedScopes(writes)).toContain("offline_access");
   });
 
@@ -109,6 +115,11 @@ describe("scopes", () => {
     const calendarOnly = makeEnv({ ALLOWED_CALENDARS: "*" });
     expect(scopeProfile(calendarOnly)).toBe("mail:read,calendar:read");
     expect(scopeProfile(calendarOnly)).toBe(scopeProfile(calendarOnly));
+
+    const writes = makeEnv({ ALLOWED_CALENDARS: "*", CALENDAR_WRITE: "1" });
+    expect(scopeProfile(writes)).toBe(
+      "mail:read,calendar:read,calendar:write,calendar:delete",
+    );
   });
 });
 

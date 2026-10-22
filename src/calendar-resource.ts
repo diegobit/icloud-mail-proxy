@@ -44,8 +44,8 @@ export function isResourceId(value: string): boolean {
 const STRONG_ETAG = /^"[\x21\x23-\x7e]*"$/;
 
 /**
- * Validate the ETag a caller passes back for an update. Reads tolerate a weak
- * ETag, but If-Match needs exactly one strong, quoted tag.
+ * Validate the ETag a caller passes back for an update or delete. Reads
+ * tolerate a weak ETag, but If-Match needs exactly one strong, quoted tag.
  */
 export function assertStrongEtag(value: string): string {
   if (!STRONG_ETAG.test(value)) {

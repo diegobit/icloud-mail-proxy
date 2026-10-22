@@ -68,7 +68,7 @@ export function enabledResourceScopes(env: Env): ResourceScope[] {
   const scopes: ResourceScope[] = ["mail:read"];
   if (calendarsEnabled(env)) {
     scopes.push("calendar:read");
-    if (config.calendarWrite) scopes.push("calendar:write");
+    if (config.calendarWrite) scopes.push("calendar:write", "calendar:delete");
   }
   return scopes;
 }

@@ -8,6 +8,7 @@ describe("authorityOf", () => {
     expect(authority).toEqual({ via: "bearer", scopes: [] });
     expect(hasScope(authority, "mail:read")).toBe(true);
     expect(hasScope(authority, "calendar:write")).toBe(true);
+    expect(hasScope(authority, "calendar:delete")).toBe(true);
   });
 
   it("reads the approved scopes of an OAuth grant", () => {
@@ -44,9 +45,13 @@ describe("hasScope", () => {
     expect(hasScope(oauth(["calendar:read"]), "calendar:read")).toBe(true);
   });
 
-  it("lets a write grant read, and nothing more", () => {
+  it("lets write or delete grants read, without granting each other", () => {
     expect(hasScope(oauth(["calendar:write"]), "calendar:read")).toBe(true);
+    expect(hasScope(oauth(["calendar:delete"]), "calendar:read")).toBe(true);
     expect(hasScope(oauth(["calendar:read"]), "calendar:write")).toBe(false);
+    expect(hasScope(oauth(["calendar:read"]), "calendar:delete")).toBe(false);
+    expect(hasScope(oauth(["calendar:write"]), "calendar:delete")).toBe(false);
+    expect(hasScope(oauth(["calendar:delete"]), "calendar:write")).toBe(false);
   });
 
   it("does not let mail:read open the calendar domain", () => {
@@ -72,10 +77,23 @@ describe("requireScope", () => {
     expect(() =>
       requireScope(authorityOf({ via: "oauth" }, { scope: ["calendar:write"] }), "calendar:read"),
     ).not.toThrow();
+    expect(() =>
+      requireScope(authorityOf({ via: "oauth" }, { scope: ["calendar:delete"] }), "calendar:read"),
+    ).not.toThrow();
+  });
+
+  it("requires calendar:delete for delete and rejects a write-only grant", () => {
+    expect(() =>
+      requireScope(authorityOf({ via: "oauth" }, { scope: ["calendar:delete"] }), "calendar:delete"),
+    ).not.toThrow();
+    expect(() =>
+      requireScope(authorityOf({ via: "oauth" }, { scope: ["calendar:write"] }), "calendar:delete"),
+    ).toThrow(/calendar:delete/);
   });
 
   it("allows everything to the static bearer", () => {
     const bearer = authorityOf({ via: "bearer" }, { scope: [] });
     expect(() => requireScope(bearer, "calendar:write")).not.toThrow();
+    expect(() => requireScope(bearer, "calendar:delete")).not.toThrow();
   });
 });

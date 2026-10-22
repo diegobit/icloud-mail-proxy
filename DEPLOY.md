@@ -100,6 +100,11 @@ allowlist value controls what is reachable:
   not registered and the REST write routes answer `404 not_supported`. The
   tracked `production` profile opts in to `*` with writes enabled; a fresh
   deployment does not.
+- The write flag enables two separate OAuth scopes: `calendar:write` for
+  create/update and `calendar:delete` for deletion. `calendar:delete` implies
+  `calendar:read`, but `calendar:write` does not imply `calendar:delete`. This
+  keeps a connector that approved write before deletion existed from gaining
+  irreversible deletion without a fresh consent.
 
 To discover the exact names before enabling the domain, call the bearer-only
 bootstrap view on the deployed Worker. It returns every calendar before
@@ -292,13 +297,14 @@ generate a new token, because that would break every existing client.
 - **"conflict":** the event changed since it was read. Call `get_event` again,
   compare, and retry with the fresh ETag. Do not reuse the old tag.
 - **"mutation_state_unknown":** the PUT or DELETE was sent and the response
-  never arrived, or iCloud answered `202 Accepted` for a DELETE. It may have
-  landed. Read the event with `get_event` and reconcile; never blind-retry a
-  create, update or delete. A `404` after a delete means the event is gone.
+  never arrived, or iCloud answered an unexpected 2xx or a 5xx to a DELETE. It
+  may have landed. Read the event with `get_event` and reconcile; never
+  blind-retry a create, update or delete. A `404` after a delete means the
+  event is gone.
 - **"already_exists":** an idempotent create found the id already present.
   Read it and compare instead of creating a second copy with a new id.
-- **"not_an_event":** the resource is a `VTODO` or another non-event; it cannot
-  be deleted through this proxy.
+- **"not_an_event":** the resource is a `VTODO`, not a calendar event; it
+  cannot be updated or deleted through this proxy.
 - **"recurring_not_supported" / "scheduling_not_supported":** recurring events
   and events with an organizer or attendees cannot be changed or deleted
   through this proxy. Edit them in Apple Calendar. Retrying will not help.
@@ -318,6 +324,10 @@ generate a new token, because that would break every existing client.
 - **After upgrading from a mail-only grant:** OAuth connectors must reconnect
   so the consent page can offer the new scopes. A grant that still holds only
   `mail:read` answers `insufficient_scope` on the calendar tools until then.
+- **After upgrading to `delete_event`:** a grant that already holds
+  `calendar:write` still cannot delete. Reconnect the connector and select
+  `calendar:delete` on the consent page; until then `delete_event` returns
+  `insufficient_scope`. Deletion is immediate and has no trash.
 
 ## Recovering an interrupted setup
 

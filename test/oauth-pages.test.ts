@@ -59,22 +59,27 @@ describe("tokenEntryPage", () => {
 describe("scopeChoices", () => {
   it("preselects the scopes the client asked for", () => {
     const choices = scopeChoices(
-      ["mail:read", "calendar:read", "calendar:write"],
-      ["calendar:read", "calendar:write"],
+      ["mail:read", "calendar:read", "calendar:write", "calendar:delete"],
+      ["calendar:read", "calendar:delete"],
     );
     expect(choices.map((choice) => [choice.scope, choice.checked])).toEqual([
       ["mail:read", false],
       ["calendar:read", true],
-      ["calendar:write", true],
+      ["calendar:write", false],
+      ["calendar:delete", true],
     ]);
   });
 
   it("falls back to the read scopes when the client asked for nothing offered", () => {
-    const choices = scopeChoices(["mail:read", "calendar:read", "calendar:write"], []);
+    const choices = scopeChoices(
+      ["mail:read", "calendar:read", "calendar:write", "calendar:delete"],
+      [],
+    );
     expect(choices.map((choice) => [choice.scope, choice.checked])).toEqual([
       ["mail:read", true],
       ["calendar:read", true],
       ["calendar:write", false],
+      ["calendar:delete", false],
     ]);
   });
 
@@ -86,7 +91,10 @@ describe("scopeChoices", () => {
 });
 
 describe("consentPage", () => {
-  const SCOPES = scopeChoices(["mail:read", "calendar:read", "calendar:write"], ["mail:read"]);
+  const SCOPES = scopeChoices(
+    ["mail:read", "calendar:read", "calendar:write", "calendar:delete"],
+    ["mail:read"],
+  );
 
   it("shows the offered permissions as checkboxes and posts handle, epoch plus action", () => {
     const html = consentPage({ client: CLIENT, handle: "h-1", epoch: "epoch-1", scopes: SCOPES });
@@ -94,6 +102,7 @@ describe("consentPage", () => {
     expect(html).toContain("send mail and save drafts");
     expect(html).toContain('value="calendar:read"');
     expect(html).toContain('value="calendar:write"');
+    expect(html).toContain('value="calendar:delete"');
     expect(html).toContain('name="handle" value="h-1"');
     expect(html).toContain('name="epoch" value="epoch-1"');
     expect(html).toContain('method="post" action="/authorize/consent"');
@@ -106,6 +115,7 @@ describe("consentPage", () => {
     expect(html).toContain('name="scope" value="mail:read" checked');
     expect(html).not.toContain('name="scope" value="calendar:read" checked');
     expect(html).not.toContain('name="scope" value="calendar:write" checked');
+    expect(html).not.toContain('name="scope" value="calendar:delete" checked');
   });
 
   it("escapes a hostile consent handle and epoch", () => {

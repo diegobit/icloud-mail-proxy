@@ -7,12 +7,61 @@ import os from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
+  FORM,
   freePort,
+  hidden,
   mcpToolCall,
   mcpToolsListDetailed,
+  pkce,
+  REDIRECT_URI,
+  registerClient,
   startWorker,
   TOKEN_A,
+  tokenRequest,
 } from "./support/oauth-flow.mjs";
+
+async function grant(base, scopes) {
+  const clientId = await registerClient(base);
+  const { verifier, challenge } = pkce();
+  const query = new URLSearchParams({
+    response_type: "code",
+    client_id: clientId,
+    redirect_uri: REDIRECT_URI,
+    scope: scopes.join(" "),
+    state: "calendar-scope-check",
+    code_challenge: challenge,
+    code_challenge_method: "S256",
+  }).toString();
+  const posted = await fetch(`${base}/authorize`, {
+    method: "POST",
+    headers: FORM,
+    body: new URLSearchParams({ authQuery: query, token: TOKEN_A }),
+  });
+  const cookie = posted.headers.get("set-cookie").split(";")[0];
+  const html = await posted.text();
+  const form = new URLSearchParams({
+    handle: hidden(html, "handle"),
+    action: "approve",
+    epoch: hidden(html, "epoch"),
+  });
+  for (const scope of scopes) form.append("scope", scope);
+  const approved = await fetch(`${base}/authorize/consent`, {
+    method: "POST",
+    headers: { ...FORM, Cookie: cookie },
+    body: form,
+    redirect: "manual",
+  });
+  const code = new URL(approved.headers.get("location")).searchParams.get("code");
+  const exchanged = await tokenRequest(base, {
+    grant_type: "authorization_code",
+    code,
+    redirect_uri: REDIRECT_URI,
+    client_id: clientId,
+    code_verifier: verifier,
+  });
+  expect(exchanged.status).toBe(200);
+  return (await exchanged.json()).access_token;
+}
 
 describe("calendar MCP surface", () => {
   let current;
@@ -50,4 +99,29 @@ describe("calendar MCP surface", () => {
     expect(result.isError).toBe(true);
     expect(result.text).toContain("invalid_etag");
   });
+
+  it("does not let a calendar:write grant delete without calendar:delete", async () => {
+    const writeToken = await grant(current.base, ["mail:read", "calendar:read", "calendar:write"]);
+    const denied = await mcpToolCall(current.base, writeToken, "delete_event", {
+      calendar: "Lavoro",
+      id: "plain",
+      etag: "not-a-strong-etag",
+    });
+    expect(denied.isError).toBe(true);
+    expect(denied.text).toContain("calendar:delete");
+
+    const deleteToken = await grant(current.base, [
+      "mail:read",
+      "calendar:read",
+      "calendar:delete",
+    ]);
+    const allowedThroughScope = await mcpToolCall(current.base, deleteToken, "delete_event", {
+      calendar: "Lavoro",
+      id: "plain",
+      etag: "not-a-strong-etag",
+    });
+    expect(allowedThroughScope.isError).toBe(true);
+    expect(allowedThroughScope.text).toContain("invalid_etag");
+  });
+
 });
