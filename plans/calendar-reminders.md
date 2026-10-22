@@ -319,8 +319,9 @@ longer exists.
   check; recurring/scheduling resources and `VTODO` cleanup remain out of
   scope, and there is no trash.
 - 2026-10-23, delete consent fix: `delete_event` now requires a separate
-  `calendar:delete` OAuth scope, so a pre-existing `calendar:write` grant
-  cannot delete until it reconnects and the owner approves it. The same
+  `calendar:delete` OAuth scope, deployed as version
+  `132e3a24-d020-4a6d-b8e7-1d7230ebb276`, so a pre-existing `calendar:write`
+  grant cannot delete until it reconnects and the owner approves it. The same
   follow-up treats unexpected DELETE responses as `mutation_state_unknown` and
   corrects the VTODO update error.
 

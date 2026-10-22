@@ -3,9 +3,11 @@
 **Status (2026-10-23):** the first release (version
 `828704ea-6843-49b0-9f5e-f5695d788076`) exposed deletion through the existing
 `calendar:write` scope. A security review found that pre-existing grants could
-therefore delete without a fresh consent. The follow-up fix adds a separate
-`calendar:delete` scope; existing grants must reconnect and approve it. This is
-the follow-up to `plans/calendar-reminders.md`; reminders remain out of scope.
+therefore delete without a fresh consent. The follow-up adds a separate
+`calendar:delete` scope and is deployed as version
+`132e3a24-d020-4a6d-b8e7-1d7230ebb276`; existing grants must reconnect and
+approve deletion. This is the follow-up to `plans/calendar-reminders.md`;
+reminders remain out of scope.
 
 **What:** add `delete_event` to the calendar surface and a matching
 `DELETE /v1/calendars/:calendar/events/:id` route. The owner asked for the
@@ -101,8 +103,9 @@ function and error mapping.
   not prove zero DELETEs. This follow-up adds the separate `calendar:delete`
   scope, maps 5xx/unexpected 2xx DELETEs to `mutation_state_unknown`, returns
   `422 not_an_event` from updates, and strengthens the tests.
+- Codex review at `5a1b83d` returned APPROVED with no new findings.
 - `npm test` is 689 tests / 36 files; typecheck, bundle validation and
-  `git diff --check origin/main...HEAD` are clean.
+  `git diff --check origin/main...HEAD` are clean. CI is green at `5a1b83d`.
 
 ## Deployment and acceptance
 
@@ -110,11 +113,16 @@ function and error mapping.
   `828704ea-6843-49b0-9f5e-f5695d788076`; `verifyDeployment` passed with 14
   tools, OAuth metadata, five calendars, folder discovery and a seven-day
   `list_events` on `Scratch`.
-- Live conditional-delete acceptance on `Scratch` with a disposable event:
-  create returned `201`, a stale ETag returned `409 conflict` and left the
-  event readable, the fresh ETag returned `200 { ok: true }`, `get_event`
-  then returned `404 not_found`, and a repeat DELETE with the old ETag returned
-  `404 not_found`. The disposable event is gone.
+- The consent fix is deployed as version
+  `132e3a24-d020-4a6d-b8e7-1d7230ebb276`. `verifyDeployment` passed with 14
+  tools and the authorization-server metadata reports
+  `["mail:read","calendar:read","calendar:write","calendar:delete","offline_access"]`.
+- Live conditional-delete acceptance on `Scratch` with a disposable event
+  after the fix: create returned `201`, a stale ETag returned `409 conflict`,
+  the fresh ETag returned `200 { ok: true }`, and `get_event` returned `404
+  not_found`. The disposable event is gone.
+- Existing `calendar:write` grants must reconnect and approve
+  `calendar:delete`; until then `delete_event` returns `insufficient_scope`.
 - Production retains `ALLOWED_CALENDARS="*"` and `CALENDAR_WRITE="1"`.
 
 ## Open items
