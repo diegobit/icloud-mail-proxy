@@ -708,8 +708,20 @@ with no `Event`/`Time`/`Timezone` use, `COUNT` rules expand from `DTSTART`
   `422 recurring_not_supported` and a scheduling resource with `422
   scheduling_not_supported`; both ETags and summaries were unchanged after the
   refusal.
-- 2026-10-22, blocked: the `Scratch` reminder list is still not visible over
-  CalDAV (`probe-caldav.mjs` lists only `Casa SP⚠️` and `Reminders` as VTODO
-  collections; `Scratch` is VEVENT-only). Reminder acceptance, the iPhone
-  rendering check, and the OAuth narrowed-grant reconnect check are therefore
-  pending owner action; no reminder write has been attempted.
+- 2026-10-22, reminder acceptance: the `Scratch` list visible in the Reminders
+  app is not in this account's CalDAV home (the home still lists only
+  `Casa SP⚠️` and `Reminders` as VTODO collections; `Scratch` is VEVENT-only),
+  so with owner approval a dedicated `MCP Acceptance` VTODO collection was
+  created with `MKCALENDAR` under the same account. The Worker's `?all=1`
+  discovery sees it. Created `acceptance-reminder-2026-10-24` (due 2026-10-24
+  09:00 `Europe/Rome`, priority 5); the stored due is `07:00Z`. Completed it
+  through REST and MCP (`COMPLETED`, `PERCENT-COMPLETE:100`), reopened through
+  REST and MCP (`NEEDS-ACTION`, completion fields removed, raw `.ics` has no
+  `PERCENT-COMPLETE`), then completed it again through MCP and left it
+  completed for the iPhone check. The `update_reminder` `completed: false`
+  path and `complete_reminder` were exercised; no existing list or reminder
+  was modified.
+- 2026-10-22, pending: the iPhone rendering check for the event and reminder,
+  and the OAuth narrowed-grant reconnect check. The `MCP Acceptance` list, its
+  reminder, and the `Scratch` event remain for the owner; deletion is not
+  exposed.
