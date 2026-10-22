@@ -120,6 +120,8 @@ export interface EventOccurrence {
   timeZoneUnresolved: boolean;
   isOverride: boolean;
   summary: string | null;
+  /** RFC 5545 STATUS, including CANCELLED in the detail view. */
+  status: string | null;
 }
 
 export interface EventListResult {
@@ -145,6 +147,8 @@ export interface EventDetail {
   scheduling: boolean;
   readOnlyReason: ReadOnlyReason | null;
   recurrenceRule: string | null;
+  /** RFC 5545 STATUS of the master component. */
+  status: string | null;
   allDay: boolean;
   start: string | null;
   end: string | null;
@@ -253,6 +257,7 @@ function occurrenceDetail(
     timeZoneUnresolved: occurrence.timeZoneUnresolved,
     isOverride: occurrence.override,
     summary: occurrence.component.summary,
+    status: occurrence.component.status,
   };
 }
 
@@ -448,6 +453,8 @@ export async function getEvent(
     to,
     timeZone: zone,
     budget,
+    // The detail view explains cancellations instead of hiding them.
+    includeCancelled: true,
     ...caps,
   });
   const occurrences = expansion.occurrences
@@ -464,6 +471,7 @@ export async function getEvent(
     scheduling: parsed.scheduling,
     readOnlyReason: readOnlyReasonOf(parsed),
     recurrenceRule: parsed.master.rruleText,
+    status: parsed.master.status,
     allDay: start.dateOnly,
     start: formatAbsolute(start),
     end: formatAbsolute(end),

@@ -609,6 +609,23 @@ describe("calendar verification", () => {
     expect(mcp.detail).toContain("present but disabled: create_event");
   });
 
+  it("fails on an unknown extra tool even when every expected tool is present", async () => {
+    const tools = [...MAIL_TOOLS, ...CALENDAR_READ_TOOLS, "list_reminders"];
+    const fetchImpl = calendarEndpoint({ tools });
+    const result = await verifyDeployment({
+      url: ORIGIN,
+      token: TOKEN,
+      calendars: "*",
+      fetchImpl,
+      sleep: noSleep,
+    });
+
+    expect(result.ok).toBe(false);
+    const mcp = result.checks.find((check) => check.name === "MCP initialize and tools/list");
+    expect(mcp).toMatchObject({ ok: false, kind: "protocol" });
+    expect(mcp.detail).toContain("unexpected: list_reminders");
+  });
+
   it("fails containment when enabled read tools are missing", async () => {
     const fetchImpl = calendarEndpoint({ tools: MAIL_TOOLS });
     const result = await verifyDeployment({

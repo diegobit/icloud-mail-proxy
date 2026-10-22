@@ -194,7 +194,7 @@ function providerFor(origin: string, env: Env): OAuthProvider<Env> {
     const oldest = providers.keys().next().value;
     if (oldest !== undefined) providers.delete(oldest);
   }
-  providers.set(origin, provider);
+  providers.set(key, provider);
   return provider;
 }
 

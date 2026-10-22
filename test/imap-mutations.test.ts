@@ -158,6 +158,91 @@ describe("ImapSession.uidMove", () => {
     await script;
   });
 
+  it("reports UNKNOWN when STORE is refused after a successful COPY", async () => {
+    const { socket, server } = fakeSocket();
+    const script = (async () => {
+      await login(server);
+      expect(await server.line()).toBe("A2 CAPABILITY");
+      await server.send("* CAPABILITY IMAP4rev1 UIDPLUS\r\n");
+      await server.send("A2 OK done\r\n");
+      expect(await server.line()).toBe('A3 UID COPY 42 "Archive"');
+      await server.send("A3 OK [COPYUID 1699999999 42 8] copied\r\n");
+      expect(await server.line()).toBe("A4 UID STORE 42 +FLAGS.SILENT (\\Deleted)");
+      await server.send("A4 NO [CANNOT] store refused\r\n");
+    })().catch(() => {});
+
+    const session = await ImapSession.open("owner@example.com", "app-pass", {
+      connectSocket: () => socket,
+      timeoutMs: 500,
+    });
+    // The copy already exists; returning NO would let a retry file it twice.
+    await expect(session.uidMove(42, "Archive")).rejects.toMatchObject({ code: "UNKNOWN" });
+    await script;
+  });
+
+  it("reports UNKNOWN when STORE times out after a successful COPY", async () => {
+    const { socket, server } = fakeSocket();
+    const script = (async () => {
+      await login(server);
+      expect(await server.line()).toBe("A2 CAPABILITY");
+      await server.send("* CAPABILITY IMAP4rev1 UIDPLUS\r\n");
+      await server.send("A2 OK done\r\n");
+      expect(await server.line()).toBe('A3 UID COPY 42 "Archive"');
+      await server.send("A3 OK [COPYUID 1699999999 42 8] copied\r\n");
+      expect(await server.line()).toBe("A4 UID STORE 42 +FLAGS.SILENT (\\Deleted)");
+      // Stay silent so the client's bounded read times out.
+    })().catch(() => {});
+
+    const session = await ImapSession.open("owner@example.com", "app-pass", {
+      connectSocket: () => socket,
+      timeoutMs: 100,
+    });
+    await expect(session.uidMove(42, "Archive")).rejects.toMatchObject({ code: "UNKNOWN" });
+    await script;
+  });
+
+  it("reports UNKNOWN when a post-COPY response is malformed", async () => {
+    const { socket, server } = fakeSocket();
+    const script = (async () => {
+      await login(server);
+      expect(await server.line()).toBe("A2 CAPABILITY");
+      await server.send("* CAPABILITY IMAP4rev1 UIDPLUS\r\n");
+      await server.send("A2 OK done\r\n");
+      expect(await server.line()).toBe('A3 UID COPY 42 "Archive"');
+      await server.send("A3 OK [COPYUID 1699999999 42 8] copied\r\n");
+      expect(await server.line()).toBe("A4 UID STORE 42 +FLAGS.SILENT (\\Deleted)");
+      await server.send("A4 this is not a tagged response\r\n");
+    })().catch(() => {});
+
+    const session = await ImapSession.open("owner@example.com", "app-pass", {
+      connectSocket: () => socket,
+      timeoutMs: 500,
+    });
+    await expect(session.uidMove(42, "Archive")).rejects.toMatchObject({ code: "UNKNOWN" });
+    await script;
+  });
+
+  it("keeps a refused COPY definite because no copy was applied", async () => {
+    const { socket, server } = fakeSocket();
+    const script = (async () => {
+      await login(server);
+      expect(await server.line()).toBe("A2 CAPABILITY");
+      await server.send("* CAPABILITY IMAP4rev1 UIDPLUS\r\n");
+      await server.send("A2 OK done\r\n");
+      expect(await server.line()).toBe('A3 UID COPY 42 "Archive"');
+      await server.send("A3 NO [TRYCREATE] no such mailbox\r\n");
+    })().catch(() => {});
+
+    const session = await ImapSession.open("owner@example.com", "app-pass", {
+      connectSocket: () => socket,
+      timeoutMs: 500,
+    });
+    await expect(session.uidMove(42, "Archive")).rejects.toMatchObject({ code: "NO" });
+    await script;
+    expect(server.received).not.toContain("UID STORE");
+    expect(server.received).not.toContain("UID EXPUNGE");
+  });
+
   it("refuses with UNSUPPORTED when neither MOVE nor UIDPLUS is advertised", async () => {
     const { socket, server } = fakeSocket();
     const script = (async () => {

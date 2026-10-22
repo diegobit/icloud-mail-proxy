@@ -188,35 +188,51 @@ export class ImapSession {
       capabilities = new Set();
     }
     const strategy = chooseMoveStrategy(capabilities);
+    let copyCommand: string | null = null;
+    if (strategy === "copy-uidplus") {
+      try {
+        copyCommand = buildCopy(uid, destination);
+      } catch (e) {
+        // Framing happens before anything reaches the server, so this is a
+        // definite failure, not an ambiguous mutation.
+        throw toImapError(e);
+      }
+    }
 
-    let fallbackStarted = false;
+    let copyApplied = false;
     try {
-      if (strategy === "unsupported") {
+      if (strategy === "move") {
+        await this.command(buildMove(uid, destination), "UID MOVE");
+        return;
+      }
+      if (copyCommand === null) {
         throw new ImapError(
           "UNSUPPORTED",
           "server advertises neither MOVE nor UIDPLUS; refusing to EXPUNGE the whole mailbox",
         );
       }
-      if (strategy === "move") {
-        await this.command(buildMove(uid, destination), "UID MOVE");
-        return;
-      }
-      // The UIDPLUS fallback is three commands, not one atomic MOVE. If the
-      // connection drops after the first one, the state is genuinely unknown:
+      // The UIDPLUS fallback is three commands, not one atomic MOVE. Once the
+      // COPY succeeds the state is genuinely unknown unless all three finish:
       // the copy may be in the destination while the message is still in the
-      // source, so a blind retry would file a second copy. Surface that as
-      // UNKNOWN (not BYE, which the caller retries) and let it check both
-      // mailboxes.
-      fallbackStarted = true;
-      await this.command(buildCopy(uid, destination), "UID COPY");
+      // source, so a blind retry would file a second copy. A NO or timeout on
+      // STORE/EXPUNGE is just as ambiguous as a dropped connection. Surface
+      // every post-COPY failure as UNKNOWN (not BYE, which the caller retries)
+      // and let it check both mailboxes.
+      await this.command(copyCommand, "UID COPY");
+      copyApplied = true;
       await this.command(buildStoreDeleted(uid), "UID STORE");
       await this.command(buildUidExpunge(uid), "UID EXPUNGE");
     } catch (e) {
       const error = toImapError(e);
-      if (fallbackStarted && error.code === "BYE") {
+      // A lost response before COPY was acknowledged is ambiguous too: the
+      // server may have applied the COPY. NO and BAD are definite refusals,
+      // so those stay safe to report and retry.
+      const uncertainCopyFailure =
+        !copyApplied && (error.code === "BYE" || error.code === "TIMEOUT" || error.code === "PARSE");
+      if (copyApplied || (strategy === "copy-uidplus" && uncertainCopyFailure)) {
         throw new ImapError(
           "UNKNOWN",
-          `connection dropped during the move; the message may already be filed: ${error.message}`,
+          `the move did not finish; the message may already be filed: ${error.message}`,
         );
       }
       throw error;

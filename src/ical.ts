@@ -135,9 +135,9 @@ export interface ParsedComponent {
   due: IcalTime | null;
   end: IcalTime | null;
   allDay: boolean;
-  /** Exact duration for date-time values. */
+  /** Exact time part for date-time values, or the full DTEND delta when days is zero. */
   durationMs: number | null;
-  /** Whole-day duration for DATE values. */
+  /** Nominal whole days, for DATE values and for day/week DURATION parts. */
   durationDays: number | null;
   rrule: RecurrenceRule | null;
   rruleText: string | null;
@@ -347,7 +347,10 @@ function tryZoneInstant(zone: string, wall: WallClock): number | null {
 // --- Duration --------------------------------------------------------------
 
 interface ParsedDuration {
-  seconds: number;
+  /** Nominal whole days and weeks. */
+  days: number;
+  /** Exact hours, minutes and seconds. */
+  timeMs: number;
 }
 
 function parseDurationProperty(property: JCalProperty, label: string): ParsedDuration {
@@ -359,15 +362,27 @@ function parseDurationProperty(property: JCalProperty, label: string): ParsedDur
   if (weeks === undefined && days === undefined && hours === undefined && minutes === undefined && seconds === undefined) {
     throw malformed(`${label} is an empty duration`);
   }
-  const totalSeconds =
-    Number(weeks ?? 0) * 7 * 86_400 +
-    Number(days ?? 0) * 86_400 +
-    Number(hours ?? 0) * 3600 +
-    Number(minutes ?? 0) * 60 +
-    Number(seconds ?? 0);
-  if (sign === "-" && totalSeconds > 0) throw malformed(`${label} is negative`);
-  if (totalSeconds > MAX_DURATION_DAYS * 86_400) throw malformed(`${label} is longer than ${MAX_DURATION_DAYS} days`);
-  return { seconds: totalSeconds };
+  const nominalDays = Number(weeks ?? 0) * 7 + Number(days ?? 0);
+  const timeMs =
+    (Number(hours ?? 0) * 3600 + Number(minutes ?? 0) * 60 + Number(seconds ?? 0)) * 1000;
+  const totalMs = nominalDays * DAY_MS + timeMs;
+  if (sign === "-" && totalMs > 0) throw malformed(`${label} is negative`);
+  if (totalMs > MAX_DURATION_DAYS * DAY_MS) {
+    throw malformed(`${label} is longer than ${MAX_DURATION_DAYS} days`);
+  }
+  return { days: nominalDays, timeMs };
+}
+
+function assertDurationLimit(days: number, ms: number, label: string): void {
+  if (
+    !Number.isSafeInteger(days) ||
+    days < 0 ||
+    !Number.isSafeInteger(ms) ||
+    ms < 0 ||
+    days * DAY_MS + ms > MAX_DURATION_DAYS * DAY_MS
+  ) {
+    throw malformed(`${label} is longer than ${MAX_DURATION_DAYS} days`);
+  }
 }
 
 // --- Recurrence rule parsing ----------------------------------------------
@@ -758,35 +773,43 @@ function computeDuration(
     if (start === null) throw malformed("a DURATION needs a DTSTART");
     const parsed = parseDurationProperty(durationProperty, "DURATION");
     if (start.dateOnly) {
-      if (parsed.seconds % 86_400 !== 0) throw malformed("an all-day duration is not whole days");
-      return { ms: null, days: parsed.seconds / 86_400 };
+      if (parsed.timeMs % DAY_MS !== 0) {
+        throw malformed("an all-day duration is not whole days");
+      }
+      const days = parsed.days + parsed.timeMs / DAY_MS;
+      assertDurationLimit(days, 0, "DURATION");
+      return { ms: null, days };
     }
-    return { ms: parsed.seconds * 1000, days: null };
+    assertDurationLimit(parsed.days, parsed.timeMs, "DURATION");
+    return { ms: parsed.timeMs, days: parsed.days };
   }
   if (start !== null && end !== null) {
     if (start.dateOnly !== end.dateOnly) throw malformed("DTSTART and the end value use different value types");
     if (start.dateOnly) {
       const days = daysBetween(dateOf(start.wall), dateOf(end.wall));
       if (days < 0) throw malformed("an event ends before it starts");
+      assertDurationLimit(days, 0, "the event");
       return { ms: null, days };
     }
     if (start.utc !== null && end.utc !== null) {
       const ms = end.utc - start.utc;
       if (ms < 0) throw malformed("an event ends before it starts");
-      return { ms, days: null };
+      assertDurationLimit(0, ms, "the event");
+      return { ms, days: 0 };
     }
     if ((start.utc === null) !== (end.utc === null)) {
       throw malformed("DTSTART and DTEND mix absolute and floating values");
     }
     const ms = wallAsUtcMs(end.wall) - wallAsUtcMs(start.wall);
     if (ms < 0) throw malformed("an event ends before it starts");
-    return { ms, days: null };
+    assertDurationLimit(0, ms, "the event");
+    return { ms, days: 0 };
   }
   if (start === null) return null;
   if (kind === "VEVENT") {
-    return start.dateOnly ? { ms: null, days: 1 } : { ms: 0, days: null };
+    return start.dateOnly ? { ms: null, days: 1 } : { ms: 0, days: 0 };
   }
-  return start.dateOnly ? { ms: null, days: 0 } : { ms: 0, days: null };
+  return start.dateOnly ? { ms: null, days: 0 } : { ms: 0, days: 0 };
 }
 
 // --- Expansion -------------------------------------------------------------
@@ -809,6 +832,8 @@ export interface ExpandOptions extends Partial<IcalCaps> {
   timeZone?: string;
   /** Shared across resources in one request. */
   budget?: RecurrenceBudget;
+  /** Include occurrences whose STATUS is CANCELLED (detail views). */
+  includeCancelled?: boolean;
 }
 
 export interface ExpandedOccurrence {
@@ -872,6 +897,9 @@ export function expandResource(parsed: ParsedResource, options: ExpandOptions): 
     recurrenceId: IcalTime,
     override: boolean,
   ): void => {
+    // A cancelled override still replaces the generated instance, but it is
+    // not a visible occurrence. Detail views opt back in to explain the state.
+    if (!options.includeCancelled && component.status === "CANCELLED") return;
     const end = endOf(start, component);
     if (!overlaps(start, end, options.from, options.to, zone, fromWall, toWall)) return;
     const key = timeKey(recurrenceId);
@@ -961,7 +989,13 @@ function generateRule(
   const startDate = dateOf(start.wall);
   const durationMs = component.durationMs ?? 0;
   const durationDays = component.durationDays ?? 0;
-  const lookbackDays = Math.min(366, Math.ceil(durationMs / DAY_MS) + durationDays + 2);
+  // A long event can start before the window and still overlap it. The parser
+  // caps durations at MAX_DURATION_DAYS, so this lookback is bounded without
+  // hiding a valid occurrence (the old fixed 366-day cap did).
+  const lookbackDays = Math.min(
+    MAX_DURATION_DAYS + 2,
+    Math.ceil(durationMs / DAY_MS) + durationDays + 2,
+  );
   const windowStart = addDays(dateOf(wallClockInZone(zone, options.from)), -lookbackDays);
   const windowEnd = addDays(dateOf(wallClockInZone(zone, options.to)), 1);
   if (compareDates(startDate, windowEnd) > 0 && rule.count === null) {
@@ -1001,7 +1035,8 @@ function generateRule(
         start.dateOnly
           ? { ...date, hour: 0, minute: 0, second: 0 }
           : { ...date, hour: start.wall.hour, minute: start.wall.minute, second: start.wall.second };
-      const candidate = materializeWall(wall, start);
+      const candidate = materializeWall(wall, start, compareDates(date, startDate) === 0);
+      if (candidate === null) continue;
       if (rule.until !== null) {
         const past = rule.until.dateOnly
           ? compareDates(date, dateOf(rule.until.wall)) > 0
@@ -1169,21 +1204,30 @@ function yearlyCandidates(
   year: number,
   startDate: DateParts,
 ): PeriodCandidates {
-  const ordinalOnly =
-    rule.byMonth.length === 0 &&
-    rule.byMonthDay.length === 0 &&
-    rule.byDay.length > 0 &&
-    rule.byDay.every((spec) => spec.ordinal !== null);
-  if (ordinalOnly) {
+  const plainByDay = rule.byDay.filter((spec) => spec.ordinal === null);
+  const ordinalByDay = rule.byDay.filter((spec) => spec.ordinal !== null);
+  // With no BYMONTH, a numeric BYDAY is an ordinal within the year, even when
+  // BYMONTHDAY narrows the result. Running the monthly generator here would
+  // silently reinterpret "1MO" as the first Monday of every month.
+  if (rule.byMonth.length === 0 && ordinalByDay.length > 0) {
     const dates: DateParts[] = [];
-    for (const spec of rule.byDay) {
+    for (const spec of ordinalByDay) {
       const resolved = nthWeekdayOfYear(year, spec.weekday, spec.ordinal!);
-      if (resolved !== null) dates.push(resolved);
+      if (resolved !== null && matchesMonthDay(resolved, rule.byMonthDay)) dates.push(resolved);
     }
-    return { dates: dedupeDates(dates), scanned: 1 };
+    let scanned = Math.max(1, ordinalByDay.length);
+    if (plainByDay.length > 0) {
+      const total = daysBetween({ year, month: 1, day: 1 }, { year: year + 1, month: 1, day: 1 });
+      const weekdays = new Set(plainByDay.map((spec) => spec.weekday));
+      for (let offset = 0; offset < total; offset += 1) {
+        const date = addDays({ year, month: 1, day: 1 }, offset);
+        if (weekdays.has(weekday(date)) && matchesMonthDay(date, rule.byMonthDay)) dates.push(date);
+      }
+      scanned = Math.max(scanned, total);
+    }
+    return { dates: dedupeDates(dates), scanned };
   }
 
-  const plainByDay = rule.byDay.filter((spec) => spec.ordinal === null);
   if (rule.byMonth.length === 0 && rule.byMonthDay.length === 0 && plainByDay.length > 0) {
     const dates: DateParts[] = [];
     const total = daysBetween({ year, month: 1, day: 1 }, { year: year + 1, month: 1, day: 1 });
@@ -1191,11 +1235,6 @@ function yearlyCandidates(
     for (let offset = 0; offset < total; offset += 1) {
       const date = addDays({ year, month: 1, day: 1 }, offset);
       if (weekdays.has(weekday(date))) dates.push(date);
-    }
-    const ordinals = rule.byDay.filter((spec) => spec.ordinal !== null);
-    for (const spec of ordinals) {
-      const resolved = nthWeekdayOfYear(year, spec.weekday, spec.ordinal!);
-      if (resolved !== null) dates.push(resolved);
     }
     return { dates: dedupeDates(dates), scanned: total };
   }
@@ -1235,6 +1274,11 @@ function resolveMonthDay(year: number, month: number, day: number): number | nul
   return resolved >= 1 ? resolved : null;
 }
 
+function matchesMonthDay(date: DateParts, monthDays: number[]): boolean {
+  if (monthDays.length === 0) return true;
+  return monthDays.some((day) => resolveMonthDay(date.year, date.month, day) === date.day);
+}
+
 function nthWeekdayOfMonth(
   year: number,
   month: number,
@@ -1264,7 +1308,18 @@ function nthWeekdayOfYear(year: number, targetWeekday: number, ordinal: number):
   return offset >= 0 ? addDays({ year, month: 1, day: 1 }, offset) : null;
 }
 
-function materializeWall(wall: WallClock, template: IcalTime): IcalTime {
+function sameWall(a: WallClock, b: WallClock): boolean {
+  return (
+    a.year === b.year &&
+    a.month === b.month &&
+    a.day === b.day &&
+    a.hour === b.hour &&
+    a.minute === b.minute &&
+    a.second === b.second
+  );
+}
+
+function materializeWall(wall: WallClock, template: IcalTime, allowGap = false): IcalTime | null {
   if (template.dateOnly) {
     return {
       dateOnly: true,
@@ -1279,11 +1334,18 @@ function materializeWall(wall: WallClock, template: IcalTime): IcalTime {
     if (template.unresolved) {
       return { dateOnly: false, wall, timeZone: template.timeZone, utc: null, unresolved: true, raw: isoWall(wall) };
     }
+    const utc = wallClockToUtc(template.timeZone, wall);
+    // RFC 5545 recurrence instances in a nonexistent local-time gap are
+    // skipped without consuming COUNT. Intl resolves them with the pre-gap
+    // offset, so a round trip that changes the wall clock is the signal that
+    // the nominal instance does not exist. DTSTART itself is not generated by
+    // the rule: keep its RFC 5545 pre-gap interpretation.
+    if (!allowGap && !sameWall(wallClockInZone(template.timeZone, utc), wall)) return null;
     return {
       dateOnly: false,
       wall,
       timeZone: template.timeZone,
-      utc: wallClockToUtc(template.timeZone, wall),
+      utc,
       unresolved: false,
       raw: isoWall(wall),
     };
@@ -1314,23 +1376,46 @@ function endOf(start: IcalTime, component: ParsedComponent): IcalTime {
       raw: isoDate(endDate),
     };
   }
+  const days = component.durationDays ?? 0;
   const ms = component.durationMs ?? 0;
   if (start.utc !== null) {
-    const utc = start.utc + ms;
+    let utc: number;
+    if (days > 0 && start.timeZone !== null) {
+      // Days and weeks are nominal: keep the same wall-clock time on the
+      // target date and only then let the zone decide the offset.
+      const target = addDays(dateOf(start.wall), days);
+      const baseWall: WallClock = {
+        ...target,
+        hour: start.wall.hour,
+        minute: start.wall.minute,
+        second: start.wall.second,
+      };
+      utc = wallClockToUtc(start.timeZone, baseWall) + ms;
+    } else {
+      utc = start.utc + days * DAY_MS + ms;
+    }
     if (start.timeZone !== null) {
+      const wall = wallClockInZone(start.timeZone, utc);
       return {
         dateOnly: false,
-        wall: wallClockInZone(start.timeZone, utc),
+        wall,
         timeZone: start.timeZone,
         utc,
         unresolved: false,
-        raw: isoWall(wallClockInZone(start.timeZone, utc)),
+        raw: isoWall(wall),
       };
     }
     const wall = wallFromUtcMs(utc);
     return { dateOnly: false, wall, timeZone: null, utc, unresolved: false, raw: `${isoWall(wall)}Z` };
   }
-  const wall = wallFromUtcMs(wallAsUtcMs(start.wall) + ms);
+  const target = addDays(dateOf(start.wall), days);
+  const baseWall: WallClock = {
+    ...target,
+    hour: start.wall.hour,
+    minute: start.wall.minute,
+    second: start.wall.second,
+  };
+  const wall = wallFromUtcMs(wallAsUtcMs(baseWall) + ms);
   return {
     dateOnly: false,
     wall,

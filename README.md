@@ -528,10 +528,12 @@ all-day events, and `null` for a floating time or an unresolved `TZID`.
 `startWall` / `endWall` and `timeZone` keep the resource's own wall clock and
 zone. Recurrence is expanded server-side; each occurrence has its own
 `recurrenceId` (`null` for a one-off event), and `isOverride` marks a
-`RECURRENCE-ID` component. Occurrences are sorted by start. `total` counts
-matches before `limit`; `truncatedReason` is `"limit"`, `"recurrence_budget"`
-or `"occurrence_cap"`. `readOnlyReason` is `"recurring"` or `"scheduling"`
-when the resource may not be written; see [Writes](#writes).
+`RECURRENCE-ID` component. Occurrences with `STATUS:CANCELLED` are omitted,
+and a cancelled override still suppresses the generated instance it replaces.
+Occurrences are sorted by start. `total` counts matches before `limit`;
+`truncatedReason` is `"limit"`, `"recurrence_budget"` or `"occurrence_cap"`.
+`readOnlyReason` is `"recurring"` or `"scheduling"` when the resource may not
+be written; see [Writes](#writes).
 
 Floating and unresolved-`TZID` occurrences name no instant, so they are
 excluded from range results; `get_event` still reports them. Malformed or
@@ -551,6 +553,7 @@ The response carries the same fields as a listed event plus:
   "recurring": false,
   "scheduling": false,
   "recurrenceRule": null,
+  "status": "CONFIRMED",
   "untrustedCalendarContent": {
     "summary": "Standup",
     "description": "Daily sync",
@@ -567,7 +570,8 @@ The response carries the same fields as a listed event plus:
       "timeZone": "Europe/Rome",
       "timeZoneUnresolved": false,
       "isOverride": false,
-      "summary": "Standup"
+      "summary": "Standup",
+      "status": "CONFIRMED"
     }
   ],
   "from": "2026-10-21T00:00:00+02:00",
@@ -581,8 +585,10 @@ The response carries the same fields as a listed event plus:
 `etag` is the strong validator `update_event` requires. The top-level
 `start`/`end` describe the master event; `occurrences` is the window, with
 floating or unresolved occurrences omitted from the window but still visible
-in the master detail. `untrustedCalendarContent` marks the text as third-party
-content. A missing id returns `404 not_found`.
+in the master detail. Unlike the list, the detail view keeps occurrences with
+`STATUS:CANCELLED` and reports `status` on the master and on each occurrence,
+so a cancelled meeting is still explainable. `untrustedCalendarContent` marks
+the text as third-party content. A missing id returns `404 not_found`.
 
 ### `POST /v1/calendars/:calendar/events` and `PUT /v1/calendars/:calendar/events/:id`
 
@@ -745,12 +751,12 @@ and `.../trash` over REST. Both take the id from a search result
   fallback is the path in production.
 - **Re-running after a success or a 404 is safe.** A uid that is no longer in
   the source mailbox returns `404 message_not_found`; an expired id returns
-  `409 uidvalidity_mismatch` (re-run the search first). A connection that drops
-  after the move has started is different: the call returns `502
-  mutation_state_unknown` instead of retrying, because the COPY fallback is not
-  atomic — the copy may already be in the destination while the source still
-  holds the message, and a blind retry would file a second one. Check both
-  mailboxes before acting.
+  `409 uidvalidity_mismatch` (re-run the search first). A failure after the
+  move has started — a dropped connection, a timeout, or a refused follow-up
+  command — is different: the call returns `502 mutation_state_unknown` instead
+  of retrying, because the COPY fallback is not atomic — the copy may already
+  be in the destination while the source still holds the message, and a blind
+  retry would file a second one. Check both mailboxes before acting.
 - **Audit is live only.** Each mutation logs one structured `mail_mutation`
   line (principal, action, mailbox, uid, destination — no subject, no body) that
   `wrangler tail` shows. There is no durable mutation history; the `SEND_LEDGER`

@@ -604,13 +604,21 @@ async function checkMcp({
 
   const actual = new Set(tools.map((tool) => tool.name));
   const expected = expectedToolNames({ calendars, calendarWrite });
+  const expectedSet = new Set(expected);
   const forbidden = forbiddenToolNames({ calendars, calendarWrite });
+  const forbiddenSet = new Set(forbidden);
   const missing = expected.filter((toolName) => !actual.has(toolName));
-  const unexpected = forbidden.filter((toolName) => actual.has(toolName));
-  if (missing.length > 0 || unexpected.length > 0) {
+  const disabled = forbidden.filter((toolName) => actual.has(toolName));
+  // The deployment's tool set is exact, not merely a superset of the enabled
+  // domain: an unknown extra (for example a reminder tool) must fail too.
+  const unknown = [...actual].filter(
+    (toolName) => !expectedSet.has(toolName) && !forbiddenSet.has(toolName),
+  );
+  if (missing.length > 0 || disabled.length > 0 || unknown.length > 0) {
     const problems = [];
     if (missing.length > 0) problems.push(`missing ${missing.join(", ")}`);
-    if (unexpected.length > 0) problems.push(`present but disabled: ${unexpected.join(", ")}`);
+    if (disabled.length > 0) problems.push(`present but disabled: ${disabled.join(", ")}`);
+    if (unknown.length > 0) problems.push(`unexpected: ${unknown.join(", ")}`);
     return {
       name,
       ok: false,

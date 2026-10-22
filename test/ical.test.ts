@@ -384,6 +384,16 @@ describe("recurrence rule refusals", () => {
       ),
     ).toBe("malformed");
   });
+
+  it("refuses an event whose DTEND exceeds the duration bound", () => {
+    expect(
+      codes(
+        calendar(
+          event("evt-long", "DTSTART:20200101T000000Z", "DTEND:20350101T000000Z"),
+        ),
+      ),
+    ).toBe("malformed");
+  });
 });
 
 describe("expandResource", () => {
@@ -408,6 +418,84 @@ describe("expandResource", () => {
     ]);
     expect(occurrences[2]!.start.utc).toBe(Date.UTC(2026, 2, 30, 8));
     expect(occurrences[2]!.end.utc! - occurrences[2]!.start.utc!).toBe(3_600_000);
+  });
+
+  it("treats DURATION days as nominal across a DST change", () => {
+    const source = calendar(
+      event(
+        "evt-duration",
+        "DTSTART;TZID=Europe/Rome:20260328T120000",
+        "DURATION:P1D",
+      ),
+    );
+    const parsed = parseResource(source);
+    expect(parsed.master.durationDays).toBe(1);
+    expect(parsed.master.durationMs).toBe(0);
+
+    const { occurrences } = expand(source, "2026-03-28T00:00:00Z", "2026-03-30T00:00:00Z");
+    expect(occurrences).toHaveLength(1);
+    expect(isoInZone(occurrences[0]!.end.utc!, "Europe/Rome")).toBe("2026-03-29T12:00:00+02:00");
+    // The wall clock stays at 12:00, so the elapsed time is 23 hours.
+    expect(occurrences[0]!.end.utc! - occurrences[0]!.start.utc!).toBe(23 * 3_600_000);
+  });
+
+  it("skips a nonexistent DST hour without consuming COUNT", () => {
+    const source = calendar(
+      event(
+        "evt-gap",
+        "DTSTART;TZID=Europe/Rome:20260328T023000",
+        "DURATION:PT30M",
+        "RRULE:FREQ=DAILY;COUNT=3",
+      ),
+    );
+    const { occurrences } = expand(source, "2026-03-28T00:00:00Z", "2026-04-02T00:00:00Z");
+    expect(occurrences.map((entry) => isoInZone(entry.start.utc!, "Europe/Rome"))).toEqual([
+      "2026-03-28T02:30:00+01:00",
+      "2026-03-30T02:30:00+02:00",
+      "2026-03-31T02:30:00+02:00",
+    ]);
+  });
+
+  it("keeps a DTSTART that falls in the spring DST gap", () => {
+    const source = calendar(
+      event(
+        "evt-gap-start",
+        "DTSTART;TZID=Europe/Rome:20260329T023000",
+        "DURATION:PT30M",
+        "RRULE:FREQ=DAILY;COUNT=2",
+      ),
+    );
+    const { occurrences } = expand(source, "2026-03-29T00:00:00Z", "2026-04-01T00:00:00Z");
+    expect(occurrences.map((entry) => isoInZone(entry.start.utc!, "Europe/Rome"))).toEqual([
+      "2026-03-29T03:30:00+02:00",
+      "2026-03-30T02:30:00+02:00",
+    ]);
+  });
+
+  it("uses a yearly ordinal BYDAY when BYMONTHDAY is present", () => {
+    const source = calendar(
+      event(
+        "evt-yearly-ordinal",
+        "DTSTART:20260105T100000Z",
+        "RRULE:FREQ=YEARLY;BYDAY=1MO;BYMONTHDAY=5",
+      ),
+    );
+    const { occurrences } = expand(source, "2026-01-01T00:00:00Z", "2027-01-01T00:00:00Z");
+    expect(occurrences.map((entry) => entry.start.utc)).toEqual([Date.UTC(2026, 0, 5, 10)]);
+  });
+
+  it("looks back by the full event duration, not a fixed 366 days", () => {
+    const source = calendar(
+      event(
+        "evt-long",
+        "DTSTART:20200101T000000Z",
+        "DURATION:P1000D",
+        "RRULE:FREQ=DAILY;INTERVAL=52",
+      ),
+    );
+    const result = expand(source, "2026-10-22T00:00:00Z", "2026-10-24T00:00:00Z");
+    expect(result.truncated).toBe(false);
+    expect(result.occurrences).toHaveLength(19);
   });
 
   it("expands COUNT rules from DTSTART, not from the window", () => {

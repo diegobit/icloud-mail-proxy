@@ -230,6 +230,15 @@ longer exists.
   `05264555-f39e-4e6b-b684-33b7f26435f3`. The live surface is 13 tools with
   `CALENDAR_WRITE=1`; writes off would be 11. `verifyDeployment` passed and
   `/v1/reminder-lists` returns 404.
+- Codex review at `b7c2648` requested changes; all findings are fixed in the
+  working tree with regression tests: IMAP failures after COPY are
+  `mutation_state_unknown`; `STATUS:CANCELLED` occurrences are hidden from
+  lists and exposed in the detail; DST-gap instances are skipped without
+  consuming `COUNT`; day/week `DURATION` is nominal; a yearly ordinal `BYDAY`
+  intersects `BYMONTHDAY`; lookback follows the bounded event duration; the
+  OAuth provider cache is keyed by origin and scope profile; and verify rejects
+  unknown tools. The local suite is 664 tests / 35 files, typecheck and bundle
+  clean. Redeployment from the fixed commit is pending.
 - PR #11 is retitled "Calendars over CalDAV (calendar-only)" and remains a
   draft pending the two manual checks below.
 
@@ -257,6 +266,8 @@ longer exists.
   13 tools, OAuth metadata, `?all=1` (five calendars), a seven-day
   `list_events` on `Scratch`, and a 404 on `/v1/reminder-lists`. CI on the PR
   is green at head `0300cd6`.
+- 2026-10-22, Codex review fixes: regression tests cover every finding; the
+  full suite is 664 tests / 35 files, with typecheck and bundle clean.
 
 ## Open items
 

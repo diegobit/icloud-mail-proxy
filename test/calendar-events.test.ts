@@ -606,6 +606,59 @@ describe("listEvents", () => {
     expect(result.events.every((entry) => entry.readOnlyReason === "recurring")).toBe(true);
   });
 
+  it("omits cancelled events and cancelled overrides from the list", async () => {
+    stubFetch({
+      query: multistatus("cal-lavoro", [
+        {
+          id: "evt-cancelled",
+          ics: calendar(
+            event(
+              "evt-cancelled",
+              "DTSTART:20261021T080000Z",
+              "DTEND:20261021T090000Z",
+              "STATUS:CANCELLED",
+              "SUMMARY:Cancelled",
+            ),
+          ),
+        },
+        {
+          id: "evt-series",
+          ics: calendar(
+            event(
+              "evt-series",
+              "DTSTART:20261021T090000Z",
+              "DTEND:20261021T100000Z",
+              "RRULE:FREQ=WEEKLY;COUNT=3",
+              "SUMMARY:Series",
+            ),
+            vevent(
+              "UID:evt-series",
+              "DTSTAMP:20260101T000000Z",
+              "RECURRENCE-ID:20261028T090000Z",
+              "DTSTART:20261028T090000Z",
+              "DTEND:20261028T100000Z",
+              "STATUS:CANCELLED",
+              "SUMMARY:Cancelled this week",
+            ),
+          ),
+        },
+      ]),
+    });
+
+    const result = await list(makeEnv(), {
+      calendar: "Lavoro",
+      from: "2026-10-21",
+      to: "2026-11-10",
+    });
+
+    expect(result.events.map((entry) => entry.summary)).toEqual(["Series", "Series"]);
+    expect(result.events.map((entry) => entry.recurrenceId)).toEqual([
+      "2026-10-21T09:00:00Z",
+      "2026-11-04T09:00:00Z",
+    ]);
+    expect(result.total).toBe(2);
+  });
+
   it("marks a scheduling resource as read-only", async () => {
     stubFetch({
       query: multistatus("cal-lavoro", [
@@ -774,6 +827,39 @@ describe("getEvent", () => {
     const body = reportBody(calls);
     expect(body).toContain("calendar-multiget");
     expect(body).toContain(`<D:href>/${DSID}/calendars/cal-lavoro/evt-r.ics</D:href>`);
+  });
+
+  it("keeps cancelled occurrences and their status in the detail view", async () => {
+    const cancelled = calendar(
+      event(
+        "evt-c",
+        "DTSTART:20261021T090000Z",
+        "DTEND:20261021T100000Z",
+        "RRULE:FREQ=WEEKLY;COUNT=3",
+        "STATUS:CONFIRMED",
+        "SUMMARY:Series",
+      ),
+      vevent(
+        "UID:evt-c",
+        "DTSTAMP:20260101T000000Z",
+        "RECURRENCE-ID:20261028T090000Z",
+        "DTSTART:20261028T090000Z",
+        "DTEND:20261028T100000Z",
+        "STATUS:CANCELLED",
+        "SUMMARY:Cancelled this week",
+      ),
+    );
+    stubFetch({
+      multiget: multistatus("cal-lavoro", [{ id: "evt-c", ics: cancelled, etag: '"etag-c"' }]),
+    });
+
+    const result = await detail(makeEnv(), { calendar: "Lavoro", id: "evt-c" });
+    expect(result.status).toBe("CONFIRMED");
+    expect(result.occurrences.map((entry) => entry.status)).toEqual([
+      "CONFIRMED",
+      "CANCELLED",
+      "CONFIRMED",
+    ]);
   });
 
   it("returns 404 when the multiget answers with a 404 response", async () => {
