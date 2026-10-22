@@ -221,14 +221,17 @@ longer exists.
 - Calendar implementation, tests, typecheck and bundle: green before the
   reminder removal.
 - Reminder removal: source, tests, setup/verify, docs and config updated;
-  local suite green.
+  final local suite 651 tests / 35 files, typecheck and bundle clean.
 - Production calendar acceptance (pre-removal version): create, rename, stale
   ETag conflict, recurring refusal and scheduling refusal all passed against
   `Scratch`. The acceptance event remains on `Scratch`; there is no delete
   tool.
-- Production is still on the pre-removal version until this branch is
-  deployed. The expected production surface after deploy is 13 tools
-  (`CALENDAR_WRITE=1`), and 11 with writes off.
+- Calendar-only release deployed to production as version
+  `05264555-f39e-4e6b-b684-33b7f26435f3`. The live surface is 13 tools with
+  `CALENDAR_WRITE=1`; writes off would be 11. `verifyDeployment` passed and
+  `/v1/reminder-lists` returns 404.
+- PR #11 is retitled "Calendars over CalDAV (calendar-only)" and remains a
+  draft pending the two manual checks below.
 
 ## Verification log
 
@@ -250,6 +253,10 @@ longer exists.
 - 2026-10-22, CloudKit research: no supported Worker-only path; recommended a
   macOS EventKit companion behind Cloudflare Tunnel + Access as a separate
   project.
+- 2026-10-22, calendar-only production deploy: `verifyDeployment` passed with
+  13 tools, OAuth metadata, `?all=1` (five calendars), a seven-day
+  `list_events` on `Scratch`, and a 404 on `/v1/reminder-lists`. CI on the PR
+  is green at head `0300cd6`.
 
 ## Open items
 
@@ -260,5 +267,4 @@ longer exists.
   list and its reminder, the legacy `Reminders` test reminder, and
   `acceptance-reminder-2026-10-24` / `mcp-test-2026-10-23`. They do not appear
   in the Reminders app. No delete tool exists in this Worker.
-- Deploy this branch to production and update PR #11 from the combined
-  calendar+reminder draft to the calendar-only result.
+- Mark PR #11 ready and merge it after the manual checks.
