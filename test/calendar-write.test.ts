@@ -2,9 +2,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { clearCalDavDiscoveryCache } from "../src/caldav";
 import {
   createEvent,
+  deleteEvent,
   updateEvent,
   type CalendarWriteOptions,
   type CreateEventInput,
+  type DeleteEventInput,
   type EventWriteResult,
   type UpdateEventInput,
 } from "../src/calendar-write";
@@ -135,6 +137,16 @@ const SCHEDULED = calendar(
   ),
 );
 
+const VTODO = calendar(
+  [
+    "BEGIN:VTODO",
+    "UID:todo",
+    "DTSTAMP:20260101T000000Z",
+    "SUMMARY:Task",
+    "END:VTODO",
+  ].join("\r\n"),
+);
+
 interface Resource {
   id: string;
   ics: string;
@@ -178,6 +190,8 @@ interface StubOptions {
   multiget?: string;
   put?: (call: Call) => Response | Promise<Response>;
   putThrows?: boolean;
+  delete?: (call: Call) => Response | Promise<Response>;
+  deleteThrows?: boolean;
 }
 
 function headerMap(headers: HeadersInit | undefined): Record<string, string> {
@@ -217,6 +231,11 @@ function stubFetch(options: StubOptions = {}): Call[] {
         if (options.put !== undefined) return options.put(call);
         return new Response("", { status: 201, headers: { etag: '"etag-new"' } });
       }
+      if (method === "DELETE") {
+        if (options.deleteThrows) throw new TypeError("network down");
+        if (options.delete !== undefined) return options.delete(call);
+        return new Response(null, { status: 204 });
+      }
       throw new Error(`unexpected request: ${method} ${url}`);
     }),
   );
@@ -226,6 +245,12 @@ function stubFetch(options: StubOptions = {}): Call[] {
 function putCall(calls: Call[]): Call {
   const call = calls.find((entry) => entry.method === "PUT");
   if (call === undefined) throw new Error("no PUT was sent");
+  return call;
+}
+
+function deleteCall(calls: Call[]): Call {
+  const call = calls.find((entry) => entry.method === "DELETE");
+  if (call === undefined) throw new Error("no DELETE was sent");
   return call;
 }
 
@@ -264,6 +289,14 @@ function update(
   options: CalendarWriteOptions = {},
 ): Promise<EventWriteResult> {
   return updateEvent(env, input, { now: NOW, principal: "tester", ...options });
+}
+
+function remove(
+  env: Env,
+  input: DeleteEventInput,
+  options: CalendarWriteOptions = {},
+): Promise<unknown> {
+  return deleteEvent(env, input, { now: NOW, principal: "tester", ...options });
 }
 
 function errorCode(error: unknown): string {
@@ -891,6 +924,214 @@ describe("updateEvent", () => {
   });
 });
 
+describe("deleteEvent", () => {
+  it("deletes one event with If-Match and audits metadata only", async () => {
+    const calls = stubFetch({
+      multiget: multistatus("cal-lavoro", [
+        { id: "plain", ics: PLAIN, etag: '"etag-plain"' },
+      ]),
+    });
+    const logs = captureLogs();
+
+    const result = (await remove(makeEnv(), {
+      calendar: "Lavoro",
+      id: "plain",
+      etag: '"etag-plain"',
+    })) as Awaited<ReturnType<typeof deleteEvent>>;
+
+    expect(result).toMatchObject({
+      ok: true,
+      calendar: "Lavoro",
+      collectionId: "cal-lavoro",
+      resourceId: "plain",
+      uid: "plain",
+      summary: "Original",
+    });
+
+    const call = deleteCall(calls);
+    expect(call.url).toBe(
+      `https://p42-caldav.icloud.com/${DSID}/calendars/cal-lavoro/plain.ics`,
+    );
+    expect(call.headers["If-Match"]).toBe('"etag-plain"');
+    expect(call.body).toBe("");
+
+    expect(logs).toHaveLength(1);
+    expect(logs[0]).toContain('"action":"delete_event"');
+    expect(logs[0]).toContain('"principal":"tester"');
+    expect(logs[0]).toContain('"outcome":"ok"');
+    expect(logs[0]).not.toContain("Original");
+    expect(logs[0]).not.toContain("Keep this");
+  });
+
+  it("rejects a stale ETag before the DELETE and logs the conflict", async () => {
+    const calls = stubFetch({
+      multiget: multistatus("cal-lavoro", [
+        { id: "plain", ics: PLAIN, etag: '"etag-newer"' },
+      ]),
+    });
+    const logs = captureLogs();
+
+    await expect(
+      remove(makeEnv(), { calendar: "Lavoro", id: "plain", etag: '"etag-old"' }),
+    ).rejects.toSatisfy((error: unknown) => {
+      expect(errorCode(error)).toBe("conflict");
+      expect((error as Error).message).toContain("call get_event again");
+      return true;
+    });
+    expect(calls.some((call) => call.method === "DELETE")).toBe(false);
+    expect(logs[0]).toContain('"outcome":"conflict"');
+  });
+
+  it("rejects weak, wildcard, list and malformed ETags without the network", async () => {
+    const calls = stubFetch();
+    for (const etag of ['W/"etag"', "*", '"a", "b"', "etag", '"unterminated']) {
+      await expect(
+        remove(makeEnv(), { calendar: "Lavoro", id: "plain", etag }),
+      ).rejects.toSatisfy((error: unknown) => errorCode(error) === "invalid_etag");
+    }
+    expect(calls).toHaveLength(0);
+  });
+
+  it("refuses recurring, scheduling and non-event resources", async () => {
+    stubFetch({
+      multiget: multistatus("cal-lavoro", [
+        { id: "recurring", ics: RECURRING, etag: '"etag-recurring"' },
+      ]),
+    });
+    await expect(
+      remove(makeEnv(), {
+        calendar: "Lavoro",
+        id: "recurring",
+        etag: '"etag-recurring"',
+      }),
+    ).rejects.toSatisfy((error: unknown) => errorCode(error) === "recurring_not_supported");
+
+    clearCalDavDiscoveryCache();
+    stubFetch({
+      multiget: multistatus("cal-lavoro", [
+        { id: "scheduled", ics: SCHEDULED, etag: '"etag-scheduled"' },
+      ]),
+    });
+    await expect(
+      remove(makeEnv(), {
+        calendar: "Lavoro",
+        id: "scheduled",
+        etag: '"etag-scheduled"',
+      }),
+    ).rejects.toSatisfy((error: unknown) => errorCode(error) === "scheduling_not_supported");
+
+    clearCalDavDiscoveryCache();
+    const todoCalls = stubFetch({
+      multiget: multistatus("cal-lavoro", [{ id: "todo", ics: VTODO, etag: '"etag-todo"' }]),
+    });
+    await expect(
+      remove(makeEnv(), { calendar: "Lavoro", id: "todo", etag: '"etag-todo"' }),
+    ).rejects.toSatisfy((error: unknown) => errorCode(error) === "not_an_event");
+    expect(todoCalls.some((call) => call.method === "DELETE")).toBe(false);
+  });
+
+  it("refuses a read-only collection and a missing event", async () => {
+    const calls = stubFetch();
+    await expect(
+      remove(makeEnv(), {
+        calendar: "Casa SP",
+        id: "plain",
+        etag: '"etag-plain"',
+      }),
+    ).rejects.toSatisfy((error: unknown) => errorCode(error) === "read_only_collection");
+    expect(calls.some((call) => call.method === "REPORT" || call.method === "DELETE")).toBe(false);
+
+    clearCalDavDiscoveryCache();
+    const missingCalls = stubFetch({
+      multiget: multistatus("cal-lavoro", [{ id: "missing", ics: "", status: 404 }]),
+    });
+    await expect(
+      remove(makeEnv(), {
+        calendar: "Lavoro",
+        id: "missing",
+        etag: '"etag-missing"',
+      }),
+    ).rejects.toSatisfy((error: unknown) => errorCode(error) === "not_found");
+    expect(missingCalls.some((call) => call.method === "DELETE")).toBe(false);
+  });
+
+  it("refuses while writes are disabled, without touching the network", async () => {
+    const calls = stubFetch();
+    await expect(
+      remove(makeEnv({ CALENDAR_WRITE: "0" }), {
+        calendar: "Lavoro",
+        id: "plain",
+        etag: '"etag-plain"',
+      }),
+    ).rejects.toSatisfy((error: unknown) => errorCode(error) === "not_supported");
+    await expect(
+      remove(makeEnv({ ALLOWED_CALENDARS: "" }), {
+        calendar: "Lavoro",
+        id: "plain",
+        etag: '"etag-plain"',
+      }),
+    ).rejects.toSatisfy((error: unknown) => errorCode(error) === "not_supported");
+    expect(calls).toHaveLength(0);
+  });
+
+  it("fails closed without a limiter and refuses a denied bucket", async () => {
+    const calls = stubFetch();
+    await expect(
+      remove(makeEnv({ CALENDAR_WRITE_LIMITER: undefined }), {
+        calendar: "Lavoro",
+        id: "plain",
+        etag: '"etag-plain"',
+      }),
+    ).rejects.toSatisfy((error: unknown) => errorCode(error) === "configuration_error");
+    expect(calls).toHaveLength(0);
+
+    const denied = fakeLimiter(false);
+    await expect(
+      remove(
+        makeEnv({ CALENDAR_WRITE_LIMITER: denied }),
+        { calendar: "Lavoro", id: "plain", etag: '"etag-plain"' },
+        { rateLimitKey: "203.0.113.9" },
+      ),
+    ).rejects.toSatisfy((error: unknown) => errorCode(error) === "rate_limited");
+    expect(calls).toHaveLength(0);
+    expect(denied.keys).toEqual(["203.0.113.9"]);
+  });
+
+  it("maps a DELETE precondition failure to conflict", async () => {
+    const calls = stubFetch({
+      multiget: multistatus("cal-lavoro", [
+        { id: "plain", ics: PLAIN, etag: '"etag-plain"' },
+      ]),
+      delete: () => new Response("", { status: 412 }),
+    });
+    const logs = captureLogs();
+    await expect(
+      remove(makeEnv(), { calendar: "Lavoro", id: "plain", etag: '"etag-plain"' }),
+    ).rejects.toSatisfy((error: unknown) => errorCode(error) === "conflict");
+    expect(calls.some((call) => call.method === "DELETE")).toBe(true);
+    expect(logs[0]).toContain('"outcome":"conflict"');
+  });
+
+  it("reports mutation_state_unknown when the DELETE connection drops", async () => {
+    stubFetch({
+      multiget: multistatus("cal-lavoro", [
+        { id: "plain", ics: PLAIN, etag: '"etag-plain"' },
+      ]),
+      deleteThrows: true,
+    });
+    const logs = captureLogs();
+    await expect(
+      remove(makeEnv(), { calendar: "Lavoro", id: "plain", etag: '"etag-plain"' }),
+    ).rejects.toSatisfy((error: unknown) => {
+      expect(errorCode(error)).toBe("mutation_state_unknown");
+      expect((error as Error).message).toContain("plain");
+      expect((error as Error).message).toContain("get_event");
+      return true;
+    });
+    expect(logs[0]).toContain('"outcome":"mutation_state_unknown"');
+  });
+});
+
 describe("REST event writes", () => {
   async function rest(
     method: string,
@@ -1022,5 +1263,45 @@ describe("REST event writes", () => {
     });
     expect(stale.status).toBe(409);
     expect(stale.body.error.code).toBe("conflict");
+  });
+
+  it("deletes through DELETE with If-Match", async () => {
+    stubFetch({
+      multiget: multistatus("cal-lavoro", [
+        { id: "plain", ics: PLAIN, etag: '"etag-plain"' },
+      ]),
+    });
+    const response = await rest(
+      "DELETE",
+      "/v1/calendars/Lavoro/events/plain",
+      undefined,
+      makeEnv(),
+      { "If-Match": '"etag-plain"' },
+    );
+    expect(response.status).toBe(200);
+    expect(response.body).toMatchObject({
+      ok: true,
+      calendar: "Lavoro",
+      resourceId: "plain",
+      uid: "plain",
+    });
+  });
+
+  it("requires If-Match and answers not_supported while writes are disabled", async () => {
+    const calls = stubFetch();
+    const missing = await rest("DELETE", "/v1/calendars/Lavoro/events/plain");
+    expect(missing.status).toBe(400);
+    expect(missing.body.error.code).toBe("invalid_etag");
+
+    const disabled = await rest(
+      "DELETE",
+      "/v1/calendars/Lavoro/events/plain",
+      undefined,
+      makeEnv({ CALENDAR_WRITE: "0" }),
+      { "If-Match": '"etag-plain"' },
+    );
+    expect(disabled.status).toBe(404);
+    expect(disabled.body.error.code).toBe("not_supported");
+    expect(calls).toHaveLength(0);
   });
 });

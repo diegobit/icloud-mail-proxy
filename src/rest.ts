@@ -7,7 +7,7 @@ import { CalDavError } from "./caldav";
 import { calendarWritesEnabled, calendarsEnabled } from "./calendar-config";
 import { listCalendars } from "./calendar-core";
 import { getEvent, listEvents } from "./calendar-events";
-import { createEvent, updateEvent } from "./calendar-write";
+import { createEvent, deleteEvent, updateEvent } from "./calendar-write";
 import {
   ApiError,
   getAttachment,
@@ -412,6 +412,36 @@ async function handleUpdateEvent(
   return json(result);
 }
 
+/** DELETE /v1/calendars/:calendar/events/:id with If-Match. */
+async function handleDeleteEvent(
+  request: Request,
+  calendarSegment: string,
+  idSegment: string,
+  env: Env,
+): Promise<Response> {
+  const disabled = writeDisabled(env);
+  if (disabled !== null) return disabled;
+  const calendar = decodeSegment(calendarSegment, "calendar");
+  const id = decodeSegment(idSegment, "event id");
+  const etag = request.headers.get("If-Match");
+  if (etag === null) {
+    return errorBody(
+      "invalid_etag",
+      "DELETE requires the exact strong ETag from get_event in the If-Match header",
+      400,
+    );
+  }
+  const result = await deleteEvent(
+    env,
+    { calendar, id, etag },
+    {
+      principal: "bearer",
+      rateLimitKey: request.headers.get("CF-Connecting-IP") ?? "unknown",
+    },
+  );
+  return json(result);
+}
+
 /**
  * GET /healthz: prove the Worker can actually reach and authenticate to
  * imap.mail.me.com right now (LOGIN + LOGOUT, no EXAMINE, nothing else). An
@@ -503,6 +533,17 @@ export async function handleRest(request: Request, env: Env): Promise<Response> 
       segments[3] === "events"
     ) {
       return await handleUpdateEvent(request, segments[2], segments[4], env);
+    }
+
+    // DELETE /v1/calendars/:calendar/events/:id
+    if (
+      request.method === "DELETE" &&
+      segments.length === 5 &&
+      segments[0] === "v1" &&
+      segments[1] === "calendars" &&
+      segments[3] === "events"
+    ) {
+      return await handleDeleteEvent(request, segments[2], segments[4], env);
     }
 
     // POST /v1/search

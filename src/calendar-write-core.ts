@@ -26,7 +26,7 @@ export const FORBIDDEN_WRITE_PROPERTIES = new Set([
   "organizer",
 ]);
 
-export type WriteAction = "create_event" | "update_event";
+export type WriteAction = "create_event" | "update_event" | "delete_event";
 
 export interface WriteOptions {
   /** Recorded in the audit line; defaults to "unknown". */
@@ -178,7 +178,7 @@ function logWrite(
 
 export function reconcileMutationError(
   error: unknown,
-  action: "create" | "update",
+  action: "create" | "update" | "delete",
   id: string,
   readTool: "get_event",
 ): unknown {

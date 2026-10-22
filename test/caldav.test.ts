@@ -7,6 +7,7 @@ import {
   collectionPath,
   componentNames,
   createCalDav,
+  deleteResource,
   displayName,
   parseMultistatus,
   propHref,
@@ -243,6 +244,16 @@ describe("request builders", () => {
 
     expect(() => putResource("/a/x.ics", ICS, "unquoted")).toThrow(CalDavError);
     expect(() => putResource("/a/x.ics", ICS, '"a\r\nb"')).toThrow(CalDavError);
+  });
+
+  it("builds a conditional DELETE with a strong ETag", () => {
+    const remove = deleteResource("/a/x.ics", '"mq7p46um"');
+    expect(remove.init.method).toBe("DELETE");
+    expect(new Headers(remove.init.headers).get("if-match")).toBe('"mq7p46um"');
+    expect(remove.init.body).toBeUndefined();
+
+    expect(() => deleteResource("/a/x.ics", 'W/"mq7p46um"')).toThrow(CalDavError);
+    expect(() => deleteResource("/a/x.ics", "unquoted")).toThrow(CalDavError);
   });
 
   it("encodes collection and resource ids and refuses unsafe ones", () => {
@@ -548,6 +559,30 @@ describe("writes", () => {
   it("refuses an invalid ETag before any request", async () => {
     const { caldav, calls } = await ready([]);
     expect(await codeOf(caldav.put(resourcePath(COLLECTION_ID, UID), ICS, "abc"))).toBe("invalid_argument");
+    expect(calls).toHaveLength(2);
+  });
+
+  it("deletes with If-Match", async () => {
+    const { caldav, calls } = await ready([new Response(null, { status: 204 })]);
+    const response = await caldav.delete(resourcePath(COLLECTION_ID, UID), '"old"');
+    expect(response.status).toBe(204);
+    expect(calls[2].init.method).toBe("DELETE");
+    expect(new Headers(calls[2].init.headers).get("if-match")).toBe('"old"');
+    expect(calls[2].init.body).toBeUndefined();
+  });
+
+  it("maps a stale DELETE to conflict", async () => {
+    const { caldav } = await ready([xml("", 412)]);
+    expect(await codeOf(caldav.delete(resourcePath(COLLECTION_ID, UID), '"old"'))).toBe(
+      "conflict",
+    );
+  });
+
+  it("refuses a weak DELETE ETag before any request", async () => {
+    const { caldav, calls } = await ready([]);
+    expect(await codeOf(caldav.delete(resourcePath(COLLECTION_ID, UID), 'W/"old"'))).toBe(
+      "invalid_argument",
+    );
     expect(calls).toHaveLength(2);
   });
 });
