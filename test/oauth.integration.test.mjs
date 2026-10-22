@@ -150,7 +150,12 @@ describe("OAuth on /mcp, end to end", () => {
     const approved = await fetch(`${current.base}/authorize/consent`, {
       method: "POST",
       headers: { ...FORM, Cookie: cookie.split(";")[0] },
-      body: new URLSearchParams({ handle, action: "approve", epoch: hidden(consentHtml, "epoch") }),
+      body: new URLSearchParams({
+        handle,
+        action: "approve",
+        epoch: hidden(consentHtml, "epoch"),
+        scope: "mail:read",
+      }),
       redirect: "manual",
     });
     expect(approved.status).toBe(302);
@@ -304,7 +309,12 @@ describe("OAuth on /mcp, end to end", () => {
     const staleApproval = await fetch(`${current.base}/authorize/consent`, {
       method: "POST",
       headers: { ...FORM, Cookie: pending.cookie },
-      body: new URLSearchParams({ handle: pending.handle, action: "approve", epoch: pending.epoch }),
+      body: new URLSearchParams({
+        handle: pending.handle,
+        action: "approve",
+        epoch: pending.epoch,
+        scope: "mail:read",
+      }),
       redirect: "manual",
     });
     expect(staleApproval.status).toBe(400);
@@ -356,6 +366,7 @@ describe("OAuth on /mcp, end to end", () => {
         handle: hidden(reconnectHtml, "handle"),
         action: "approve",
         epoch: hidden(reconnectHtml, "epoch"),
+        scope: "mail:read",
       }),
       redirect: "manual",
     });
@@ -436,7 +447,12 @@ describe("PUBLIC_ORIGIN tunnel override", () => {
     const approved = await fetch(`${current.base}/authorize/consent`, {
       method: "POST",
       headers: { ...FORM, Cookie: cookie.split(";")[0] },
-      body: new URLSearchParams({ handle, action: "approve", epoch: hidden(consentHtml, "epoch") }),
+      body: new URLSearchParams({
+        handle,
+        action: "approve",
+        epoch: hidden(consentHtml, "epoch"),
+        scope: "mail:read",
+      }),
       redirect: "manual",
     });
     expect(approved.status).toBe(302);

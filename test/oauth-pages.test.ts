@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { consentPage, errorPage, escapeHtml, htmlHeaders, tokenEntryPage } from "../src/oauth-pages";
+import { consentPage, errorPage, escapeHtml, htmlHeaders, scopeChoices, tokenEntryPage } from "../src/oauth-pages";
 
 const CLIENT = {
   clientName: "Example App",
@@ -56,12 +56,44 @@ describe("tokenEntryPage", () => {
   });
 });
 
+describe("scopeChoices", () => {
+  it("preselects the scopes the client asked for", () => {
+    const choices = scopeChoices(
+      ["mail:read", "calendar:read", "calendar:write"],
+      ["calendar:read", "calendar:write"],
+    );
+    expect(choices.map((choice) => [choice.scope, choice.checked])).toEqual([
+      ["mail:read", false],
+      ["calendar:read", true],
+      ["calendar:write", true],
+    ]);
+  });
+
+  it("falls back to the read scopes when the client asked for nothing offered", () => {
+    const choices = scopeChoices(["mail:read", "calendar:read", "calendar:write"], []);
+    expect(choices.map((choice) => [choice.scope, choice.checked])).toEqual([
+      ["mail:read", true],
+      ["calendar:read", true],
+      ["calendar:write", false],
+    ]);
+  });
+
+  it("does not offer scopes the deployment did not enable", () => {
+    const choices = scopeChoices(["mail:read"], ["calendar:write"]);
+    expect(choices.map((choice) => choice.scope)).toEqual(["mail:read"]);
+    expect(choices[0]!.checked).toBe(true);
+  });
+});
+
 describe("consentPage", () => {
-  it("shows one fixed permission and posts handle, epoch plus action", () => {
-    const html = consentPage({ client: CLIENT, handle: "h-1", epoch: "epoch-1" });
-    expect(html).toContain("Read mail (mail:read)");
+  const SCOPES = scopeChoices(["mail:read", "calendar:read", "calendar:write"], ["mail:read"]);
+
+  it("shows the offered permissions as checkboxes and posts handle, epoch plus action", () => {
+    const html = consentPage({ client: CLIENT, handle: "h-1", epoch: "epoch-1", scopes: SCOPES });
+    expect(html).toContain("Read and manage mail (mail:read)");
     expect(html).toContain("send mail and save drafts");
-    expect(html).not.toContain("It cannot send");
+    expect(html).toContain('value="calendar:read"');
+    expect(html).toContain('value="calendar:write"');
     expect(html).toContain('name="handle" value="h-1"');
     expect(html).toContain('name="epoch" value="epoch-1"');
     expect(html).toContain('method="post" action="/authorize/consent"');
@@ -69,14 +101,20 @@ describe("consentPage", () => {
     expect(html).toContain('name="action" value="deny"');
   });
 
-  it("offers no scope selection", () => {
-    const html = consentPage({ client: CLIENT, handle: "h-1", epoch: "epoch-1" });
-    expect(html).not.toContain('type="checkbox"');
-    expect(html).not.toMatch(/name="scope/);
+  it("checks only the requested scopes", () => {
+    const html = consentPage({ client: CLIENT, handle: "h-1", epoch: "epoch-1", scopes: SCOPES });
+    expect(html).toContain('name="scope" value="mail:read" checked');
+    expect(html).not.toContain('name="scope" value="calendar:read" checked');
+    expect(html).not.toContain('name="scope" value="calendar:write" checked');
   });
 
   it("escapes a hostile consent handle and epoch", () => {
-    const html = consentPage({ client: CLIENT, handle: `"><script>alert(1)</script>`, epoch: `"><img src=x>` });
+    const html = consentPage({
+      client: CLIENT,
+      handle: `"><script>alert(1)</script>`,
+      epoch: `"><img src=x>`,
+      scopes: [],
+    });
     expect(html).not.toContain("<script>");
     expect(html).not.toContain("<img");
     expect(html).toContain(`value="&quot;&gt;&lt;script&gt;alert(1)&lt;/script&gt;"`);

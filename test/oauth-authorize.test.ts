@@ -88,22 +88,30 @@ function fakeHelpers() {
 
 type FakeHelpers = ReturnType<typeof fakeHelpers>;
 
-function fakeEnv(helpers: FakeHelpers, token = TOKEN): Env {
-  return { API_TOKEN: token, OAUTH_PROVIDER: helpers } as unknown as Env;
+function fakeEnv(helpers: FakeHelpers, token = TOKEN, overrides: Partial<Env> = {}): Env {
+  return { API_TOKEN: token, OAUTH_PROVIDER: helpers, ...overrides } as unknown as Env;
 }
 
 function getPromptRequest(): Request {
   return new Request(`https://mail.example.com/authorize?${AUTH_QUERY}`);
 }
 
-function postForm(path: string, fields: Record<string, string>, withConsentCookie = false): Request {
+function postForm(
+  path: string,
+  fields: Record<string, string | string[]>,
+  withConsentCookie = false,
+): Request {
+  const body = new URLSearchParams();
+  for (const [key, value] of Object.entries(fields)) {
+    for (const item of Array.isArray(value) ? value : [value]) body.append(key, item);
+  }
   return new Request(`https://mail.example.com${path}`, {
     method: "POST",
     headers: {
       "Content-Type": "application/x-www-form-urlencoded",
       ...(withConsentCookie ? { Cookie: "__Host-oauth-consent=xyz" } : {}),
     },
-    body: new URLSearchParams(fields).toString(),
+    body: body.toString(),
   });
 }
 
@@ -257,7 +265,23 @@ describe("POST /authorize", () => {
     const body = await response.text();
     expect(body).toContain('name="handle" value="handle-1"');
     expect(body).toContain(`name="epoch" value="${await grantEpoch(TOKEN)}"`);
-    expect(body).toContain("Read mail (mail:read)");
+    expect(body).toContain("Read and manage mail (mail:read)");
+    expect(body).toContain('name="scope" value="mail:read" checked');
+    expect(body).not.toContain('name="scope" value="calendar:read"');
+  });
+
+  it("offers the calendar scopes this deployment enabled", async () => {
+    const helpers = fakeHelpers();
+    const response = await handleAuthorize(
+      postForm("/authorize", { authQuery: AUTH_QUERY, token: TOKEN }),
+      fakeEnv(helpers, TOKEN, { ALLOWED_CALENDARS: "*", CALENDAR_WRITE: "1" }),
+    );
+
+    expect(response.status).toBe(200);
+    const body = await response.text();
+    expect(body).toContain('name="scope" value="calendar:read"');
+    expect(body).toContain('name="scope" value="calendar:write"');
+    expect(body).toContain("Create and update events (calendar:write)");
   });
 
   it("rejects a token submission without an S256 challenge before consent", async () => {
@@ -305,7 +329,11 @@ describe("POST /authorize/consent", () => {
   it("approves with exactly mail:read and the current epoch", async () => {
     const helpers = fakeHelpers();
     const response = await handleAuthorize(
-      postForm("/authorize/consent", { handle: "handle-1", action: "approve", epoch: await grantEpoch(TOKEN) }, true),
+      postForm(
+        "/authorize/consent",
+        { handle: "handle-1", action: "approve", epoch: await grantEpoch(TOKEN), scope: "mail:read" },
+        true,
+      ),
       fakeEnv(helpers),
     );
 
@@ -340,7 +368,11 @@ describe("POST /authorize/consent", () => {
         headers: new Headers({ "Set-Cookie": "__Host-oauth-consent=; Max-Age=0" }),
       });
       const response = await handleAuthorize(
-        postForm("/authorize/consent", { handle: "handle-1", action: "approve", epoch: await grantEpoch(TOKEN) }, true),
+        postForm(
+        "/authorize/consent",
+        { handle: "handle-1", action: "approve", epoch: await grantEpoch(TOKEN), scope: "mail:read" },
+        true,
+      ),
         fakeEnv(helpers),
       );
 
@@ -353,7 +385,11 @@ describe("POST /authorize/consent", () => {
   it("refuses approval when the API token rotated after sign-in", async () => {
     const helpers = fakeHelpers();
     const response = await handleAuthorize(
-      postForm("/authorize/consent", { handle: "handle-1", action: "approve", epoch: await grantEpoch(TOKEN) }, true),
+      postForm(
+        "/authorize/consent",
+        { handle: "handle-1", action: "approve", epoch: await grantEpoch(TOKEN), scope: "mail:read" },
+        true,
+      ),
       fakeEnv(helpers, OTHER_TOKEN),
     );
 
@@ -365,8 +401,8 @@ describe("POST /authorize/consent", () => {
 
   it("refuses approval when the epoch is missing or forged", async () => {
     const variants: Record<string, string>[] = [
-      { handle: "handle-1", action: "approve" },
-      { handle: "handle-1", action: "approve", epoch: "forged-epoch" },
+      { handle: "handle-1", action: "approve", scope: "mail:read" },
+      { handle: "handle-1", action: "approve", epoch: "forged-epoch", scope: "mail:read" },
     ];
     for (const fields of variants) {
       const helpers = fakeHelpers();
@@ -390,19 +426,67 @@ describe("POST /authorize/consent", () => {
     expect(helpers.completeAuthorization).not.toHaveBeenCalled();
   });
 
-  it("grants mail:read even when the client asked for more", async () => {
+  it("grants exactly the scopes the owner selected, deduplicated", async () => {
     const helpers = fakeHelpers();
-    helpers.parseAuthRequest.mockResolvedValueOnce({ ...AUTH_REQUEST, scope: ["mail:read", "mail:send"] });
+    const env = fakeEnv(helpers, TOKEN, {
+      ALLOWED_CALENDARS: "*",
+      CALENDAR_WRITE: "1",
+    });
+    const selected = ["mail:read", "calendar:read", "calendar:write", "calendar:read"];
     const response = await handleAuthorize(
-      postForm("/authorize/consent", { handle: "handle-1", action: "approve", epoch: await grantEpoch(TOKEN) }, true),
-      fakeEnv(helpers),
+      postForm(
+        "/authorize/consent",
+        { handle: "handle-1", action: "approve", epoch: await grantEpoch(TOKEN), scope: selected },
+        true,
+      ),
+      env,
     );
 
     expect(response.status).toBe(302);
+    const expected = ["mail:read", "calendar:read", "calendar:write"];
     const [, , approveOptions] = helpers.approveConsent.mock.calls[0]!;
-    expect(approveOptions?.scope).toEqual(["mail:read"]);
+    expect(approveOptions?.scope).toEqual(expected);
     const [authOptions] = helpers.completeAuthorization.mock.calls[0]!;
-    expect(authOptions.scope).toEqual(["mail:read"]);
+    expect(authOptions.scope).toEqual(expected);
+  });
+
+  it("refuses an approval with no scopes", async () => {
+    const helpers = fakeHelpers();
+    const response = await handleAuthorize(
+      postForm(
+        "/authorize/consent",
+        { handle: "handle-1", action: "approve", epoch: await grantEpoch(TOKEN) },
+        true,
+      ),
+      fakeEnv(helpers),
+    );
+
+    expect(response.status).toBe(400);
+    expect(await response.text()).toContain("Select at least one permission");
+    expect(helpers.approveConsent).not.toHaveBeenCalled();
+    expect(helpers.completeAuthorization).not.toHaveBeenCalled();
+  });
+
+  it("refuses a scope the deployment does not offer", async () => {
+    const helpers = fakeHelpers();
+    const response = await handleAuthorize(
+      postForm(
+        "/authorize/consent",
+        {
+          handle: "handle-1",
+          action: "approve",
+          epoch: await grantEpoch(TOKEN),
+          scope: ["mail:read", "calendar:read"],
+        },
+        true,
+      ),
+      fakeEnv(helpers),
+    );
+
+    expect(response.status).toBe(400);
+    expect(await response.text()).toContain("not offered by this deployment");
+    expect(helpers.approveConsent).not.toHaveBeenCalled();
+    expect(helpers.completeAuthorization).not.toHaveBeenCalled();
   });
 
   it("denies through the library and redirects back to the client", async () => {
@@ -423,7 +507,11 @@ describe("POST /authorize/consent", () => {
     const helpers = fakeHelpers();
     helpers.approveConsent.mockRejectedValueOnce(authorizationError("Consent handle not found"));
     const response = await handleAuthorize(
-      postForm("/authorize/consent", { handle: "stale", action: "approve", epoch: await grantEpoch(TOKEN) }, true),
+      postForm(
+        "/authorize/consent",
+        { handle: "stale", action: "approve", epoch: await grantEpoch(TOKEN), scope: "mail:read" },
+        true,
+      ),
       fakeEnv(helpers),
     );
 
@@ -451,7 +539,11 @@ describe("POST /authorize/consent", () => {
     const helpers = fakeHelpers();
     helpers.completeAuthorization.mockRejectedValueOnce(new Error("KV write failed"));
     const response = await handleAuthorize(
-      postForm("/authorize/consent", { handle: "handle-1", action: "approve", epoch: await grantEpoch(TOKEN) }, true),
+      postForm(
+        "/authorize/consent",
+        { handle: "handle-1", action: "approve", epoch: await grantEpoch(TOKEN), scope: "mail:read" },
+        true,
+      ),
       fakeEnv(helpers),
     );
 

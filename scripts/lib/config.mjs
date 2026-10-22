@@ -39,13 +39,18 @@ export function profileFragment(name, profiles) {
 /** The target fragment for a completed `npm run setup`, or null. */
 export function stateFragment(state) {
   if (!state?.workerName || !state?.accountId) return null;
+  const vars = {};
+  if (state.allowedMailboxes) vars.ALLOWED_MAILBOXES = state.allowedMailboxes;
+  // Present (including as "") means the owner made an explicit choice; absent
+  // inherits the tracked default.
+  if (typeof state.allowedCalendars === "string") vars.ALLOWED_CALENDARS = state.allowedCalendars;
   return {
     label: "local",
     description: `guided setup (${state.workerName} in account ${state.accountId})`,
     name: state.workerName,
     account_id: state.accountId,
     workers_dev: true,
-    ...(state.allowedMailboxes ? { vars: { ALLOWED_MAILBOXES: state.allowedMailboxes } } : {}),
+    ...(Object.keys(vars).length > 0 ? { vars } : {}),
   };
 }
 

@@ -8,7 +8,16 @@
 
 import type { AuthRequest, ConsentDescription, OAuthHelpers } from "@cloudflare/workers-oauth-provider";
 import { epochMatches, grantEpoch, tokenMatches } from "./auth";
-import { consentPage, errorPage, htmlHeaders, tokenEntryPage, type ClientFacts } from "./oauth-pages";
+import { enabledResourceScopes } from "./calendar-config";
+import {
+  consentPage,
+  errorPage,
+  htmlHeaders,
+  scopeChoices,
+  tokenEntryPage,
+  type ClientFacts,
+} from "./oauth-pages";
+import type { ResourceScope } from "./scopes";
 import type { Env } from "./types";
 
 const METADATA_FAILED = "The connecting app's client metadata could not be fetched. Try again from the app.";
@@ -16,7 +25,8 @@ const FORM_UNREADABLE = "The form could not be read. Start again from the connec
 const UNEXPECTED_FAILURE = "Something went wrong. Start again from the connecting app.";
 const PKCE_REQUIRED = "PKCE with an S256 code challenge is required.";
 const TOKEN_ROTATED = "API token changed after sign-in. Start again from the connecting app.";
-const GRANTED_SCOPE = ["mail:read"];
+const NO_SCOPE = "Select at least one permission.";
+const UNKNOWN_SCOPE = "That permission is not offered by this deployment.";
 
 interface WireAuthorizationError extends Error {
   description: string;
@@ -137,7 +147,7 @@ function consentFailure(error: unknown): Response {
 async function readRequestFacts(
   helpers: OAuthHelpers,
   request: Request,
-): Promise<{ authRequest: AuthRequest; facts: ClientFacts }> {
+): Promise<{ authRequest: AuthRequest; facts: ClientFacts; requestedScopes: string[] }> {
   const authRequest = await helpers.parseAuthRequest(request);
   // OAuth 2.1 requires PKCE on every authorization request: a confidential
   // client could otherwise consent and exchange without a challenge or
@@ -146,8 +156,8 @@ async function readRequestFacts(
   if (authRequest.codeChallengeMethod !== "S256" || !authRequest.codeChallenge) {
     throw new PkceRequiredError(redirectToClient(authRequest, "invalid_request", PKCE_REQUIRED));
   }
-  const facts = toClientFacts(await helpers.describeConsent(authRequest));
-  return { authRequest, facts };
+  const consent = await helpers.describeConsent(authRequest);
+  return { authRequest, facts: toClientFacts(consent), requestedScopes: consent.scope };
 }
 
 async function handlePrompt(request: Request, env: Env): Promise<Response> {
@@ -168,9 +178,10 @@ async function handleTokenSubmission(request: Request, env: Env): Promise<Respon
 
   let authRequest: AuthRequest;
   let facts: ClientFacts;
+  let requestedScopes: string[];
   try {
     const rebuilt = new Request(new URL(`/authorize?${authQuery}`, request.url), { method: "GET" });
-    ({ authRequest, facts } = await readRequestFacts(env.OAUTH_PROVIDER, rebuilt));
+    ({ authRequest, facts, requestedScopes } = await readRequestFacts(env.OAUTH_PROVIDER, rebuilt));
   } catch (error) {
     return authorizationFailure(error);
   }
@@ -186,7 +197,12 @@ async function handleTokenSubmission(request: Request, env: Env): Promise<Respon
     const epoch = await grantEpoch(env.API_TOKEN);
     const transaction = await env.OAUTH_PROVIDER.beginConsent(authRequest);
     return htmlResponse(
-      consentPage({ client: facts, handle: transaction.handle, epoch }),
+      consentPage({
+        client: facts,
+        handle: transaction.handle,
+        epoch,
+        scopes: scopeChoices(enabledResourceScopes(env), requestedScopes),
+      }),
       200,
       transaction.headers,
     );
@@ -214,6 +230,22 @@ async function handleConsentSubmission(request: Request, env: Env): Promise<Resp
     return htmlResponse(errorPage("Unrecognized consent action.", 400), 400);
   }
 
+  // The checkboxes are the grant. Validate them against what this deployment
+  // offers before consuming the consent transaction: an old page, a tampered
+  // form or a scope from a disabled domain must not mint anything.
+  const enabled = enabledResourceScopes(env);
+  const selected = [
+    ...new Set(
+      form.getAll("scope").filter((value): value is string => typeof value === "string"),
+    ),
+  ];
+  if (selected.length === 0) {
+    return htmlResponse(errorPage(NO_SCOPE, 400), 400);
+  }
+  if (selected.some((scope) => !enabled.includes(scope as ResourceScope))) {
+    return htmlResponse(errorPage(UNKNOWN_SCOPE, 400), 400);
+  }
+
   // The consent form carries the grant epoch of the token that was verified
   // at sign-in. If API_TOKEN has rotated since, approval must not mint a
   // fresh grant from that stale sign-in, so the epoch is compared with the
@@ -227,7 +259,7 @@ async function handleConsentSubmission(request: Request, env: Env): Promise<Resp
   }
 
   try {
-    const approved = await env.OAUTH_PROVIDER.approveConsent(request, handle, { scope: GRANTED_SCOPE });
+    const approved = await env.OAUTH_PROVIDER.approveConsent(request, handle, { scope: selected });
     // A stored transaction can predate the PKCE requirement (a consent page
     // left open across an upgrade), in which case the code it would mint is
     // exchangeable without a verifier. The transaction is consumed either
@@ -239,7 +271,7 @@ async function handleConsentSubmission(request: Request, env: Env): Promise<Resp
     const { redirectTo } = await env.OAUTH_PROVIDER.completeAuthorization({
       request: approved.request,
       userId: "owner",
-      scope: GRANTED_SCOPE,
+      scope: selected,
       metadata: { clientName: consent.clientName, approvedAt: new Date().toISOString() },
       // `pkce` marks a grant minted under the S256 requirement; the token
       // exchange refuses grants without it (hasPkcePolicy, review round 4).

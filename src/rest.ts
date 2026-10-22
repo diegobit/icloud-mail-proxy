@@ -3,6 +3,11 @@
 // happens.
 
 import { z } from "zod";
+import { CalDavError } from "./caldav";
+import { calendarWritesEnabled, calendarsEnabled } from "./calendar-config";
+import { listCalendars } from "./calendar-core";
+import { getEvent, listEvents } from "./calendar-events";
+import { createEvent, updateEvent } from "./calendar-write";
 import {
   ApiError,
   getAttachment,
@@ -41,6 +46,53 @@ const searchSchema = z
   })
   .strict();
 
+const createEventBodySchema = z
+  .object({
+    id: z.string().min(1).optional(),
+    summary: z.string().min(1),
+    start: z.string().min(1),
+    end: z.string().min(1),
+    timeZone: z.string().min(1).optional(),
+    allDay: z.boolean().optional(),
+    location: z.string().nullable().optional(),
+    description: z.string().nullable().optional(),
+  })
+  .strict();
+
+const updateEventBodySchema = z
+  .object({
+    etag: z.string().min(1),
+    summary: z.string().min(1).optional(),
+    start: z.string().min(1).optional(),
+    end: z.string().min(1).optional(),
+    timeZone: z.string().min(1).optional(),
+    allDay: z.boolean().optional(),
+    location: z.string().nullable().optional(),
+    description: z.string().nullable().optional(),
+  })
+  .strict();
+
+const CREATE_EVENT_FIELDS = new Set([
+  "id",
+  "summary",
+  "start",
+  "end",
+  "timeZone",
+  "allDay",
+  "location",
+  "description",
+]);
+const UPDATE_EVENT_FIELDS = new Set([
+  "etag",
+  "summary",
+  "start",
+  "end",
+  "timeZone",
+  "allDay",
+  "location",
+  "description",
+]);
+
 /** Translate any thrown value into a JSON error Response. */
 function mapError(e: unknown): Response {
   if (e instanceof ApiError) {
@@ -55,6 +107,29 @@ function mapError(e: unknown): Response {
     }
     // Server text is safe to surface: it never contains credentials.
     return errorBody("upstream_imap_error", e.message, 502);
+  }
+  if (e instanceof CalDavError) {
+    switch (e.code) {
+      case "unauthorized":
+      case "forbidden":
+        return errorBody("upstream_unauthorized", e.message, 502);
+      case "not_found":
+        return errorBody("not_found", e.message, 404);
+      case "conflict":
+        return errorBody("conflict", e.message, 409);
+      case "too_many_resources":
+        return errorBody("too_many_resources", e.message, 422);
+      case "recurrence_too_complex":
+        return errorBody("recurrence_too_complex", e.message, 422);
+      case "mutation_state_unknown":
+        return errorBody("mutation_state_unknown", e.message, 502);
+      case "malformed":
+        return errorBody("malformed", e.message, 502);
+      case "invalid_argument":
+        return errorBody("invalid_request", e.message, 400);
+      default:
+        return errorBody("upstream_error", e.message, 502);
+    }
   }
   if (e instanceof z.ZodError) {
     return errorBody("invalid_request", z.prettifyError(e), 400);
@@ -181,6 +256,163 @@ async function handleMutation(
 }
 
 /**
+ * GET /v1/calendars. `?all=1` is the static-bearer-only bootstrap view used by
+ * setup: every calendar before allowlist filtering, and it works even when the
+ * domain is disabled. Without it the domain must be enabled and only
+ * allowlisted calendars are returned.
+ */
+async function handleCollections(url: URL, env: Env): Promise<Response> {
+  const all = url.searchParams.get("all") === "1";
+  if (!calendarsEnabled(env) && !all) {
+    return errorBody("not_supported", "calendars are disabled: ALLOWED_CALENDARS is empty", 404);
+  }
+  const calendars = await listCalendars(env, { all });
+  return json({ calendars });
+}
+
+function queryValue(url: URL, name: string): string | undefined {
+  if (!url.searchParams.has(name)) return undefined;
+  return url.searchParams.get(name) ?? undefined;
+}
+
+function queryBoolean(url: URL, name: string): boolean | undefined {
+  const raw = queryValue(url, name);
+  if (raw === undefined) return undefined;
+  if (raw === "1" || raw === "true") return true;
+  if (raw === "0" || raw === "false") return false;
+  throw new ApiError(400, "invalid_request", `${name} must be 1 or 0`);
+}
+
+function queryLimit(url: URL): number | undefined {
+  const raw = queryValue(url, "limit");
+  if (raw === undefined) return undefined;
+  if (!/^\d+$/.test(raw) || Number(raw) < 1) {
+    throw new ApiError(400, "invalid_request", "limit must be a positive integer");
+  }
+  return Number(raw);
+}
+
+function decodeSegment(value: string, label: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    throw new ApiError(400, "invalid_request", `${label} is not valid`);
+  }
+}
+
+/** GET /v1/calendars/:calendar/events?from=&to=&limit=&text= */
+async function handleListEvents(url: URL, calendarSegment: string, env: Env): Promise<Response> {
+  if (!calendarsEnabled(env)) {
+    return errorBody("not_supported", "calendars are disabled: ALLOWED_CALENDARS is empty", 404);
+  }
+  const calendar = decodeSegment(calendarSegment, "calendar");
+  return json(
+    await listEvents(env, {
+      calendar,
+      from: queryValue(url, "from"),
+      to: queryValue(url, "to"),
+      limit: queryLimit(url),
+      text: queryValue(url, "text"),
+    }),
+  );
+}
+
+/** GET /v1/calendars/:calendar/events/:id?from= */
+async function handleGetEvent(
+  url: URL,
+  calendarSegment: string,
+  idSegment: string,
+  env: Env,
+): Promise<Response> {
+  if (!calendarsEnabled(env)) {
+    return errorBody("not_supported", "calendars are disabled: ALLOWED_CALENDARS is empty", 404);
+  }
+  const calendar = decodeSegment(calendarSegment, "calendar");
+  const id = decodeSegment(idSegment, "event id");
+  return json(await getEvent(env, { calendar, id, from: queryValue(url, "from") }));
+}
+
+async function readJsonBody(request: Request): Promise<unknown> {
+  try {
+    return await request.json();
+  } catch {
+    throw new SyntaxError("request body is not valid JSON");
+  }
+}
+
+/** Any key outside the structured schema is an unsupported field, not a typo to ignore. */
+function assertKnownFields(raw: unknown, allowed: ReadonlySet<string>, tool: string): void {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return;
+  const unknown = Object.keys(raw).filter((key) => !allowed.has(key));
+  if (unknown.length === 0) return;
+  throw new ApiError(
+    400,
+    "unsupported_field",
+    `${tool} does not accept ${unknown.map((key) => JSON.stringify(key)).join(", ")}; ` +
+      `accepted fields are ${[...allowed].join(", ")}`,
+  );
+}
+
+function writeDisabled(env: Env): Response | null {
+  if (calendarWritesEnabled(env)) return null;
+  return errorBody(
+    "not_supported",
+    calendarsEnabled(env)
+      ? "calendar writes are disabled: set CALENDAR_WRITE to 1"
+      : "calendars are disabled: ALLOWED_CALENDARS is empty",
+    404,
+  );
+}
+
+/** POST /v1/calendars/:calendar/events */
+async function handleCreateEvent(
+  request: Request,
+  calendarSegment: string,
+  env: Env,
+): Promise<Response> {
+  const disabled = writeDisabled(env);
+  if (disabled !== null) return disabled;
+  const calendar = decodeSegment(calendarSegment, "calendar");
+  const raw = await readJsonBody(request);
+  assertKnownFields(raw, CREATE_EVENT_FIELDS, "create_event");
+  const body = createEventBodySchema.parse(raw);
+  const result = await createEvent(
+    env,
+    { calendar, ...body },
+    {
+      principal: "bearer",
+      rateLimitKey: request.headers.get("CF-Connecting-IP") ?? "unknown",
+    },
+  );
+  return json(result, 201);
+}
+
+/** PUT /v1/calendars/:calendar/events/:id */
+async function handleUpdateEvent(
+  request: Request,
+  calendarSegment: string,
+  idSegment: string,
+  env: Env,
+): Promise<Response> {
+  const disabled = writeDisabled(env);
+  if (disabled !== null) return disabled;
+  const calendar = decodeSegment(calendarSegment, "calendar");
+  const id = decodeSegment(idSegment, "event id");
+  const raw = await readJsonBody(request);
+  assertKnownFields(raw, UPDATE_EVENT_FIELDS, "update_event");
+  const body = updateEventBodySchema.parse(raw);
+  const result = await updateEvent(
+    env,
+    { calendar, id, ...body },
+    {
+      principal: "bearer",
+      rateLimitKey: request.headers.get("CF-Connecting-IP") ?? "unknown",
+    },
+  );
+  return json(result);
+}
+
+/**
  * GET /healthz: prove the Worker can actually reach and authenticate to
  * imap.mail.me.com right now (LOGIN + LOGOUT, no EXAMINE, nothing else). An
  * ImapError here is a known "the mail server is having trouble" state, so it
@@ -217,6 +449,60 @@ export async function handleRest(request: Request, env: Env): Promise<Response> 
       segments[1] === "mailboxes"
     ) {
       return json({ mailboxes: listMailboxes(env) });
+    }
+
+    // GET /v1/calendars[?all=1]
+    if (
+      request.method === "GET" &&
+      segments.length === 2 &&
+      segments[0] === "v1" &&
+      segments[1] === "calendars"
+    ) {
+      return await handleCollections(url, env);
+    }
+
+    // GET /v1/calendars/:calendar/events/:id
+    if (
+      request.method === "GET" &&
+      segments.length === 5 &&
+      segments[0] === "v1" &&
+      segments[1] === "calendars" &&
+      segments[3] === "events"
+    ) {
+      return await handleGetEvent(url, segments[2], segments[4], env);
+    }
+
+    // GET /v1/calendars/:calendar/events
+    if (
+      request.method === "GET" &&
+      segments.length === 4 &&
+      segments[0] === "v1" &&
+      segments[1] === "calendars" &&
+      segments[3] === "events"
+    ) {
+      return await handleListEvents(url, segments[2], env);
+    }
+
+    // POST /v1/calendars/:calendar/events
+    if (
+      request.method === "POST" &&
+      segments.length === 4 &&
+      segments[0] === "v1" &&
+      segments[1] === "calendars" &&
+      segments[3] === "events"
+    ) {
+      return await handleCreateEvent(request, segments[2], env);
+    }
+
+    // PUT /v1/calendars/:calendar/events/:id
+    if (
+      request.method === "PUT" &&
+      segments.length === 5 &&
+      segments[0] === "v1" &&
+      segments[1] === "calendars" &&
+      segments[3] === "events"
+    ) {
+      return await handleUpdateEvent(request, segments[2], segments[4], env);
     }
 
     // POST /v1/search

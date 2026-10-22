@@ -22,3 +22,8 @@ API_TOKEN=change-me
 # ignored (production always uses smtp.mail.me.com:587 with STARTTLS).
 # SMTP_HOST=127.0.0.1
 # SMTP_PORT=2525
+# Optional calendars. The domain is disabled while the allowlist is empty;
+# "*" allows every calendar, and writes have their own flag. See README's
+# "Calendars" section and DEPLOY.md.
+# ALLOWED_CALENDARS=*
+# CALENDAR_WRITE=1

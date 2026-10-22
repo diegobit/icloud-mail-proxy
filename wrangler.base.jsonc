@@ -28,9 +28,9 @@
     "bindings": [{ "name": "SEND_LEDGER", "class_name": "SendLedger" }]
   },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["SendLedger"] }],
-  // Per-IP rate limiters for the unauthenticated OAuth endpoints that write to
-  // OAUTH_KV (free tier: 1,000 writes/day): /oauth/register and /oauth/token
-  // (the latter caches CIMD client-assertion replay markers per request).
+  // Per-IP rate limiters: /oauth/register and /oauth/token are unauthenticated
+  // and write to OAUTH_KV (free tier: 1,000 writes/day); CALENDAR_WRITE_LIMITER
+  // bounds CalDAV PUTs to 30 per minute per connecting IP.
   "ratelimits": [
     {
       "name": "OAUTH_REGISTER_LIMITER",
@@ -40,6 +40,11 @@
     {
       "name": "OAUTH_TOKEN_LIMITER",
       "namespace_id": "1002",
+      "simple": { "limit": 30, "period": 60 }
+    },
+    {
+      "name": "CALENDAR_WRITE_LIMITER",
+      "namespace_id": "1003",
       "simple": { "limit": 30, "period": 60 }
     }
   ],
@@ -66,6 +71,22 @@
     "SEND_MAX_PER_DAY": "20",
     "SEND_MAX_RCPTS_PER_DAY": "50",
     "SEND_MAX_RCPTS_PER_MESSAGE": "5",
-    "SEND_MAX_BODY_BYTES": "65536"
+    "SEND_MAX_BODY_BYTES": "65536",
+    // Calendars (plans/calendar-reminders.md). An empty allowlist disables the
+    // domain: no tools, no REST routes, no scopes. "*" allows every calendar
+    // that passes discovery, including shared ones and ones created later.
+    // Writes are gated separately and are off by default.
+    "ALLOWED_CALENDARS": "",
+    "CALENDAR_WRITE": "0",
+    "CALDAV_TIMEOUT_MS": "15000",
+    "MAX_RESPONSE_BYTES": "4194304",
+    "MAX_CALENDAR_DAYS": "90",
+    "MAX_EVENT_RESULTS": "50",
+    "MAX_RESOURCE_BYTES": "262144",
+    "MAX_RESOURCES_PER_QUERY": "300",
+    "MAX_OCCURRENCES_PER_RESOURCE": "200",
+    "MAX_RDATE_EXDATE": "500",
+    "MAX_RECURRENCE_CANDIDATES_PER_RULE": "50000",
+    "MAX_RECURRENCE_CANDIDATES_PER_REQUEST": "200000"
   }
 }

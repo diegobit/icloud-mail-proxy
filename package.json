@@ -17,7 +17,9 @@
     "@modelcontextprotocol/sdk": "^1.29.0",
     "postal-mime": "^2.7.5",
     "zod": "^4.0.0",
-    "@cloudflare/workers-oauth-provider": "^1.2.3"
+    "@cloudflare/workers-oauth-provider": "^1.2.3",
+    "fast-xml-parser": "5.11.2",
+    "ical.js": "2.2.1"
   },
   "devDependencies": {
     "wrangler": "^4",

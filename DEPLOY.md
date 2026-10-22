@@ -13,7 +13,7 @@ Three pieces decide what a deploy does:
 | --- | --- | --- |
 | `wrangler.base.jsonc` | yes | Shared defaults: entry point, compatibility date, `workers_dev: true`, folder list and the size/result/look-back caps. No account ID, no routes. |
 | `deploy-profiles.jsonc` | yes | Named targets whose routing has to survive a fresh clone — currently `production` (the `icloud-mail.diegobit.com` custom domain). |
-| `.deploy/` | no (gitignored) | `state.json`: the account, Worker and folders `npm run setup` chose, plus how far the last run got. `wrangler.<target>.jsonc`: the composed config, rewritten on every deploy. |
+| `.deploy/` | no (gitignored) | `state.json`: the account, Worker, folders and calendar allowlist `npm run setup` chose, plus how far the last run got. `wrangler.<target>.jsonc`: the composed config, rewritten on every deploy. |
 
 Every deploy composes the base defaults with exactly one target, so the limits
 exist in one place. Selection is always explicit:
@@ -81,6 +81,49 @@ Filing mail adds two base vars, both destinations and never request input:
   readable through this proxy), and a destination equal to the source mailbox
   is refused at runtime.
 
+### Calendars (opt-in)
+
+The tracked default disables calendars. An empty or absent `ALLOWED_CALENDARS`
+means no tools, no REST routes and no OAuth scopes for the domain. One
+allowlist value controls what is reachable:
+
+- `ALLOWED_CALENDARS` — comma-separated display names, exactly as iCloud
+  reports them, matched case-sensitively. `*` means every calendar that passes
+  discovery, including shared ones and ones created later. `*` must be alone: a
+  mixed value such as `*,Lavoro` is a configuration error, not a superset. A
+  configured name that matches nothing fails closed
+  (`configured_calendar_missing`); two calendars with the same name return
+  `409 ambiguous_calendar_name`. Renaming a calendar in Apple Calendar breaks a
+  config that names it: update the allowlist and redeploy.
+- `CALENDAR_WRITE` — `"1"` or `"0"`, default `0`. Writes require both a
+  non-empty allowlist and the flag; with the flag at `0`, the write tools are
+  not registered and the REST write routes answer `404 not_supported`. The
+  tracked `production` profile opts in to `*` with writes enabled; a fresh
+  deployment does not.
+
+To discover the exact names before enabling the domain, call the bearer-only
+bootstrap view on the deployed Worker. It returns every calendar before
+allowlist filtering and works while the domain is disabled:
+
+```
+curl -H "Authorization: Bearer $API_TOKEN" "https://<worker>/v1/calendars?all=1"
+```
+
+Each entry carries `id`, `name`, `kind`, `color` and `readOnly`. Use the
+display `name` in the allowlist; the `id` is what responses carry as
+`collectionId`. `readOnly` comes from iCloud's privileges and is separate from
+the write flag: a read-only calendar still refuses writes with `403
+read_only_collection`.
+
+The read bounds are base vars, not secrets: `MAX_CALENDAR_DAYS` (90),
+`MAX_EVENT_RESULTS` (50), `MAX_RESPONSE_BYTES` (4194304), `MAX_RESOURCE_BYTES`
+(262144), `MAX_RESOURCES_PER_QUERY` (300), `MAX_OCCURRENCES_PER_RESOURCE`
+(200), `MAX_RDATE_EXDATE` (500), `MAX_RECURRENCE_CANDIDATES_PER_RULE` (50000),
+`MAX_RECURRENCE_CANDIDATES_PER_REQUEST` (200000) and `CALDAV_TIMEOUT_MS`
+(15000). `CALENDAR_WRITE_LIMITER` is the per-IP rate limiter for writes (30 per
+minute); if the binding is missing while the write flag is on, writes fail
+closed instead of running unlimited.
+
 ## Migrating the production deployment
 
 The tracked config no longer carries the `icloud-mail.diegobit.com` route: it
@@ -133,16 +176,20 @@ Worker named explicitly — `--name <worker>`, or
 
 ## Re-running setup
 
-`npm run setup` is safe to run again and is the way to change folders, replace
-the Apple credentials, or rotate the token. A re-run:
+`npm run setup` is safe to run again and is the way to change folders,
+calendar access, replace the Apple credentials, or rotate the token. A
+re-run:
 
-- keeps the account, Worker name and folders from last time as the defaults;
+- keeps the account, Worker name, folders and allowlists from last time as the
+  defaults;
 - keeps every secret already stored in the Worker unless you explicitly ask to
   replace the credentials or rotate the token;
 - asks before adopting a Worker it doesn't recognize, so a name typo cannot
   overwrite an unrelated deployment;
-- re-deploys the current code, then re-verifies the endpoint, and exits
-  non-zero if a check fails. A rerun is never a verification-only retry.
+- deploys once to discover calendars when it has an API token, asks which
+  calendars to allow, redeploys with the chosen allowlist, then re-verifies the
+  endpoint and exits non-zero if a check fails. A rerun is
+  never a verification-only retry.
 
 Cloudflare's API cannot return a secret's value, so setup works from secret *names*: it
 can tell that `API_TOKEN` exists but not what it is. When verification needs
@@ -235,24 +282,60 @@ generate a new token, because that would break every existing client.
 - **Restoring mail:** move the message back from `Archive` or the trash in a
   mail client. This proxy has no restore tool and never empties the trash.
 
+## Calendar operations
+
+- **Inspect what happened:** `wrangler tail` shows one `calendar_write` line per
+  attempted event write — principal, action (`create_event` or `update_event`),
+  calendar id, resource id and outcome. It never includes the summary,
+  description or location. Unlike sends, calendar writes have no durable audit
+  trail.
+- **"conflict":** the event changed since it was read. Call `get_event` again,
+  compare, and retry with the fresh ETag. Do not reuse the old tag.
+- **"mutation_state_unknown":** the PUT was sent and the response never
+  arrived. It may have landed. Read the event with `get_event` and reconcile;
+  never blind-retry a create or an update.
+- **"already_exists":** an idempotent create found the id already present.
+  Read it and compare instead of creating a second copy with a new id.
+- **"recurring_not_supported" / "scheduling_not_supported":** recurring events
+  and events with an organizer or attendees cannot be changed through this
+  proxy. Edit them in Apple Calendar. Retrying will not help.
+- **"read_only_collection":** iCloud's privileges say the calendar is not
+  writable for this account, even though the write flag is on. Pick another
+  calendar or change the sharing/ownership in Apple Calendar.
+- **"rate_limited":** more than 30 writes per minute came from the same
+  connecting IP. Wait a minute.
+- **No delete and no invitations:** there is no delete tool, no recurrence
+  editor, no attendee/organizer editing and no free/busy, sharing or contacts.
+  Deleting an event stays an action in Apple Calendar.
+- **Choosing or re-checking calendars:** `GET /v1/calendars?all=1` with the
+  bearer token lists every calendar before allowlist filtering, even while the
+  domain is disabled. Use it when a configured name no longer resolves.
+- **After upgrading from a mail-only grant:** OAuth connectors must reconnect
+  so the consent page can offer the new scopes. A grant that still holds only
+  `mail:read` answers `insufficient_scope` on the calendar tools until then.
+
 ## Recovering an interrupted setup
 
 Setup records its progress in `.deploy/state.json` (nonsecret: account ID,
-Worker name, folders, timestamps) before it changes anything in Cloudflare.
-Run `npm run setup` again and it continues from there.
+Worker name, folders, calendar allowlist, timestamps) before it
+changes anything in Cloudflare. Run `npm run setup` again and it continues from
+there.
 
 | Where it stopped | What exists | What the re-run does |
 | --- | --- | --- |
 | Before the confirmation | nothing | Asks again; Cloudflare was never touched. |
 | Secrets uploaded, deploy failed | a Worker holding the secrets, no code (or the previous code) | Recognizes the Worker as yours, keeps the secrets unless you replace them, deploys again, then verifies. |
+| Calendar discovery or the second deploy failed | a live Worker, possibly with the previous allowlists; any choices you already made are in state | Uses the saved choices as the bootstrap defaults, discovers again, redeploys with the allowlists, then verifies. |
 | Deployed, verification failed | a live Worker | Keeps secrets, deploys again, then re-runs the checks, and prints a hint for the specific failure. |
 | Deployed, token unknown | a live Worker | Deploys, reports "not verified", and exits nonzero until you paste the token or rotate it. |
 
-The failure hint distinguishes the three worlds that look alike from the
-terminal: a Cloudflare error (login, deploy), an HTTP authorization error (the
-token doesn't match), and an upstream IMAP failure (`/healthz` returns 503 with
+The failure hint distinguishes the worlds that look alike from the terminal: a
+Cloudflare error (login, deploy), an HTTP authorization error (the token
+doesn't match), an upstream IMAP failure (`/healthz` returns 503 with
 `ok: false` and an IMAP `error.code` of `NO`, `BAD`, `BYE`, `TIMEOUT`,
-`PARSE`, or `LIMIT`).
+`PARSE`, or `LIMIT`), and a CalDAV/allowlist failure in the calendar checks
+(`?all=1`, or the 7-day `list_events`). A calendar failure leaves mail working;
+the hint says so.
 For IMAP `NO`/`BAD`/`BYE`/`PARSE` the message keeps the uncertainty — iCloud
 reports a failed login the same way whether the app-specific password is wrong,
 revoked, or the server is having a bad day. A `TIMEOUT` is not a reason to
@@ -308,6 +391,9 @@ returns `{ "ok": true, "imapLatencyMs": … }` when the Worker can log in to
 iCloud. Without the header it must answer HTTP 401. A missing `API_TOKEN`
 secret is a closed Worker: HTTP 500 `not_configured`, not an open endpoint.
 Upstream IMAP failures are HTTP 503 with `{ "ok": false, "error": { "code", "message" } }`.
+`/healthz` checks IMAP only; it does not prove CalDAV. When calendars are
+enabled, `GET /v1/calendars` (or `?all=1` for discovery) is the end-to-end
+CalDAV check.
 
 OAuth grants live in `OAUTH_KV`, which is eventually consistent across
 Cloudflare locations: an access token issued at one location can be unknown at

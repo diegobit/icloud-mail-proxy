@@ -9,7 +9,7 @@ import { AbortedError, createPrompts } from "./lib/prompts.mjs";
 import { redact } from "./lib/redact.mjs";
 import { fileStateStore } from "./lib/state.mjs";
 import { NONINTERACTIVE_HELP, runSetup } from "./lib/setup.mjs";
-import { verifyDeployment } from "./lib/verify.mjs";
+import { discoverCollections, verifyDeployment } from "./lib/verify.mjs";
 import { WranglerError, createWranglerAdapter } from "./lib/wrangler.mjs";
 
 const MIN_NODE_MAJOR = 22;
@@ -71,6 +71,7 @@ async function main() {
         path: store.path,
       },
       verify: verifyDeployment,
+      discover: discoverCollections,
       writeConfig: (fragment) => writeGeneratedConfig(fragment),
       baseConfig: readBaseConfig(),
       generateToken: () => randomBytes(32).toString("base64url"),

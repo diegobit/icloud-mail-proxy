@@ -75,6 +75,7 @@ describe("composing a deployable config", () => {
       expect(config.ratelimits).toEqual([
         { name: "OAUTH_REGISTER_LIMITER", namespace_id: "1001", simple: { limit: 5, period: 60 } },
         { name: "OAUTH_TOKEN_LIMITER", namespace_id: "1002", simple: { limit: 30, period: 60 } },
+        { name: "CALENDAR_WRITE_LIMITER", namespace_id: "1003", simple: { limit: 30, period: 60 } },
       ]);
     }
   });
@@ -95,6 +96,20 @@ describe("composing a deployable config", () => {
     expect(config.routes).toBeUndefined();
     expect(config.vars.ALLOWED_MAILBOXES).toBe("INBOX");
     expect(config.vars.MAX_RESULTS).toBe(base.vars.MAX_RESULTS);
+  });
+
+  it("carries a recorded calendar allowlist, including an explicit empty value", () => {
+    const fragment = stateFragment({
+      accountId: "acc-9",
+      workerName: "my-mail",
+      allowedMailboxes: "INBOX",
+      allowedCalendars: "Lavoro,Family",
+    });
+    const config = composeConfig(base, fragment, path.join(repoRoot, ".deploy"));
+    expect(config.vars.ALLOWED_CALENDARS).toBe("Lavoro,Family");
+    // A state written before calendars existed must not add the key.
+    const old = stateFragment({ accountId: "acc-9", workerName: "my-mail", allowedMailboxes: "INBOX" });
+    expect(old.vars).toEqual({ ALLOWED_MAILBOXES: "INBOX" });
   });
 
   it("refuses a target with a typo or no Worker name", () => {

@@ -27,6 +27,9 @@ export interface Env {
   OAUTH_KV: KVNamespace;
   OAUTH_REGISTER_LIMITER: RateLimit;
   OAUTH_TOKEN_LIMITER: RateLimit;
+  // Per-IP limiter for CalDAV writes. Missing in a deployment disables writes
+  // (fail closed) rather than letting them run unbounded.
+  CALENDAR_WRITE_LIMITER: RateLimit;
   OAUTH_PROVIDER: OAuthHelpers;
   // Public origin to advertise when the request URL is not the origin clients
   // reach (tunnels, proxies). Unset in normal deployments.
@@ -45,6 +48,22 @@ export interface Env {
   SMTP_HOST?: string;
   SMTP_PORT?: string;
   SEND_LEDGER: DurableObjectNamespace<SendLedger>;
+  // CalDAV calendars. Optional so existing deployments and
+  // tests keep working; the transport falls back to 15 s and 4 MiB.
+  CALDAV_TIMEOUT_MS?: string;
+  MAX_RESPONSE_BYTES?: string;
+  // An allowlist is a comma-separated list of calendar names or the single
+  // value "*" (every calendar). Empty disables the domain.
+  ALLOWED_CALENDARS?: string;
+  CALENDAR_WRITE?: string;
+  MAX_CALENDAR_DAYS?: string;
+  MAX_EVENT_RESULTS?: string;
+  MAX_RESOURCE_BYTES?: string;
+  MAX_RESOURCES_PER_QUERY?: string;
+  MAX_OCCURRENCES_PER_RESOURCE?: string;
+  MAX_RDATE_EXDATE?: string;
+  MAX_RECURRENCE_CANDIDATES_PER_RULE?: string;
+  MAX_RECURRENCE_CANDIDATES_PER_REQUEST?: string;
 }
 
 export interface Address {

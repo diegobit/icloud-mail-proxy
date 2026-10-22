@@ -499,13 +499,14 @@ export async function mutateMessage(
           );
         }
         if (e instanceof ImapError && e.code === "UNKNOWN") {
-          // The COPY fallback is not atomic: a drop can leave the copy in the
-          // destination and the message still in the source. Never retry this
-          // automatically — that is how a message gets filed twice.
+          // The COPY fallback is not atomic: a failed or ambiguous follow-up
+          // can leave the copy in the destination and the message still in the
+          // source. Never retry this automatically — that is how a message
+          // gets filed twice.
           throw new ApiError(
             502,
             "mutation_state_unknown",
-            "the connection dropped after the move started; the message may already be in the destination, possibly with the source still present. Check both mailboxes before acting — re-running can file a duplicate.",
+            "the move did not finish; the message may already be in the destination, possibly with the source still present. Check both mailboxes before acting — re-running can file a duplicate.",
           );
         }
         throw e;

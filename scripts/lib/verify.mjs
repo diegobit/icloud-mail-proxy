@@ -15,12 +15,46 @@ const WORKER_ERROR_CODES = new Set([
   "upstream_imap_error",
   "upstream_timeout",
   "internal_error",
+  "not_supported",
+  "invalid_range",
+  "range_too_wide",
+  "too_many_resources",
+  "resource_too_large",
+  "recurrence_too_complex",
+  "calendar_not_allowed",
+  "configured_calendar_missing",
+  "ambiguous_calendar_name",
+  "read_only_collection",
+  "conflict",
+  "invalid_etag",
+  "recurring_not_supported",
+  "scheduling_not_supported",
+  "already_exists",
+  "mutation_state_unknown",
+  "rate_limited",
+  "unsupported_field",
+  "upstream_unauthorized",
+  "upstream_error",
+  "malformed",
 ]);
 
 /** `/healthz` IMAP failures: HTTP 503 `{ ok:false, error:{ code, message } }`. */
 const HEALTHZ_UPSTREAM_CODES = new Set(["NO", "BAD", "BYE", "TIMEOUT", "PARSE", "LIMIT"]);
 
 const MCP_PROTOCOL_VERSION = "2025-06-18";
+
+const MAIL_TOOLS = [
+  "list_mailboxes",
+  "search_mail",
+  "get_mail_message",
+  "get_mail_attachment",
+  "archive_mail",
+  "delete_mail",
+  "send_mail",
+  "save_draft",
+];
+const CALENDAR_READ_TOOLS = ["list_calendars", "list_events", "get_event"];
+const CALENDAR_WRITE_TOOLS = ["create_event", "update_event"];
 const ATTEMPT_TIMEOUT_MESSAGE = "timed out waiting for the endpoint";
 
 const defaultSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -125,6 +159,71 @@ function propagationDetail(result, url) {
     : `${url} answered HTTP ${result.status} while the deployment was still propagating`;
 }
 
+function calendarDomainEnabled(allowlist) {
+  return typeof allowlist === "string" && allowlist.trim().length > 0;
+}
+
+/** The tools the configured deployment must expose. */
+export function expectedToolNames({ calendars = "", calendarWrite = false } = {}) {
+  const names = [...MAIL_TOOLS];
+  if (calendarDomainEnabled(calendars)) {
+    names.push(...CALENDAR_READ_TOOLS);
+    if (calendarWrite) names.push(...CALENDAR_WRITE_TOOLS);
+  }
+  return names;
+}
+
+/** Tools that must not appear because their domain or write flag is off. */
+export function forbiddenToolNames({ calendars = "", calendarWrite = false } = {}) {
+  const names = [];
+  if (!calendarDomainEnabled(calendars)) names.push(...CALENDAR_READ_TOOLS, ...CALENDAR_WRITE_TOOLS);
+  else if (!calendarWrite) names.push(...CALENDAR_WRITE_TOOLS);
+  return names;
+}
+
+/**
+ * Read the unfiltered calendar list through the deployed Worker. Setup cannot
+ * discover CalDAV itself: the Apple password is a Worker secret and Cloudflare
+ * never returns it. `?all=1` works even while the domain is disabled, so this
+ * runs right after the bootstrap deploy.
+ */
+export async function discoverCollections({
+  url,
+  token,
+  fetchImpl = fetch,
+  sleep = defaultSleep,
+  attempts = 6,
+  delayMs = 1000,
+  deadlineMs = 10_000,
+}) {
+  const base = url.replace(/\/+$/, "");
+  const headers = { Authorization: `Bearer ${token}` };
+  const path = "/v1/calendars?all=1";
+  const result = await withRetries(
+    () => attempt(fetchImpl, `${base}${path}`, { method: "GET", headers }, deadlineMs),
+    { attempts, sleep, delayMs },
+  );
+  if (result.networkError) {
+    throw new Error(`${path}: ${result.networkError}`);
+  }
+  if (result.status !== 200) {
+    const detail = result.body?.error?.message ?? result.text?.slice(0, 200) ?? "";
+    throw new Error(`${path} answered HTTP ${result.status}${detail ? `: ${detail}` : ""}`);
+  }
+  const list = result.body?.calendars;
+  if (!Array.isArray(list)) {
+    throw new Error(`${path} did not return a calendars array`);
+  }
+  const calendars = list
+    .filter((entry) => entry && typeof entry.name === "string" && entry.name.length > 0)
+    .map((entry) => ({
+      name: entry.name,
+      kind: "calendar",
+      readOnly: entry.readOnly === true,
+    }));
+  return { calendars };
+}
+
 /** Read a JSON-RPC message out of a JSON or SSE response body. */
 export function parseJsonRpc(contentType, text) {
   if (/text\/event-stream/i.test(contentType)) {
@@ -156,6 +255,9 @@ export async function verifyDeployment({
   url,
   token,
   mailbox,
+  calendars = "",
+  calendarWrite = false,
+  calendar,
   fetchImpl = fetch,
   sleep = defaultSleep,
   attempts = 6,
@@ -163,6 +265,8 @@ export async function verifyDeployment({
   deadlineMs = 10_000,
 }) {
   const base = url.replace(/\/+$/, "");
+  const calendarAllowlist = typeof calendars === "string" ? calendars.trim() : "";
+  const calendarsEnabled = calendarDomainEnabled(calendarAllowlist);
   const checks = [];
   const retry = (run) => withRetries(run, { attempts, sleep, delayMs });
   // The metadata URLs answer 200 on a healthy Worker; a 401 right after a
@@ -214,12 +318,48 @@ export async function verifyDeployment({
   if (!healthCheck.ok) return { ok: false, checks };
 
   // 3. MCP over the same endpoint and token.
-  checks.push(await checkMcp({ base, token, fetchImpl, retry, deadlineMs }));
+  checks.push(
+    await checkMcp({
+      base,
+      token,
+      fetchImpl,
+      retry,
+      deadlineMs,
+      calendars: calendarAllowlist,
+      calendarWrite,
+    }),
+  );
 
   // 4. Optional: the configured folder really exists upstream.
   if (mailbox) checks.push(await checkMailbox({ base, authHeaders, mailbox, fetchImpl, retry, deadlineMs }));
 
-  const ok = checks.every((check) => check.ok);
+  // 5. Calendar discovery and a bounded read, only when the domain is on.
+  // A mail-only deployment does not depend on CalDAV, so this is not probed.
+  if (calendarsEnabled) {
+    checks.push(
+      await checkCalendarDiscovery({
+        base,
+        authHeaders,
+        fetchImpl,
+        retry,
+        deadlineMs,
+      }),
+    );
+  }
+  if (calendarsEnabled) {
+    checks.push(
+      await checkEventListing({
+        base,
+        authHeaders,
+        calendar,
+        fetchImpl,
+        retry,
+        deadlineMs,
+      }),
+    );
+  }
+
+  const ok = checks.every((check) => check.ok || check.advisory);
   return { ok, checks };
 }
 
@@ -332,10 +472,20 @@ function describeMcpChallenge(result, origin) {
   }
   const challenge = result.headers?.get?.("www-authenticate") ?? "";
   const metadataRef = `resource_metadata="${origin}/.well-known/oauth-protected-resource/mcp"`;
-  if (!challenge.includes(metadataRef) || !challenge.includes('scope="mail:read"')) {
-    return { name, ok: false, kind: "oauth", detail: `WWW-Authenticate was "${challenge}", expected resource_metadata and scope="mail:read"` };
+  // Calendars add their read scope to the challenge when the deployment
+  // enables them, so check that mail:read is among the named scopes rather
+  // than expecting the whole string to be exactly mail:read.
+  const scopeMatch = /scope="([^"]*)"/.exec(challenge);
+  const scopes = scopeMatch ? scopeMatch[1].split(/\s+/).filter(Boolean) : [];
+  if (!challenge.includes(metadataRef) || !scopes.includes("mail:read")) {
+    return {
+      name,
+      ok: false,
+      kind: "oauth",
+      detail: `WWW-Authenticate was "${challenge}", expected resource_metadata and a scope list including mail:read`,
+    };
   }
-  return { name, ok: true, detail: "HTTP 401 pointing at the OAuth metadata, scope mail:read" };
+  return { name, ok: true, detail: `HTTP 401 pointing at the OAuth metadata, scopes ${scopes.join(" ")}` };
 }
 
 function describeHealth(result, base) {
@@ -391,7 +541,15 @@ function describeUpstreamHealth(name, code, message) {
   };
 }
 
-async function checkMcp({ base, token, fetchImpl, retry, deadlineMs }) {
+async function checkMcp({
+  base,
+  token,
+  fetchImpl,
+  retry,
+  deadlineMs,
+  calendars = "",
+  calendarWrite = false,
+}) {
   const name = "MCP initialize and tools/list";
   const headers = {
     "Content-Type": "application/json",
@@ -443,7 +601,165 @@ async function checkMcp({ base, token, fetchImpl, retry, deadlineMs }) {
   if (!Array.isArray(tools) || tools.length === 0) {
     return { name, ok: false, kind: "protocol", detail: "tools/list returned no tools" };
   }
+
+  const actual = new Set(tools.map((tool) => tool.name));
+  const expected = expectedToolNames({ calendars, calendarWrite });
+  const expectedSet = new Set(expected);
+  const forbidden = forbiddenToolNames({ calendars, calendarWrite });
+  const forbiddenSet = new Set(forbidden);
+  const missing = expected.filter((toolName) => !actual.has(toolName));
+  const disabled = forbidden.filter((toolName) => actual.has(toolName));
+  // The deployment's tool set is exact, not merely a superset of the enabled
+  // domain: an unknown extra (for example a reminder tool) must fail too.
+  const unknown = [...actual].filter(
+    (toolName) => !expectedSet.has(toolName) && !forbiddenSet.has(toolName),
+  );
+  if (missing.length > 0 || disabled.length > 0 || unknown.length > 0) {
+    const problems = [];
+    if (missing.length > 0) problems.push(`missing ${missing.join(", ")}`);
+    if (disabled.length > 0) problems.push(`present but disabled: ${disabled.join(", ")}`);
+    if (unknown.length > 0) problems.push(`unexpected: ${unknown.join(", ")}`);
+    return {
+      name,
+      ok: false,
+      kind: "protocol",
+      detail: `tools/list does not match the configured domains (${problems.join("; ")})`,
+    };
+  }
   return { name, ok: true, detail: `${tools.length} tools: ${tools.map((t) => t.name).join(", ")}` };
+}
+
+/**
+ * `?all=1` proves the deployed Worker can reach CalDAV and list calendars even
+ * while the domain is disabled.
+ */
+async function checkCalendarDiscovery({ base, authHeaders, fetchImpl, retry, deadlineMs }) {
+  const name = "calendar discovery (?all=1)";
+  const path = "/v1/calendars?all=1";
+  const result = await retry(() =>
+    attempt(fetchImpl, `${base}${path}`, { method: "GET", headers: authHeaders }, deadlineMs),
+  );
+
+  if (result.networkError) {
+    return { name, ok: false, kind: "calendar", detail: result.networkError };
+  }
+  if (result.status === 401 || result.status === 403) {
+    return {
+      name,
+      ok: false,
+      kind: "calendar",
+      detail: `the Worker rejected this API token (HTTP ${result.status})`,
+    };
+  }
+  if (result.status === 404) {
+    return {
+      name,
+      ok: false,
+      kind: "calendar",
+      detail: `HTTP 404; the deployed Worker does not expose ${path} (does it predate CalDAV?)`,
+    };
+  }
+  if (result.status !== 200) {
+    const detail = result.body?.error?.message ?? result.text?.slice(0, 160) ?? "";
+    return {
+      name,
+      ok: false,
+      kind: "calendar",
+      detail: `HTTP ${result.status}${detail ? `: ${detail}` : ""}`,
+    };
+  }
+  const list = result.body?.calendars;
+  if (!Array.isArray(list)) {
+    return {
+      name,
+      ok: false,
+      kind: "calendar",
+      detail: `${path} did not return a calendars array`,
+    };
+  }
+  return { name, ok: true, detail: `${list.length} calendar(s) reported by iCloud` };
+}
+
+/**
+ * A read-only, default 7-day `list_events` against the first allowed calendar
+ * (or the preferred one from setup). Proves the read path end to end without
+ * writing anything.
+ */
+async function checkEventListing({ base, authHeaders, calendar, fetchImpl, retry, deadlineMs }) {
+  const name = "calendar events are readable";
+  const listing = await retry(() =>
+    attempt(fetchImpl, `${base}/v1/calendars`, { method: "GET", headers: authHeaders }, deadlineMs),
+  );
+  if (isPropagating(listing)) {
+    return { name, ok: false, kind: "propagation", detail: propagationDetail(listing, `${base}/v1/calendars`) };
+  }
+  if (listing.status === 401 || listing.status === 403) {
+    return { name, ok: false, kind: "authorization", detail: `HTTP ${listing.status}: the Worker rejected this API token` };
+  }
+  if (listing.status !== 200) {
+    const code = errorCode(listing);
+    const detail = listing.body?.error?.message ?? listing.text?.slice(0, 200) ?? "";
+    if (code === "configured_calendar_missing" || code === "ambiguous_calendar_name" || code === "not_supported") {
+      return {
+        name,
+        ok: false,
+        kind: "calendar",
+        detail: `HTTP ${listing.status}: ${detail} Update ALLOWED_CALENDARS and redeploy.`,
+      };
+    }
+    return { name, ok: false, kind: "calendar", detail: `HTTP ${listing.status}: ${detail || "could not list calendars"}` };
+  }
+  const calendars = Array.isArray(listing.body?.calendars) ? listing.body.calendars : [];
+  if (calendars.length === 0) {
+    return {
+      name,
+      ok: false,
+      kind: "calendar",
+      detail: "the allowlist matched no calendars; update ALLOWED_CALENDARS and redeploy",
+    };
+  }
+  const preferred = typeof calendar === "string" && calendar.trim().length > 0 ? calendar.trim() : null;
+  const chosen = calendars.find((entry) => entry?.name === preferred) ?? calendars[0];
+  const calendarName = String(chosen.name);
+  const path = `/v1/calendars/${encodeURIComponent(calendarName)}/events`;
+  const events = await retry(() => attempt(fetchImpl, `${base}${path}`, { method: "GET", headers: authHeaders }, deadlineMs));
+  if (isPropagating(events)) {
+    return { name, ok: false, kind: "propagation", detail: propagationDetail(events, `${base}${path}`) };
+  }
+  if (events.status === 200 && Array.isArray(events.body?.events)) {
+    return {
+      name: `calendar "${calendarName}" is readable over 7 days`,
+      ok: true,
+      detail: `${events.body.events.length} occurrence(s) returned by list_events`,
+    };
+  }
+  if (events.status === 200) {
+    return {
+      name,
+      ok: false,
+      kind: "calendar",
+      detail: "list_events answered 200 without an events array. Mail is unaffected.",
+    };
+  }
+  const code = errorCode(events);
+  const detail = events.body?.error?.message ?? events.text?.slice(0, 200) ?? "";
+  if (code === "configured_calendar_missing" || code === "ambiguous_calendar_name") {
+    return {
+      name,
+      ok: false,
+      kind: "calendar",
+      detail: `HTTP ${events.status}: ${detail} The allowlist must name a calendar that exists in this account.`,
+    };
+  }
+  if (events.status === 401 || events.status === 403) {
+    return { name, ok: false, kind: "authorization", detail: `HTTP ${events.status}: the Worker rejected this API token` };
+  }
+  return {
+    name,
+    ok: false,
+    kind: "calendar",
+    detail: `HTTP ${events.status}: ${detail || "list_events did not return an events array"}. Mail is unaffected.`,
+  };
 }
 
 /**
