@@ -309,10 +309,12 @@ longer exists.
   `mail:read` grant on `list_events`, then passed the scope check after
   reconnecting with `mail:read calendar:read`. PR #11 is ready to merge.
 - 2026-10-22, follow-up: the owner asked for a delete tool. `delete_event` is
-  specified in `plans/calendar-delete-event.md`; with writes on the surface is
-  14 tools, and 11 with writes off. It deletes one non-recurring `VEVENT` after
-  a strong ETag check; recurring/scheduling resources and `VTODO` cleanup remain
-  out of scope, and there is no trash.
+  deployed to production in version
+  `828704ea-6843-49b0-9f5e-f5695d788076` and tracked in
+  `plans/calendar-delete-event.md`; with writes on the surface is 14 tools, and
+  11 with writes off. It deletes one non-recurring `VEVENT` after a strong ETag
+  check; recurring/scheduling resources and `VTODO` cleanup remain out of
+  scope, and there is no trash.
 
 ## Open items
 

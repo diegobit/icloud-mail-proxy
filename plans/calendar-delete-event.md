@@ -1,7 +1,9 @@
 # Delete one calendar event
 
-**Status (2026-10-22):** in progress. This is the follow-up to
-`plans/calendar-reminders.md`; reminders remain out of scope.
+**Status (2026-10-22):** implemented, reviewed and deployed to production as
+version `828704ea-6843-49b0-9f5e-f5695d788076`; PR #12 is ready to merge. This
+is the follow-up to `plans/calendar-reminders.md`; reminders remain out of
+scope.
 
 **What:** add `delete_event` to the calendar surface and a matching
 `DELETE /v1/calendars/:calendar/events/:id` route. The owner asked for the
@@ -86,10 +88,21 @@ function and error mapping.
 - `npm test` is 683 tests / 36 files; typecheck, bundle validation and
   `git diff --check origin/main...HEAD` are clean. CI is green at `e572d33`.
 
+## Deployment and acceptance
+
+- Production deployed from the branch as version
+  `828704ea-6843-49b0-9f5e-f5695d788076`; `verifyDeployment` passed with 14
+  tools, OAuth metadata, five calendars, folder discovery and a seven-day
+  `list_events` on `Scratch`.
+- Live conditional-delete acceptance on `Scratch` with a disposable event:
+  create returned `201`, a stale ETag returned `409 conflict` and left the
+  event readable, the fresh ETag returned `200 { ok: true }`, `get_event`
+  then returned `404 not_found`, and a repeat DELETE with the old ETag returned
+  `404 not_found`. The disposable event is gone.
+- Production retains `ALLOWED_CALENDARS="*"` and `CALENDAR_WRITE="1"`.
+
 ## Open items
 
-- Deploy only after review and acceptance. Production currently runs the
-  calendar-only runtime from `1a5c7aa`; this change adds a new runtime surface.
 - The legacy VTODO test artifacts from the calendar plan are not removable
   through this tool; they remain a separate direct CalDAV/Apple Calendar
   cleanup.
