@@ -292,9 +292,9 @@ generate a new token, because that would break every existing client.
 - **"conflict":** the event changed since it was read. Call `get_event` again,
   compare, and retry with the fresh ETag. Do not reuse the old tag.
 - **"mutation_state_unknown":** the PUT or DELETE was sent and the response
-  never arrived. It may have landed. Read the event with `get_event` and
-  reconcile; never blind-retry a create, update or delete. A `404` after a
-  delete means the event is gone.
+  never arrived, or iCloud answered `202 Accepted` for a DELETE. It may have
+  landed. Read the event with `get_event` and reconcile; never blind-retry a
+  create, update or delete. A `404` after a delete means the event is gone.
 - **"already_exists":** an idempotent create found the id already present.
   Read it and compare instead of creating a second copy with a new id.
 - **"not_an_event":** the resource is a `VTODO` or another non-event; it cannot

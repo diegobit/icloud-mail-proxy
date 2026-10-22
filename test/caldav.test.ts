@@ -253,6 +253,7 @@ describe("request builders", () => {
     expect(remove.init.body).toBeUndefined();
 
     expect(() => deleteResource("/a/x.ics", 'W/"mq7p46um"')).toThrow(CalDavError);
+    expect(() => deleteResource("/a/x.ics", '"with space"')).toThrow(CalDavError);
     expect(() => deleteResource("/a/x.ics", "unquoted")).toThrow(CalDavError);
   });
 
@@ -575,6 +576,13 @@ describe("writes", () => {
     const { caldav } = await ready([xml("", 412)]);
     expect(await codeOf(caldav.delete(resourcePath(COLLECTION_ID, UID), '"old"'))).toBe(
       "conflict",
+    );
+  });
+
+  it("does not treat a 202 as a completed DELETE", async () => {
+    const { caldav } = await ready([xml("", 202)]);
+    expect(await codeOf(caldav.delete(resourcePath(COLLECTION_ID, UID), '"old"'))).toBe(
+      "mutation_state_unknown",
     );
   });
 

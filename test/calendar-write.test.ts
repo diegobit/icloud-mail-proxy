@@ -783,7 +783,7 @@ describe("updateEvent", () => {
 
   it("rejects weak, wildcard, list and malformed ETags without the network", async () => {
     const calls = stubFetch();
-    for (const etag of ['W/"etag"', "*", '"a", "b"', "etag", '"unterminated']) {
+    for (const etag of ['W/"etag"', "*", '"a", "b"', '"with space"', "etag", '"unterminated']) {
       await expect(
         update(makeEnv(), { calendar: "Lavoro", id: "plain", etag, summary: "X" }),
       ).rejects.toSatisfy((error: unknown) => errorCode(error) === "invalid_etag");
@@ -984,7 +984,7 @@ describe("deleteEvent", () => {
 
   it("rejects weak, wildcard, list and malformed ETags without the network", async () => {
     const calls = stubFetch();
-    for (const etag of ['W/"etag"', "*", '"a", "b"', "etag", '"unterminated']) {
+    for (const etag of ['W/"etag"', "*", '"a", "b"', '"with space"', "etag", '"unterminated']) {
       await expect(
         remove(makeEnv(), { calendar: "Lavoro", id: "plain", etag }),
       ).rejects.toSatisfy((error: unknown) => errorCode(error) === "invalid_etag");
@@ -1125,6 +1125,24 @@ describe("deleteEvent", () => {
     ).rejects.toSatisfy((error: unknown) => {
       expect(errorCode(error)).toBe("mutation_state_unknown");
       expect((error as Error).message).toContain("plain");
+      expect((error as Error).message).toContain("get_event");
+      return true;
+    });
+    expect(logs[0]).toContain('"outcome":"mutation_state_unknown"');
+  });
+
+  it("does not report a 202 DELETE as success", async () => {
+    stubFetch({
+      multiget: multistatus("cal-lavoro", [
+        { id: "plain", ics: PLAIN, etag: '"etag-plain"' },
+      ]),
+      delete: () => new Response("", { status: 202 }),
+    });
+    const logs = captureLogs();
+    await expect(
+      remove(makeEnv(), { calendar: "Lavoro", id: "plain", etag: '"etag-plain"' }),
+    ).rejects.toSatisfy((error: unknown) => {
+      expect(errorCode(error)).toBe("mutation_state_unknown");
       expect((error as Error).message).toContain("get_event");
       return true;
     });

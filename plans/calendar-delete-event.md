@@ -30,9 +30,9 @@ Calendar's delete action; there is no undo through this Worker.
   refused before the DELETE.
 - The same `CALENDAR_WRITE_LIMITER` gate and audit line apply. The audit action
   is `delete_event`; the summary, description and location are never logged.
-- A dropped DELETE response returns `502 mutation_state_unknown`. The DELETE
-  may have landed; reconcile with `get_event`. A `404` there means the event is
-  gone. Never blind-retry.
+- A dropped DELETE response, or an iCloud `202 Accepted`, returns `502
+  mutation_state_unknown`. The DELETE may have landed; reconcile with
+  `get_event`. A `404` there means the event is gone. Never blind-retry.
 - Return `{ ok, calendar, collectionId, resourceId, uid, summary }`. There is
   no ETag to return because the resource is gone.
 - The MCP tool is registered only when `CALENDAR_WRITE=1`; with writes off the
@@ -66,11 +66,12 @@ function and error mapping.
 
 ## Tests
 
-- Caldav builder: method, `If-Match`, no body, weak/invalid ETag refusal.
-- Caldav transport: 204 success, 412 conflict, invalid ETag before the network.
-- Core: success, stale ETag, invalid ETag, read-only collection, missing event,
-  writes disabled, missing/denied limiter, recurring/scheduling/VTODO refusal,
-  DELETE 412, dropped DELETE.
+- Caldav builder: method, `If-Match`, no body, weak/space/invalid ETag refusal.
+- Caldav transport: 204 success, 412 conflict, 202 unknown, invalid ETag before
+  the network.
+- Core: success, stale ETag, invalid ETag (including spaces), read-only
+  collection, missing event, writes disabled, missing/denied limiter,
+  recurring/scheduling/VTODO refusal, DELETE 412, 202 and dropped DELETE.
 - REST: `If-Match` required, success shape, writes-disabled 404.
 - Setup verification: 14-tool exact set with writes on; 11 without writes.
 - Full suite, typecheck and bundle.

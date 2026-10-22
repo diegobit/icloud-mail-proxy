@@ -100,8 +100,8 @@ const MAX_RESPONSE_BYTES = 16 * 1024 * 1024;
 const DISCOVERY_TTL_MS = 10 * 60_000;
 const DISCOVERY_CACHE_LIMIT = 8;
 const ID = /^[A-Za-z0-9._-]{1,128}$/;
-const ETAG = /^(?:W\/)?"[\x20-\x21\x23-\x7e]*"$/;
-const STRONG_ETAG = /^"[\x20-\x21\x23-\x7e]*"$/;
+const ETAG = /^(?:W\/)?"[\x21\x23-\x7e]*"$/;
+const STRONG_ETAG = /^"[\x21\x23-\x7e]*"$/;
 const TIME_RANGE = /^\d{8}T\d{6}Z$/;
 const PROP_NAME = /^[A-Za-z]+:[A-Za-z-]+$/;
 const XML_NAMESPACES =
@@ -654,7 +654,14 @@ export function createCalDav(env: Env, options: CalDavOptions = {}): CalDav {
           mutation: true,
         }),
       );
-      assertStatus(response, [200, 202, 204]);
+      if (response.status === 202) {
+        throw new CalDavError(
+          "mutation_state_unknown",
+          202,
+          "iCloud accepted the DELETE with HTTP 202; it may still be processing",
+        );
+      }
+      assertStatus(response, [200, 204]);
       return response;
     },
   };

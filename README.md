@@ -648,8 +648,8 @@ current ETag and uses `If-Match`:
 - `422 not_an_event` — the resource is a `VTODO`, not a calendar event.
 - `403 read_only_collection` — the collection is not writable for the account.
 - `502 mutation_state_unknown` — the PUT or DELETE was sent and its response
-  never arrived. It may have landed; reconcile with `get_event`, never
-  blind-retry.
+  never arrived, or iCloud answered `202 Accepted` for a DELETE. It may have
+  landed; reconcile with `get_event`, never blind-retry.
 - `429 rate_limited` — more than 30 writes per minute from the same IP.
 
 `DELETE .../:id` takes no body. It requires the exact strong ETag in an
@@ -889,9 +889,9 @@ Writes are structured and narrow:
 - `delete_event` also requires the exact strong ETag. The server re-reads the
   event, checks the ETag, refuses a recurring, scheduling or non-VEVENT
   resource, then sends `DELETE` with `If-Match`. Deletion is immediate and
-  there is no trash. A DELETE whose response never arrived returns `502
-  mutation_state_unknown`; reconcile with `get_event`, where `404` means the
-  event is gone.
+  there is no trash. A DELETE whose response never arrived, or that returned
+  `202 Accepted`, returns `502 mutation_state_unknown`; reconcile with
+  `get_event`, where `404` means the event is gone.
 - Creates accept an optional `id`; a retry that hits an existing resource
   returns `409 already_exists` instead of making a second copy. A calendar that
   is read-only for the account returns `403 read_only_collection`.
