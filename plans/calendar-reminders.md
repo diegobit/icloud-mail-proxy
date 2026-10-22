@@ -708,20 +708,21 @@ with no `Event`/`Time`/`Timezone` use, `COUNT` rules expand from `DTSTART`
   `422 recurring_not_supported` and a scheduling resource with `422
   scheduling_not_supported`; both ETags and summaries were unchanged after the
   refusal.
-- 2026-10-22, reminder acceptance: the `Scratch` list visible in the Reminders
-  app is not in this account's CalDAV home (the home still lists only
-  `Casa SP⚠️` and `Reminders` as VTODO collections; `Scratch` is VEVENT-only),
-  so with owner approval a dedicated `MCP Acceptance` VTODO collection was
-  created with `MKCALENDAR` under the same account. The Worker's `?all=1`
-  discovery sees it. Created `acceptance-reminder-2026-10-24` (due 2026-10-24
-  09:00 `Europe/Rome`, priority 5); the stored due is `07:00Z`. Completed it
-  through REST and MCP (`COMPLETED`, `PERCENT-COMPLETE:100`), reopened through
-  REST and MCP (`NEEDS-ACTION`, completion fields removed, raw `.ics` has no
-  `PERCENT-COMPLETE`), then completed it again through MCP and left it
-  completed for the iPhone check. The `update_reminder` `completed: false`
-  path and `complete_reminder` were exercised; no existing list or reminder
-  was modified.
-- 2026-10-22, pending: the iPhone rendering check for the event and reminder,
-  and the OAuth narrowed-grant reconnect check. The `MCP Acceptance` list, its
-  reminder, and the `Scratch` event remain for the owner; deletion is not
-  exposed.
+- 2026-10-22, reminder blocker: Apple moved the Reminders app to a
+  CloudKit-backed store in iOS 13; CalDAV exposes only lists that were never
+  upgraded. This account's CalDAV home has two legacy VTODO collections
+  (`Casa SP⚠️` and `Reminders`), while the Reminders app and iCloud web show
+  `Diego`, `AIT`, `Spesa`, `Spezia todo`, `Icebox` and `Scratch` — none of
+  which is a VTODO collection on CalDAV. A `MCP Acceptance` VTODO list created
+  with `MKCALENDAR`, and a `MCP test 23 ottobre` reminder created in the legacy
+  `Reminders` list, are visible to CalDAV and the Worker but do not appear in
+  the Reminders app or iCloud web. The reminder half of this plan therefore
+  cannot read or write the reminders the owner actually uses; the CalDAV path
+  is legacy-only. No existing list or reminder was modified. The calendar half
+  is unaffected: the `Scratch` event is still present and correct.
+- 2026-10-22, pending: owner decision on reminders (keep them as legacy-only
+  tools with an explicit warning, remove them from this PR, or pursue a
+  CloudKit/companion approach), the iPhone event check, and the OAuth
+  narrowed-grant reconnect check. The `MCP Acceptance` list, its reminder, and
+  the `Reminders` test reminder remain as CalDAV-only artifacts; deletion is
+  not exposed by the Worker.
