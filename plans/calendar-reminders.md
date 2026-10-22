@@ -32,10 +32,10 @@ has per-tool scope checks.
 
 Apple moved the Reminders app to a CloudKit-backed store in iOS 13. CalDAV
 `VTODO` only exposes lists that were never migrated. On this account the CalDAV
-home had two legacy VTODO collections (`Casa SP⚠️` and `Reminders`), while the
-Reminders app and iCloud web showed `Diego`, `AIT`, `Spesa`, `Spezia todo`,
-`Icebox` and `Scratch`. A VTODO list created with `MKCALENDAR` and a reminder
-created in the legacy `Reminders` list were visible to CalDAV and to the Worker
+home had two legacy VTODO collections (one with an emoji in its name), while the
+Reminders app and iCloud web showed a different set of CloudKit-backed lists. A
+VTODO list created with `MKCALENDAR` and a reminder created in the legacy
+`Reminders` list were visible to CalDAV and to the Worker
 but never appeared in the Reminders app or iCloud web.
 
 The reminder half therefore could not read or write the reminders the owner
@@ -87,7 +87,7 @@ credentials.
 | `PROPFIND /` → `current-user-principal` | 207; `/<dsid>/principal/` |
 | `PROPFIND principal` → `calendar-home-set` | 207; absolute URL on the shard host |
 | `PROPFIND home` Depth 1 | 207; account home, five calendars, two legacy VTODO collections, and `inbox` / `notification` / `outbox` with no display name |
-| Component sets | `Lavoro`, `Personale`, `Casa SP`, `Spesa Belun`, `Scratch` = `VEVENT`; `Casa SP⚠️`, `Reminders` = `VTODO`; `outbox` advertises both |
+| Component sets | Five calendars advertise `VEVENT`; two advertise `VTODO` (one of those names ends in an emoji); `outbox` advertises both |
 | Component-set XML | Apple writes `name='VEVENT'` with single quotes — a double-quote-only parser silently sees zero components |
 | Home collection itself | Has a display name and advertises `VEVENT, VTODO, VFREEBUSY`, but its `resourcetype` is collection-only. Display name + components is not enough. |
 | `C:calendar-data/c:expand` | Ignored; two requests differing only by `expand` returned byte-identical bodies (1,814,924 bytes). Client-side expansion is mandatory. |
@@ -282,7 +282,7 @@ longer exists.
   on `Scratch` for 2026-10-23 10:00 `Europe/Rome`; the API returned
   `10:00+02:00` and `get_event` showed `08:00Z`. Renamed it; a stale ETag
   returned `409 conflict` and left the summary unchanged. `update_event`
-  refused a recurring `Lavoro` resource and a scheduling resource; both were
+  refused a recurring `Work` resource and a scheduling resource; both were
   unchanged after the refusal.
 - 2026-10-22, reminder blocker: the owner's Reminders lists are CloudKit-only;
   CalDAV reaches only legacy VTODO lists. Reminder surface removed.

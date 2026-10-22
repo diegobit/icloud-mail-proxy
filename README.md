@@ -460,7 +460,7 @@ curl -H "Authorization: Bearer $API_TOKEN" \
   "calendars": [
     {
       "id": "3ED435B2-4C0A-4B7E-9A25-2A5F0C8D1E11",
-      "name": "Lavoro",
+      "name": "Work",
       "kind": "calendar",
       "color": "#91DAC2FF",
       "readOnly": false
@@ -488,12 +488,12 @@ case-insensitively over the summary and location.
 
 ```
 curl -H "Authorization: Bearer $API_TOKEN" \
-  "https://icloud-mail.diegobit.com/v1/calendars/Lavoro/events?from=2026-10-21&to=2026-10-28&limit=10"
+  "https://icloud-mail.diegobit.com/v1/calendars/Work/events?from=2026-10-21&to=2026-10-28&limit=10"
 ```
 
 ```json
 {
-  "calendar": "Lavoro",
+  "calendar": "Work",
   "from": "2026-10-21T00:00:00+02:00",
   "to": "2026-10-28T00:00:00+02:00",
   "events": [
@@ -601,12 +601,12 @@ collection.
 curl -X POST -H "Authorization: Bearer $API_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"summary":"Dentist","start":"2026-10-23T09:00:00","end":"2026-10-23T10:00:00","timeZone":"Europe/Rome","location":"Via Roma 1"}' \
-  https://icloud-mail.diegobit.com/v1/calendars/Lavoro/events
+  https://icloud-mail.diegobit.com/v1/calendars/Work/events
 ```
 
 ```json
 {
-  "calendar": "Lavoro",
+  "calendar": "Work",
   "collectionId": "3ED435B2-4C0A-4B7E-9A25-2A5F0C8D1E11",
   "resourceId": "A17B0E4C-9D21-4B7A-8C33-6F5E2D1A0B99",
   "uid": "A17B0E4C-9D21-4B7A-8C33-6F5E2D1A0B99",
@@ -660,13 +660,13 @@ Deletion is immediate; there is no trash.
 ```
 curl -X DELETE -H "Authorization: Bearer $API_TOKEN" \
   -H 'If-Match: "C=1235;O=1"' \
-  https://icloud-mail.diegobit.com/v1/calendars/Lavoro/events/A17B0E4C-9D21-4B7A-8C33-6F5E2D1A0B99
+  https://icloud-mail.diegobit.com/v1/calendars/Work/events/A17B0E4C-9D21-4B7A-8C33-6F5E2D1A0B99
 ```
 
 ```json
 {
   "ok": true,
-  "calendar": "Lavoro",
+  "calendar": "Work",
   "collectionId": "3ED435B2-4C0A-4B7E-9A25-2A5F0C8D1E11",
   "resourceId": "A17B0E4C-9D21-4B7A-8C33-6F5E2D1A0B99",
   "uid": "A17B0E4C-9D21-4B7A-8C33-6F5E2D1A0B99",
@@ -804,14 +804,14 @@ Enable calendars in `wrangler.base.jsonc` (or a deployment profile) and
 redeploy:
 
 ```jsonc
-"ALLOWED_CALENDARS": "Lavoro,Family",
+"ALLOWED_CALENDARS": "Work,Family",
 "CALENDAR_WRITE": "1",
 ```
 
 - The allowlist contains display names, exactly as returned by
   `list_calendars`, matched case-sensitively. `*` means every calendar that
   passes discovery, including shared ones and ones created later. It must be
-  alone: `*,Lavoro` is a configuration error, not a superset. A configured
+  alone: `*,Work` is a configuration error, not a superset. A configured
   name that matches nothing fails closed on every call
   (`configured_calendar_missing`); a duplicate display name returns `409
   ambiguous_calendar_name`.

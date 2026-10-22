@@ -69,7 +69,7 @@ ${body}
 const HOME_ENTRY = `<D:response>
   <D:href>/${DSID}/calendars/</D:href>
   <D:propstat>
-    <D:prop><D:resourcetype><D:collection/></D:resourcetype><D:displayname>Diego Giorgini</D:displayname></D:prop>
+    <D:prop><D:resourcetype><D:collection/></D:resourcetype><D:displayname>Test Owner</D:displayname></D:prop>
     <D:status>HTTP/1.1 200 OK</D:status>
   </D:propstat>
 </D:response>`;

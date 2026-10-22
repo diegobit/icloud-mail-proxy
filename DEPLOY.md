@@ -90,7 +90,7 @@ allowlist value controls what is reachable:
 - `ALLOWED_CALENDARS` — comma-separated display names, exactly as iCloud
   reports them, matched case-sensitively. `*` means every calendar that passes
   discovery, including shared ones and ones created later. `*` must be alone: a
-  mixed value such as `*,Lavoro` is a configuration error, not a superset. A
+  mixed value such as `*,Work` is a configuration error, not a superset. A
   configured name that matches nothing fails closed
   (`configured_calendar_missing`); two calendars with the same name return
   `409 ambiguous_calendar_name`. Renaming a calendar in Apple Calendar breaks a
