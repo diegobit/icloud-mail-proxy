@@ -246,6 +246,14 @@ longer exists.
   `55d4b277-24c8-48e4-910b-5bef3201a4a7`; `verifyDeployment` passed with 13
   tools, five calendars and `list_events`, and `/v1/reminder-lists` is still
   404.
+- A second Codex review at `afe5c75` confirmed all eight findings fixed and
+  requested two corrections: the plan overstated custom `VTIMEZONE` support,
+  and the IMAP mutation tests swallowed scripted-server assertion failures.
+  Both are fixed in `535695d`; a final review at `535695d` returned `APPROVED`
+  with no new findings. CI is green at `535695d`.
+- `535695d` changes only the plan and tests, so production remains on the
+  runtime from `1a5c7aa` (version `55d4b277-24c8-48e4-910b-5bef3201a4a7`);
+  no redeploy was needed.
 - PR #11 is retitled "Calendars over CalDAV (calendar-only)" and remains a
   draft pending the two manual checks below.
 
@@ -280,6 +288,10 @@ longer exists.
   `55d4b277-24c8-48e4-910b-5bef3201a4a7`): `verifyDeployment` passed with 13
   tools, OAuth metadata, `?all=1` (five calendars), a seven-day `list_events`
   on `Scratch`, and a 404 on `/v1/reminder-lists`.
+- 2026-10-22, second and final Codex reviews: round 2 at `afe5c75` found two
+  documentation/test issues; both were fixed in `535695d`. The final review
+  returned `APPROVED` with no new findings; 664 tests / 35 files and typecheck
+  are clean, and CI is green at `535695d`.
 
 ## Open items
 
