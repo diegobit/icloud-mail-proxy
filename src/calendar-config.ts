@@ -4,7 +4,7 @@
 // single value `*`. Names are matched exactly after trimming, because Apple
 // lets the owner rename calendars and the allowlist is a policy, not a
 // pattern. An empty value disables the domain: no tools, no routes, no scopes.
-// `*` must be alone: `*,Lavoro` is a configuration error, not a superset.
+// `*` must be alone: `*,Work` is a configuration error, not a superset.
 
 import type { Env } from "./types";
 import type { ResourceScope, Scope } from "./scopes";

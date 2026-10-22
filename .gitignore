@@ -5,3 +5,5 @@ node_modules/
 dist/
 # Guided setup: generated wrangler configs and nonsecret resume state.
 .deploy/
+# Browser captures from local Playwright runs; never part of the source.
+.playwright-mcp/

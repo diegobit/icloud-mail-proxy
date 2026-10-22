@@ -7,7 +7,13 @@ on:
 
 jobs:
   checks:
-    runs-on: sengi-standard-4-ubuntu-2404
+    # Fork PRs run on a GitHub-hosted runner: their `npm ci` and test run is
+    # untrusted code, and the Sengi runner should not be spending itself on
+    # strangers' commits. GitHub-hosted minutes are free on public repos, so
+    # this costs nothing; pushes and same-repo PRs keep the fast Sengi runner.
+    # `full_name` is null for a deleted fork, which also lands on the hosted
+    # runner — the fail-safe direction.
+    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || 'sengi-standard-4-ubuntu-2404' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

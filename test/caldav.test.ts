@@ -71,7 +71,7 @@ const COLLECTIONS = `<?xml version="1.0" encoding="UTF-8"?>
     <D:propstat>
       <D:prop>
         <D:resourcetype><D:collection/></D:resourcetype>
-        <D:displayname>Diego Giorgini</D:displayname>
+        <D:displayname>Test Owner</D:displayname>
       </D:prop>
       <D:status>HTTP/1.1 200 OK</D:status>
     </D:propstat>
