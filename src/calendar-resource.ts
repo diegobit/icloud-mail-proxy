@@ -23,7 +23,7 @@ import type { IcalCaps, ParsedResource } from "./ical";
 import type { Env } from "./types";
 
 const RESOURCE_ID = /^[A-Za-z0-9._-]{1,128}$/;
-const ETAG = /^(?:W\/)?"[\x20-\x21\x23-\x7e]*"$/;
+const ETAG = /^(?:W\/)?"[\x21\x23-\x7e]*"$/;
 
 export type ReadOnlyReason = "recurring" | "scheduling";
 
@@ -41,7 +41,7 @@ export function isResourceId(value: string): boolean {
   return RESOURCE_ID.test(value) && value !== "." && value !== "..";
 }
 
-const STRONG_ETAG = /^"[\x20-\x21\x23-\x7e]*"$/;
+const STRONG_ETAG = /^"[\x21\x23-\x7e]*"$/;
 
 /**
  * Validate the ETag a caller passes back for an update. Reads tolerate a weak

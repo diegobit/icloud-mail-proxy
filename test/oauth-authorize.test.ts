@@ -281,7 +281,7 @@ describe("POST /authorize", () => {
     const body = await response.text();
     expect(body).toContain('name="scope" value="calendar:read"');
     expect(body).toContain('name="scope" value="calendar:write"');
-    expect(body).toContain("Create and update events (calendar:write)");
+    expect(body).toContain("Create, update and delete events (calendar:write)");
   });
 
   it("rejects a token submission without an S256 challenge before consent", async () => {

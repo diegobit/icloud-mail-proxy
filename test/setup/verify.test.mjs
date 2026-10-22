@@ -492,7 +492,7 @@ describe("per-attempt deadline", () => {
 });
 
 const CALENDAR_READ_TOOLS = ["list_calendars", "list_events", "get_event"];
-const CALENDAR_WRITE_TOOLS = ["create_event", "update_event"];
+const CALENDAR_WRITE_TOOLS = ["create_event", "update_event", "delete_event"];
 
 function mcpRules(names) {
   return [
@@ -587,9 +587,10 @@ describe("calendar verification", () => {
 
     expect(result.ok).toBe(true);
     const mcp = result.checks.find((check) => check.name === "MCP initialize and tools/list");
-    expect(mcp.detail).toContain("13 tools");
+    expect(mcp.detail).toContain("14 tools");
     expect(mcp.detail).toContain("create_event");
     expect(mcp.detail).toContain("update_event");
+    expect(mcp.detail).toContain("delete_event");
   });
 
   it("fails containment when a write tool appears while its flag is off", async () => {

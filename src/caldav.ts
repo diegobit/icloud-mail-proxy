@@ -75,6 +75,8 @@ export interface CalDav {
   get(href: string): Promise<CalDavResponse>;
   /** Creates when `etag` is null (If-None-Match: *), updates otherwise (If-Match). */
   put(href: string, ics: string, etag: string | null): Promise<CalDavResponse>;
+  /** Deletes one resource; the ETag is sent as If-Match. */
+  delete(href: string, etag: string): Promise<CalDavResponse>;
 }
 
 export interface CalendarQueryInput {
@@ -98,7 +100,8 @@ const MAX_RESPONSE_BYTES = 16 * 1024 * 1024;
 const DISCOVERY_TTL_MS = 10 * 60_000;
 const DISCOVERY_CACHE_LIMIT = 8;
 const ID = /^[A-Za-z0-9._-]{1,128}$/;
-const ETAG = /^(?:W\/)?"[\x20-\x21\x23-\x7e]*"$/;
+const ETAG = /^(?:W\/)?"[\x21\x23-\x7e]*"$/;
+const STRONG_ETAG = /^"[\x21\x23-\x7e]*"$/;
 const TIME_RANGE = /^\d{8}T\d{6}Z$/;
 const PROP_NAME = /^[A-Za-z]+:[A-Za-z-]+$/;
 const XML_NAMESPACES =
@@ -148,6 +151,27 @@ export function putResource(
         ...(etag === null ? { "If-None-Match": "*" } : { "If-Match": etag }),
       },
       body: ics,
+    },
+  };
+}
+
+/** A conditional DELETE; If-Match needs one strong, quoted ETag. */
+export function deleteResource(
+  href: string,
+  etag: string,
+): { url: string; init: RequestInit } {
+  if (!STRONG_ETAG.test(etag)) {
+    throw new CalDavError(
+      "invalid_argument",
+      0,
+      "the If-Match ETag must be one strong, quoted HTTP entity tag",
+    );
+  }
+  return {
+    url: href,
+    init: {
+      method: "DELETE",
+      headers: { "If-Match": etag },
     },
   };
 }
@@ -617,6 +641,27 @@ export function createCalDav(env: Env, options: CalDavOptions = {}): CalDav {
         }),
       );
       assertStatus(response, [200, 201, 204]);
+      return response;
+    },
+
+    async delete(href, etag) {
+      const built = deleteResource(href, etag);
+      const response = await pinnedCall(href, (url) =>
+        send({
+          method: "DELETE",
+          url,
+          headers: built.init.headers as Record<string, string>,
+          mutation: true,
+        }),
+      );
+      if (response.status === 202) {
+        throw new CalDavError(
+          "mutation_state_unknown",
+          202,
+          "iCloud accepted the DELETE with HTTP 202; it may still be processing",
+        );
+      }
+      assertStatus(response, [200, 204]);
       return response;
     },
   };

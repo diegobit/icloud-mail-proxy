@@ -54,7 +54,7 @@ const MAIL_TOOLS = [
   "save_draft",
 ];
 const CALENDAR_READ_TOOLS = ["list_calendars", "list_events", "get_event"];
-const CALENDAR_WRITE_TOOLS = ["create_event", "update_event"];
+const CALENDAR_WRITE_TOOLS = ["create_event", "update_event", "delete_event"];
 const ATTEMPT_TIMEOUT_MESSAGE = "timed out waiting for the endpoint";
 
 const defaultSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));

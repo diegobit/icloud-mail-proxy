@@ -285,28 +285,33 @@ generate a new token, because that would break every existing client.
 ## Calendar operations
 
 - **Inspect what happened:** `wrangler tail` shows one `calendar_write` line per
-  attempted event write — principal, action (`create_event` or `update_event`),
-  calendar id, resource id and outcome. It never includes the summary,
-  description or location. Unlike sends, calendar writes have no durable audit
-  trail.
+  attempted event write — principal, action (`create_event`, `update_event` or
+  `delete_event`), calendar id, resource id and outcome. It never includes the
+  summary, description or location. Unlike sends, calendar writes have no
+  durable audit trail.
 - **"conflict":** the event changed since it was read. Call `get_event` again,
   compare, and retry with the fresh ETag. Do not reuse the old tag.
-- **"mutation_state_unknown":** the PUT was sent and the response never
-  arrived. It may have landed. Read the event with `get_event` and reconcile;
-  never blind-retry a create or an update.
+- **"mutation_state_unknown":** the PUT or DELETE was sent and the response
+  never arrived, or iCloud answered `202 Accepted` for a DELETE. It may have
+  landed. Read the event with `get_event` and reconcile; never blind-retry a
+  create, update or delete. A `404` after a delete means the event is gone.
 - **"already_exists":** an idempotent create found the id already present.
   Read it and compare instead of creating a second copy with a new id.
+- **"not_an_event":** the resource is a `VTODO` or another non-event; it cannot
+  be deleted through this proxy.
 - **"recurring_not_supported" / "scheduling_not_supported":** recurring events
-  and events with an organizer or attendees cannot be changed through this
-  proxy. Edit them in Apple Calendar. Retrying will not help.
+  and events with an organizer or attendees cannot be changed or deleted
+  through this proxy. Edit them in Apple Calendar. Retrying will not help.
 - **"read_only_collection":** iCloud's privileges say the calendar is not
   writable for this account, even though the write flag is on. Pick another
   calendar or change the sharing/ownership in Apple Calendar.
 - **"rate_limited":** more than 30 writes per minute came from the same
   connecting IP. Wait a minute.
-- **No delete and no invitations:** there is no delete tool, no recurrence
-  editor, no attendee/organizer editing and no free/busy, sharing or contacts.
-  Deleting an event stays an action in Apple Calendar.
+- **Delete only one-off events; no invitations:** `delete_event` removes one
+  non-recurring event after an ETag check, but CalDAV deletion is immediate
+  and there is no trash. Recurring and scheduling resources stay read-only and
+  must be edited in Apple Calendar. There is no recurrence editor, no
+  attendee/organizer editing and no free/busy, sharing or contacts.
 - **Choosing or re-checking calendars:** `GET /v1/calendars?all=1` with the
   bearer token lists every calendar before allowlist filtering, even while the
   domain is disabled. Use it when a configured name no longer resolves.

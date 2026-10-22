@@ -1,11 +1,13 @@
-// Write side of CalDAV events: create and update one non-recurring event.
+// Write side of CalDAV events: create, update or delete one non-recurring
+// event.
 //
 // Product rules for the calendar surface:
 // - inputs are structured fields, never raw iCalendar;
 // - a create generates a UUIDv4 resource (or accepts a caller id so a retry is
 //   idempotent) and uses If-None-Match: *;
-// - an update requires the exact strong ETag from get_event, re-reads the
-//   resource, refuses recurring/scheduling resources, then uses If-Match;
+// - an update or delete requires the exact strong ETag from get_event,
+//   re-reads the resource, refuses recurring/scheduling resources, then uses
+//   If-Match; deletion is immediate and has no trash;
 // - the serialized payload is UTC or DATE only: no TZID, RRULE, RDATE,
 //   EXDATE, ATTENDEE, ORGANIZER or VALARM is ever written;
 // - every attempted write is logged with the principal, action, collection,
@@ -96,6 +98,13 @@ export interface UpdateEventInput {
   description?: string | null;
 }
 
+export interface DeleteEventInput {
+  calendar: string;
+  id: string;
+  /** The strong ETag returned by get_event. */
+  etag: string;
+}
+
 /** Kept as the event module's public name for the shared write options. */
 export type CalendarWriteOptions = WriteOptions;
 
@@ -112,6 +121,15 @@ export interface EventWriteResult {
   end: string | null;
   timeZone: string | null;
   allDay: boolean;
+}
+
+export interface DeleteEventResult {
+  ok: true;
+  calendar: string;
+  collectionId: string;
+  resourceId: string;
+  uid: string;
+  summary: string | null;
 }
 
 interface ResolvedEventTime {
@@ -538,6 +556,98 @@ export async function updateEvent(
         end: time !== null ? time.endIso : end === null ? null : formatAbsolute(end),
         timeZone: time !== null ? time.zone : start?.timeZone ?? null,
         allDay: time !== null ? time.allDay : updated.master.allDay,
+      };
+    });
+  });
+}
+
+/**
+ * Delete one non-recurring, non-scheduling event. The read-before-delete is
+ * deliberate: it checks the caller's ETag, refuses a VTODO or a recurring /
+ * scheduling resource, and gives the audit line a definite outcome before the
+ * DELETE is sent. CalDAV deletion is immediate; there is no trash.
+ */
+export async function deleteEvent(
+  env: Env,
+  input: DeleteEventInput,
+  options: CalendarWriteOptions = {},
+): Promise<DeleteEventResult> {
+  assertCalendarWriteEnabled(env);
+  const limits = calendarLimits(env);
+  if (!isResourceId(input.id)) {
+    throw new ApiError(
+      400,
+      "invalid_request",
+      `invalid event id ${JSON.stringify(input.id)}; use 1-128 letters, digits, dot, underscore or hyphen`,
+    );
+  }
+  assertStrongEtag(input.etag);
+  const etag = input.etag;
+
+  return withWriteLimit(env, options.rateLimitKey, async () => {
+    const collection = await resolveCalendar(env, input.calendar, {
+      fetchImpl: options.fetchImpl,
+    });
+    if (collection.readOnly) throw readOnlyCollectionError(collection);
+
+    return auditWrite(options, "delete_event", collection.id, input.id, async () => {
+      const current = await readResource(env, collection, input.id, {
+        fetchImpl: options.fetchImpl,
+      });
+      if (current.etag !== etag) {
+        throw new ApiError(
+          409,
+          "conflict",
+          "the event changed since you read it; call get_event again",
+        );
+      }
+
+      const parsed = parseResource(current.ics, icalCaps(limits));
+      if (parsed.kind !== "VEVENT") {
+        throw new ApiError(
+          422,
+          "not_an_event",
+          "this resource is not a VEVENT; delete_event only deletes calendar events",
+        );
+      }
+      if (parsed.recurring) {
+        throw new ApiError(
+          422,
+          "recurring_not_supported",
+          "this event is recurring; delete_event only deletes one-off events, so nothing was deleted",
+        );
+      }
+      if (parsed.scheduling) {
+        throw new ApiError(
+          422,
+          "scheduling_not_supported",
+          "this event has an organizer or attendees; delete_event does not delete scheduling resources",
+        );
+      }
+
+      const caldav = createCalDav(env, { fetchImpl: options.fetchImpl });
+      const { homeUrl } = await caldav.discover();
+      const href = new URL(resourcePath(collection.id, input.id), homeUrl).pathname;
+      try {
+        await caldav.delete(href, etag);
+      } catch (error) {
+        if (error instanceof CalDavError && error.code === "conflict") {
+          throw new ApiError(
+            409,
+            "conflict",
+            "the event changed since you read it; call get_event again",
+          );
+        }
+        throw reconcileMutationError(error, "delete", input.id, "get_event");
+      }
+
+      return {
+        ok: true,
+        calendar: collection.name,
+        collectionId: collection.id,
+        resourceId: input.id,
+        uid: parsed.uid,
+        summary: parsed.master.summary,
       };
     });
   });

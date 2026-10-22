@@ -1,22 +1,24 @@
 # Calendars over CalDAV
 
-**Status (2026-10-22):** calendar-only. The legacy CalDAV reminder surface was
-removed after the live probe showed it could not reach the lists the owner
-actually uses. Calendars remain in production; reminders are a separate future
-project.
+**Status (2026-10-22):** calendar-only, with an opt-in one-off event delete
+tool added in the follow-up plan `plans/calendar-delete-event.md`. The legacy
+CalDAV reminder surface was removed after the live probe showed it could not
+reach the lists the owner actually uses. Calendars remain in production;
+reminders are a separate future project.
 
-**What:** let an agent read calendars and create or update one-off events
-through the same Worker, `/mcp` endpoint and OAuth consent used for mail.
-Owner request (2026-10-21): *"leggo e creo calendari chiamando un tool del
-server mcp, come faccio con le mail, magari anche da ChatGPT connesso al
+**What:** let an agent read calendars and create, update or delete one-off
+events through the same Worker, `/mcp` endpoint and OAuth consent used for
+mail. Owner request (2026-10-21): *"leggo e creo calendari chiamando un tool
+del server mcp, come faccio con le mail, magari anche da ChatGPT connesso al
 plugin"*.
 
 **What this is not:** a full CalDAV client. No invitations or replies (iTIP
 scheduling), no sharing or ACL changes, no free/busy, no managed attachments,
-no deletion, no Contacts (CardDAV) or Notes. Deletion is deliberately absent
-because CalDAV `DELETE` is immediate — unlike mail there is no trash — and the
-owner asked for read and create, not removal. Reminders are not part of this
-surface.
+no Contacts (CardDAV) or Notes. Deletion is limited to one non-recurring
+`VEVENT` after a strong ETag check; there is no trash, and recurring or
+scheduling resources stay read-only. The original release deliberately had no
+deletion because CalDAV `DELETE` is immediate; the owner later asked for this
+narrow tool. Reminders are not part of this surface.
 
 ## Why one deployment
 
@@ -105,12 +107,13 @@ Apple properties that a naive overwrite would destroy.
 
 With calendars enabled and writes off, the Worker exposes 11 tools: eight mail
 tools plus `list_calendars`, `list_events`, `get_event`. With
-`CALENDAR_WRITE=1` it adds `create_event` and `update_event`, for 13.
+`CALENDAR_WRITE=1` it adds `create_event`, `update_event` and `delete_event`,
+for 14.
 
 | Tool | Scope | Enabled by |
 | --- | --- | --- |
 | `list_calendars`, `list_events`, `get_event` | `calendar:read` | `ALLOWED_CALENDARS` |
-| `create_event`, `update_event` | `calendar:write` | `ALLOWED_CALENDARS` + `CALENDAR_WRITE=1` |
+| `create_event`, `update_event`, `delete_event` | `calendar:write` | `ALLOWED_CALENDARS` + `CALENDAR_WRITE=1` |
 | the eight mail tools | `mail:read` | always |
 
 The static bearer reaches every enabled tool. OAuth grants hold the scopes the
@@ -125,7 +128,7 @@ An older grant holding only `mail:read` must reconnect before using calendars.
   `current-user-principal` and `calendar-home-set` to the account shard, and
   pins every later request to the discovered origin and home path.
 - Refuses redirects, encoded path separators, control characters and
-  non-absolute hrefs; requires a strong quoted ETag for updates.
+  non-absolute hrefs; requires a strong quoted ETag for updates and deletes.
 - Uses Cloudflare `fetch` with a timeout, a response-size cap and no caching.
 - `calendar-query` and `calendar-multiget` REPORTs; single-resource GET;
   PUT with `If-None-Match: *` for create or `If-Match` for update.
@@ -187,11 +190,15 @@ An older grant holding only `mail:read` must reconnect before using calendars.
 - `update_event` requires the exact strong ETag from `get_event`, re-reads the
   resource, refuses recurring or scheduling resources, and uses `If-Match`. A
   stale tag is `409 conflict`.
+- `delete_event` requires the exact strong ETag, re-reads the resource,
+  refuses recurring, scheduling and non-VEVENT resources, and sends `DELETE`
+  with `If-Match`. Deletion is immediate; there is no trash.
 - Serialization is UTC or `DATE` only. No `TZID`, `RRULE`, `RDATE`, `EXDATE`,
   `ATTENDEE`, `ORGANIZER` or `VALARM` is ever written. An existing `VALARM` is
   preserved by read-modify-write.
-- A PUT whose response never arrived returns `mutation_state_unknown`; the
-  caller must reconcile with `get_event`, never blind-retry.
+- A PUT or DELETE whose response never arrived returns
+  `mutation_state_unknown`; the caller must reconcile with `get_event`, never
+  blind-retry.
 - `CALENDAR_WRITE_LIMITER` allows 30 writes per minute per connecting IP. A
   missing binding fails closed.
 - Each attempt writes one `calendar_write` audit line with principal, action,
@@ -214,6 +221,7 @@ An older grant holding only `mail:read` must reconnect before using calendars.
 - `GET /v1/calendars/:calendar/events/:id`
 - `POST /v1/calendars/:calendar/events`
 - `PUT /v1/calendars/:calendar/events/:id`
+- `DELETE /v1/calendars/:calendar/events/:id` (requires `If-Match`)
 
 Same bodies and error codes as the MCP tools. Write routes answer
 `404 not_supported` when `CALENDAR_WRITE` is off. `/v1/reminder-lists` no
@@ -227,8 +235,8 @@ longer exists.
   final local suite 651 tests / 35 files, typecheck and bundle clean.
 - Production calendar acceptance (pre-removal version): create, rename, stale
   ETag conflict, recurring refusal and scheduling refusal all passed against
-  `Scratch`. The acceptance event remains on `Scratch`; there is no delete
-  tool.
+  `Scratch`. The acceptance event remains on `Scratch`; the original release
+  had no delete tool.
 - Calendar-only release deployed to production as version
   `05264555-f39e-4e6b-b684-33b7f26435f3`. The live surface is 13 tools with
   `CALENDAR_WRITE=1`; writes off would be 11. `verifyDeployment` passed and
@@ -300,10 +308,18 @@ longer exists.
   worker using the same OAuth flow returned `insufficient_scope` for a
   `mail:read` grant on `list_events`, then passed the scope check after
   reconnecting with `mail:read calendar:read`. PR #11 is ready to merge.
+- 2026-10-22, follow-up: the owner asked for a delete tool. `delete_event` is
+  deployed to production in version
+  `828704ea-6843-49b0-9f5e-f5695d788076` and tracked in
+  `plans/calendar-delete-event.md`; with writes on the surface is 14 tools, and
+  11 with writes off. It deletes one non-recurring `VEVENT` after a strong ETag
+  check; recurring/scheduling resources and `VTODO` cleanup remain out of
+  scope, and there is no trash.
 
 ## Open items
 
 - Optional cleanup of CalDAV-only test artifacts: the `MCP Acceptance` VTODO
   list and its reminder, the legacy `Reminders` test reminder, and
   `acceptance-reminder-2026-10-24` / `mcp-test-2026-10-23`. They do not appear
-  in the Reminders app. No delete tool exists in this Worker.
+  in the Reminders app. `delete_event` cannot remove VTODO resources; cleanup
+  remains a direct CalDAV or Apple Calendar action.
