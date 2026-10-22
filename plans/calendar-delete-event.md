@@ -51,7 +51,8 @@ function and error mapping.
 ## Implementation
 
 - `src/caldav.ts`: add `deleteResource` (strong ETag, `If-Match`) and
-  `CalDav.delete`; accept 200/202/204 and treat 412 as `conflict`.
+  `CalDav.delete`; accept 200/204, treat 412 as `conflict`, and map 202 to
+  `mutation_state_unknown`.
 - `src/calendar-write.ts`: add `DeleteEventInput`, `DeleteEventResult` and
   `deleteEvent`, using the existing rate limiter, allowlist, read-only check,
   ETag re-read, parser and audit helper.
@@ -76,9 +77,17 @@ function and error mapping.
 - Setup verification: 14-tool exact set with writes on; 11 without writes.
 - Full suite, typecheck and bundle.
 
+## Review
+
+- Round 1 at `d74e97e` found two issues: HTTP 202 was treated as success, and
+  spaces passed ETag validation. Both are fixed in `e572d33` with regressions.
+- Independent review at `e572d33` returned APPROVED with no new findings; it
+  noted one stale plan line, corrected here.
+- `npm test` is 683 tests / 36 files; typecheck, bundle validation and
+  `git diff --check origin/main...HEAD` are clean. CI is green at `e572d33`.
+
 ## Open items
 
-- Codex review of the branch and fixes before merge.
 - Deploy only after review and acceptance. Production currently runs the
   calendar-only runtime from `1a5c7aa`; this change adds a new runtime surface.
 - The legacy VTODO test artifacts from the calendar plan are not removable
