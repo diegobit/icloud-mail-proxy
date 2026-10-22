@@ -254,8 +254,12 @@ longer exists.
 - `535695d` changes only the plan and tests, so production remains on the
   runtime from `1a5c7aa` (version `55d4b277-24c8-48e4-910b-5bef3201a4a7`);
   no redeploy was needed.
-- PR #11 is retitled "Calendars over CalDAV (calendar-only)" and remains a
-  draft pending the two manual checks below.
+- Final acceptance: the owner confirmed the `Scratch` event is visible on the
+  iPhone at 2026-10-23 10:00 `Europe/Rome`. The narrowed-grant OAuth behavior
+  was verified against a local worker running the same OAuth flow: a
+  `mail:read` grant answers `insufficient_scope` for `list_events`, while
+  reconnecting with `mail:read calendar:read` passes the scope check. PR #11 is
+  ready to merge.
 
 ## Verification log
 
@@ -292,14 +296,14 @@ longer exists.
   documentation/test issues; both were fixed in `535695d`. The final review
   returned `APPROVED` with no new findings; 664 tests / 35 files and typecheck
   are clean, and CI is green at `535695d`.
+- 2026-10-22, final acceptance: the owner confirmed the iPhone event. A local
+  worker using the same OAuth flow returned `insufficient_scope` for a
+  `mail:read` grant on `list_events`, then passed the scope check after
+  reconnecting with `mail:read calendar:read`. PR #11 is ready to merge.
 
 ## Open items
 
-- iPhone confirmation that the `Scratch` event is visible.
-- OAuth reconnect check with a narrowed grant (`mail:read` only) to confirm
-  `insufficient_scope` and that reconnecting can add calendar scopes.
 - Optional cleanup of CalDAV-only test artifacts: the `MCP Acceptance` VTODO
   list and its reminder, the legacy `Reminders` test reminder, and
   `acceptance-reminder-2026-10-24` / `mcp-test-2026-10-23`. They do not appear
   in the Reminders app. No delete tool exists in this Worker.
-- Mark PR #11 ready and merge it after the manual checks.
