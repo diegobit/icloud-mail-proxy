@@ -118,7 +118,7 @@ export function fakeVerify(outcome = { ok: true, checks: [{ name: "all", ok: tru
 }
 
 /** Discovery stub: returns fixed collections and records what it was asked. */
-export function fakeDiscover(result = { calendars: [], reminderLists: [] }) {
+export function fakeDiscover(result = { calendars: [] }) {
   const calls = [];
   const fn = async (args) => {
     calls.push(args);

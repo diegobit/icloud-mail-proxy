@@ -18,8 +18,8 @@ const APPLE_PASSWORD_HELP = [
 export const NONINTERACTIVE_HELP = [
   "`npm run setup` is an interactive terminal flow: it asks for your iCloud",
   "address, an app-specific password, the folders to expose, and (after the",
-  "first deploy) which calendars and reminder lists to allow, so it needs a",
-  "terminal it can prompt on.",
+  "first deploy) which calendars to allow, so it needs a terminal it can",
+  "prompt on.",
   "",
   "Run it directly in a terminal:  npm run setup",
   "",
@@ -30,7 +30,7 @@ export const NONINTERACTIVE_HELP = [
 const RESUME_HINT =
   "Nothing is lost if you stop: press Ctrl-C at any point and run `npm run setup` again — " +
   "it picks up the same account and Worker, keeps the secrets already uploaded, and only " +
-  "changes credentials, the API token, folders, or calendar/reminder access if you ask it to. " +
+  "changes credentials, the API token, folders, or calendar access if you ask it to. " +
   "A run that discovers calendars deploys once to learn the names, then redeploys with your choice before verifying.";
 
 function pickUrl(targets) {
@@ -101,7 +101,7 @@ function verificationHint(checks) {
     case "mailbox":
       return "The first configured folder could not be read. Folder names must match iCloud exactly; re-run `npm run setup` to correct them. Setup always deploys again, then verifies.";
     case "calendar":
-      return "The mail side works, but iCloud CalDAV failed or a configured calendar/reminder list could not be read. Check the allowlists against `?all=1`, or wait and retry if iCloud is slow. Re-run `npm run setup` after correcting the configuration; mail is unaffected.";
+      return "The mail side works, but iCloud CalDAV failed or a configured calendar could not be read. Check the allowlist against `?all=1`, or wait and retry if iCloud is slow. Re-run `npm run setup` after correcting the configuration; mail is unaffected.";
     case "protocol":
       return "REST worked but the MCP tool list did not match the configured domains. Redeploy this checkout (`npm run setup`) and check `npx wrangler tail` while a client connects; the write tools must be absent while their flags are `0`.";
     case "oauth":
@@ -167,8 +167,7 @@ function printCollections(log, heading, entries) {
     return;
   }
   for (const entry of entries) {
-    const kind = entry.kind === "reminders" ? "reminder list" : "calendar";
-    log(`  - ${entry.name} (${kind}${entry.readOnly ? ", read-only" : ""})`);
+    log(`  - ${entry.name} (calendar${entry.readOnly ? ", read-only" : ""})`);
   }
 }
 
@@ -287,12 +286,8 @@ export async function runSetup({
   const prior = store.read() ?? {};
   const baseVars = baseConfig.vars ?? {};
   const baseCalendars = typeof baseVars.ALLOWED_CALENDARS === "string" ? baseVars.ALLOWED_CALENDARS : "";
-  const baseReminderLists = typeof baseVars.ALLOWED_REMINDER_LISTS === "string" ? baseVars.ALLOWED_REMINDER_LISTS : "";
   const priorCalendars = typeof prior.allowedCalendars === "string" ? prior.allowedCalendars : undefined;
-  const priorReminderLists =
-    typeof prior.allowedReminderLists === "string" ? prior.allowedReminderLists : undefined;
   let allowedCalendars = priorCalendars;
-  let allowedReminderLists = priorReminderLists;
   let preferredCalendarName;
   let account = who.accounts.find((candidate) => candidate.id === prior.accountId) ?? null;
   if (account && who.accounts.length > 1) {
@@ -375,7 +370,6 @@ export async function runSetup({
     // the owner explicitly disabled the domain and must override a non-empty
     // base.
     if (allowedCalendars !== undefined) vars.ALLOWED_CALENDARS = allowedCalendars;
-    if (allowedReminderLists !== undefined) vars.ALLOWED_REMINDER_LISTS = allowedReminderLists;
     return vars;
   };
 
@@ -386,11 +380,6 @@ export async function runSetup({
   log(`  ${operationLabel} "${target.name}" in ${account.name} (${account.id})`);
   log(`  folders: ${allowedMailboxes}`);
   log(`  calendars: ${accessLabel(allowedCalendars ?? (baseCalendars.trim() ? baseCalendars : undefined))}`);
-  log(
-    `  reminder lists: ${accessLabel(
-      allowedReminderLists ?? (baseReminderLists.trim() ? baseReminderLists : undefined),
-    )}`,
-  );
   log(
     `  secrets: ${
       Object.keys(secretsToUpload).length === 0
@@ -404,8 +393,8 @@ export async function runSetup({
   log("  OAuth: the first deploy creates the OAUTH_KV namespace for connector sign-ins (nothing to configure)");
   log(
     verificationToken
-      ? "  calendars and reminder lists are discovered after the first deploy, then the Worker is redeployed with your choice"
-      : "  calendar and reminder discovery is skipped: no API token is available in this run",
+      ? "  calendars are discovered after the first deploy, then the Worker is redeployed with your choice"
+      : "  calendar discovery is skipped: no API token is available in this run",
   );
   if (!(await prompts.confirm("Proceed?", { defaultValue: true }))) {
     return { code: 130, message: "Nothing was changed. Run `npm run setup` again when you are ready." };
@@ -429,7 +418,6 @@ export async function runSetup({
       workerName: target.name,
       allowedMailboxes,
       ...(allowedCalendars !== undefined ? { allowedCalendars } : {}),
-      ...(allowedReminderLists !== undefined ? { allowedReminderLists } : {}),
       url,
       configPath,
       stage,
@@ -461,20 +449,19 @@ export async function runSetup({
 
   if (verificationToken) {
     log("");
-    log("Discovering calendars and reminder lists through the deployed Worker…");
+    log("Discovering calendars through the deployed Worker…");
     let discovered = null;
     try {
       discovered = await discover({ url, token: verificationToken });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      log(`Could not discover calendars and reminder lists: ${message}`);
-      log("Leaving calendar and reminder access as configured; mail setup continues.");
+      log(`Could not discover calendars: ${message}`);
+      log("Leaving calendar access as configured; mail setup continues.");
     }
     if (discovered) {
       progress.calendarsDiscoveredAt = now();
       persist("deployed");
       printCollections(log, "Calendars reported by iCloud:", discovered.calendars);
-      printCollections(log, "Reminder lists reported by iCloud:", discovered.reminderLists);
 
       let asked = false;
       if (discovered.calendars.length > 0) {
@@ -487,17 +474,6 @@ export async function runSetup({
           defaultValue: fallback,
         });
         preferredCalendarName = preferredCalendar(allowedCalendars, discovered.calendars);
-        asked = true;
-      }
-      if (discovered.reminderLists.length > 0) {
-        const fallback = allowedReminderLists ?? (baseReminderLists.trim() ? baseReminderLists : "*");
-        allowedReminderLists = await askAccess({
-          prompts,
-          log,
-          label: "Reminder lists",
-          names: discovered.reminderLists.map((entry) => entry.name),
-          defaultValue: fallback,
-        });
         asked = true;
       }
 
@@ -513,7 +489,7 @@ export async function runSetup({
         progress.calendarsSelectedAt = now();
         persist("calendars_selected");
         log("");
-        log("Redeploying with the calendar and reminder choices…");
+        log("Redeploying with the calendar choices…");
         const redeployed = await wrangler.deploy({ configPath, accountId: account.id });
         url = pickUrl(redeployed.targets);
         progress.deployedAt = now();
@@ -523,7 +499,7 @@ export async function runSetup({
     }
   } else {
     log("");
-    log("No API token is available in this run, so calendar and reminder discovery is skipped.");
+    log("No API token is available in this run, so calendar discovery is skipped.");
   }
 
   log("");
@@ -533,9 +509,7 @@ export async function runSetup({
     token: verificationToken,
     mailbox: allowedMailboxes.split(",")[0],
     calendars: allowedCalendars ?? baseCalendars,
-    reminderLists: allowedReminderLists ?? baseReminderLists,
     calendarWrite: baseVars.CALENDAR_WRITE === "1",
-    reminderWrite: baseVars.REMINDERS_WRITE === "1",
     calendar: preferredCalendarName,
   });
   log(describeChecks(result.checks));

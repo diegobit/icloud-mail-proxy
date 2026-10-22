@@ -244,7 +244,6 @@ function makeEnv(overrides: Record<string, unknown> = {}): Env {
     ICLOUD_USER: "owner@example.com",
     ICLOUD_APP_PASSWORD: "app-pass",
     ALLOWED_CALENDARS: "*",
-    ALLOWED_REMINDER_LISTS: "*",
     CALENDAR_WRITE: "1",
     CALENDAR_WRITE_LIMITER: fakeLimiter(),
     ...overrides,

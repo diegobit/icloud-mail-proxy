@@ -6,10 +6,9 @@
 // to an empty array there, so `props.via === "bearer"` is the owner and holds
 // every scope. A naive `scope.includes(...)` would break every bearer client.
 //
-// `calendar:write` implies `calendar:read` and `reminders:write` implies
-// `reminders:read`, so a grant widened to write can also read. The consent page
-// offers read and write separately; the implication only ever widens the
-// check, never the stored grant.
+// `calendar:write` implies `calendar:read`, so a grant widened to write can
+// also read. The consent page offers read and write separately; the implication
+// only ever widens the check, never the stored grant.
 
 import { ApiError } from "./core";
 
@@ -17,8 +16,6 @@ export const SCOPES = [
   "mail:read",
   "calendar:read",
   "calendar:write",
-  "reminders:read",
-  "reminders:write",
   "offline_access",
 ] as const;
 
@@ -50,7 +47,6 @@ export function hasScope(authority: Authority, scope: ResourceScope): boolean {
   if (authority.via === "bearer") return true;
   if (authority.scopes.includes(scope)) return true;
   if (scope === "calendar:read") return authority.scopes.includes("calendar:write");
-  if (scope === "reminders:read") return authority.scopes.includes("reminders:write");
   return false;
 }
 

@@ -1,4 +1,4 @@
-// CalDAV transport for iCloud calendars and reminders.
+// CalDAV transport for iCloud calendars.
 //
 // Two trust boundaries live here, and both must hold before the Basic
 // credential is attached to a request:
@@ -78,7 +78,7 @@ export interface CalDav {
 }
 
 export interface CalendarQueryInput {
-  component: "VEVENT" | "VTODO";
+  component: "VEVENT";
   timeRange?: { start: string; end: string };
 }
 

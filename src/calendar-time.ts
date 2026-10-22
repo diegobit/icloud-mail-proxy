@@ -1,8 +1,8 @@
-// Shared parsing and formatting for calendar and reminder tool arguments.
+// Shared parsing and formatting for calendar tool arguments.
 //
-// Event windows and reminder due bounds accept the same strict forms: a bare
-// YYYY-MM-DD, or a date-time with an optional Z/offset. A value without an
-// offset is read in DEFAULT_TIME_ZONE by the caller, never by guessing UTC.
+// Event windows accept a bare YYYY-MM-DD, or a date-time with an optional
+// Z/offset. A value without an offset is read in DEFAULT_TIME_ZONE by the
+// caller, never by guessing UTC.
 // Formatting keeps the resource's own zone: a TZID value is rendered with the
 // offset in effect at that instant, a Z value with Z, a DATE as a bare date.
 

@@ -111,7 +111,7 @@ describe("first guided setup, end to end", () => {
       wrangler: createWranglerAdapter({ bin: fakeBin, secrets }),
       state: { read: () => store.read(), write: (state) => store.write(state, secrets), path: statePath },
       verify: (args) => verifyDeployment({ ...args, fetchImpl, sleep: async () => {} }),
-      discover: async () => ({ calendars: [], reminderLists: [] }),
+      discover: async () => ({ calendars: [] }),
       writeConfig: (fragment) => writeGeneratedConfig(fragment, { base: readBaseConfig(), dir: workdir }),
       baseConfig: readBaseConfig(),
       generateToken: () => "integration-token-abcdefghij",

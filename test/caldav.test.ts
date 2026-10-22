@@ -204,9 +204,9 @@ describe("request builders", () => {
         '<C:time-range start="20261020T000000Z" end="20261027T000000Z"/>' +
         "</C:comp-filter></C:comp-filter></C:filter></C:calendar-query>",
     );
-    expect(calendarQuery({ component: "VTODO" })).toBe(
+    expect(calendarQuery({ component: "VEVENT" })).toBe(
       `<C:calendar-query ${NS}><D:prop><D:getetag/><C:calendar-data/></D:prop>` +
-        '<C:filter><C:comp-filter name="VCALENDAR"><C:comp-filter name="VTODO">' +
+        '<C:filter><C:comp-filter name="VCALENDAR"><C:comp-filter name="VEVENT">' +
         "</C:comp-filter></C:comp-filter></C:filter></C:calendar-query>",
     );
   });

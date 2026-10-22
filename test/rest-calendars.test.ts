@@ -93,10 +93,12 @@ describe("GET /v1/calendars", () => {
     expect(calls).toHaveLength(0);
   });
 
-  it("answers not_supported for disabled reminder lists", async () => {
+  it("no longer exposes reminder routes", async () => {
+    const calls = stubFetch([]);
     const { status, body } = await get("/v1/reminder-lists", makeEnv({ ALLOWED_CALENDARS: "*" }));
     expect(status).toBe(404);
-    expect(body.error.code).toBe("not_supported");
+    expect(body.error.code).toBe("not_found");
+    expect(calls).toHaveLength(0);
   });
 
   it("lists only allowlisted calendars when enabled", async () => {
@@ -114,16 +116,6 @@ describe("GET /v1/calendars", () => {
       "Lavoro",
       "Personale",
     ]);
-  });
-
-  it("returns reminder lists under their own key", async () => {
-    stubFetch(discoveryThen(new Response(COLLECTIONS, { status: 207 })));
-    const { status, body } = await get(
-      "/v1/reminder-lists",
-      makeEnv({ ALLOWED_CALENDARS: "", ALLOWED_REMINDER_LISTS: "*" }),
-    );
-    expect(status).toBe(200);
-    expect(body.reminderLists.map((entry: { name: string }) => entry.name)).toEqual(["Reminders"]);
   });
 
   it("maps a rejected credential to upstream_unauthorized", async () => {

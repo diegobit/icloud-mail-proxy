@@ -517,16 +517,15 @@ describe("verification outcomes", () => {
   });
 });
 
-describe("calendar and reminder discovery", () => {
+describe("calendar discovery", () => {
   const discovered = {
     calendars: [
       { name: "Lavoro", kind: "calendar", readOnly: false },
-      { name: "Casa SP⚠️", kind: "calendar", readOnly: true },
+      { name: "Casa", kind: "calendar", readOnly: true },
     ],
-    reminderLists: [{ name: "Reminders", kind: "reminders", readOnly: false }],
   };
 
-  it("deploys, discovers, asks for both allowlists, and redeploys before verifying", async () => {
+  it("deploys, discovers, asks for the calendar allowlist, and redeploys before verifying", async () => {
     const prompts = fakePrompts([
       ["Worker name", ""],
       ["iCloud email address", "me@icloud.com"],
@@ -535,7 +534,6 @@ describe("calendar and reminder discovery", () => {
       ["Proceed?", true],
       ["Show it once now", false],
       ["Calendars the proxy may use", ""],
-      ["Reminder lists the proxy may use", ""],
     ]);
     const discover = fakeDiscover(discovered);
     const wrangler = fakeWrangler();
@@ -550,21 +548,16 @@ describe("calendar and reminder discovery", () => {
     expect(h.configs[1].vars).toMatchObject({
       ALLOWED_MAILBOXES: "INBOX,Archive,Sent Messages",
       ALLOWED_CALENDARS: "*",
-      ALLOWED_REMINDER_LISTS: "*",
     });
+    expect(h.configs[1].vars).not.toHaveProperty("ALLOWED_REMINDER_LISTS");
 
     const selected = h.store.history.find((record) => record.stage === "calendars_selected");
-    expect(selected).toMatchObject({ allowedCalendars: "*", allowedReminderLists: "*" });
+    expect(selected).toMatchObject({ allowedCalendars: "*" });
     expect(discover.calls).toHaveLength(1);
 
-    expect(h.verify.calls[0]).toMatchObject({
-      calendars: "*",
-      reminderLists: "*",
-      calendar: "Lavoro",
-    });
+    expect(h.verify.calls[0]).toMatchObject({ calendars: "*", calendar: "Lavoro" });
     expect(prompts.output()).toContain("Lavoro (calendar)");
-    expect(prompts.output()).toContain("Casa SP⚠️ (calendar, read-only)");
-    expect(prompts.output()).toContain("Reminders (reminder list)");
+    expect(prompts.output()).toContain("Casa (calendar, read-only)");
   });
 
   it("persists named allowlists and gives the first allowed calendar to verification", async () => {
@@ -575,20 +568,15 @@ describe("calendar and reminder discovery", () => {
       ["Folders the proxy may read", ""],
       ["Proceed?", true],
       ["Show it once now", false],
-      ["Calendars the proxy may use", "Casa SP⚠️,Lavoro"],
-      ["Reminder lists the proxy may use", "Reminders"],
+      ["Calendars the proxy may use", "Casa,Lavoro"],
     ]);
     const h = harness({ prompts, wrangler: fakeWrangler(), discover: fakeDiscover(discovered) });
 
     await h.run();
 
-    expect(h.configs.at(-1).vars.ALLOWED_CALENDARS).toBe("Casa SP⚠️,Lavoro");
-    expect(h.configs.at(-1).vars.ALLOWED_REMINDER_LISTS).toBe("Reminders");
-    expect(h.store.history.at(-1)).toMatchObject({
-      allowedCalendars: "Casa SP⚠️,Lavoro",
-      allowedReminderLists: "Reminders",
-    });
-    expect(h.verify.calls[0].calendar).toBe("Casa SP⚠️");
+    expect(h.configs.at(-1).vars.ALLOWED_CALENDARS).toBe("Casa,Lavoro");
+    expect(h.store.history.at(-1)).toMatchObject({ allowedCalendars: "Casa,Lavoro" });
+    expect(h.verify.calls[0].calendar).toBe("Casa");
   });
 
   it("still redeploys when the existing configuration already allows everything", async () => {
@@ -598,7 +586,6 @@ describe("calendar and reminder discovery", () => {
       workerName: "icloud-mail-proxy",
       allowedMailboxes: "INBOX",
       allowedCalendars: "*",
-      allowedReminderLists: "*",
       stage: "verified",
     };
     const prompts = fakePrompts([
@@ -609,7 +596,6 @@ describe("calendar and reminder discovery", () => {
       ["Folders the proxy may read", ""],
       ["Proceed?", true],
       ["Calendars the proxy may use", ""],
-      ["Reminder lists the proxy may use", ""],
     ]);
     const wrangler = fakeWrangler({
       workers: { "icloud-mail-proxy": { secretNames: ["API_TOKEN", "ICLOUD_USER", "ICLOUD_APP_PASSWORD"] } },
@@ -624,8 +610,8 @@ describe("calendar and reminder discovery", () => {
     await h.run();
 
     expect(wrangler.calls.filter((call) => call.command === "deploy")).toHaveLength(2);
-    expect(h.configs.at(-1).vars).toMatchObject({ ALLOWED_CALENDARS: "*", ALLOWED_REMINDER_LISTS: "*" });
-    expect(h.store.history.at(-1)).toMatchObject({ allowedCalendars: "*", allowedReminderLists: "*" });
+    expect(h.configs.at(-1).vars).toMatchObject({ ALLOWED_CALENDARS: "*" });
+    expect(h.store.history.at(-1)).toMatchObject({ allowedCalendars: "*" });
   });
 
   it("skips discovery when no API token is available and deploys once", async () => {
@@ -672,7 +658,6 @@ describe("calendar and reminder discovery", () => {
       workerName: "icloud-mail-proxy",
       allowedMailboxes: "INBOX",
       allowedCalendars: "Lavoro",
-      allowedReminderLists: "Reminders",
       stage: "verified",
     };
     const prompts = fakePrompts([
@@ -695,14 +680,10 @@ describe("calendar and reminder discovery", () => {
 
     expect(result.code).toBe(0);
     expect(wrangler.calls.filter((call) => call.command === "deploy")).toHaveLength(1);
-    expect(prompts.output()).toContain("Could not discover calendars and reminder lists");
-    expect(h.verify.calls[0]).toMatchObject({
-      calendars: "Lavoro",
-      reminderLists: "Reminders",
-    });
+    expect(prompts.output()).toContain("Could not discover calendars");
+    expect(h.verify.calls[0]).toMatchObject({ calendars: "Lavoro" });
     expect(h.store.history.at(-1)).toMatchObject({
       allowedCalendars: "Lavoro",
-      allowedReminderLists: "Reminders",
       stage: "verified",
     });
   });
@@ -716,15 +697,14 @@ describe("calendar and reminder discovery", () => {
       ["Proceed?", true],
       ["Show it once now", false],
       ["Calendars the proxy may use", "none"],
-      ["Reminder lists the proxy may use", "none"],
     ]);
     const h = harness({ prompts, wrangler: fakeWrangler(), discover: fakeDiscover(discovered) });
 
     await h.run();
 
-    expect(h.configs.at(-1).vars).toMatchObject({ ALLOWED_CALENDARS: "", ALLOWED_REMINDER_LISTS: "" });
-    expect(h.store.history.at(-1)).toMatchObject({ allowedCalendars: "", allowedReminderLists: "" });
-    expect(h.verify.calls[0]).toMatchObject({ calendars: "", reminderLists: "", calendar: undefined });
+    expect(h.configs.at(-1).vars).toMatchObject({ ALLOWED_CALENDARS: "" });
+    expect(h.store.history.at(-1)).toMatchObject({ allowedCalendars: "" });
+    expect(h.verify.calls[0]).toMatchObject({ calendars: "", calendar: undefined });
   });
 
   it("refuses a mixed * and name list instead of treating it as a superset", async () => {
@@ -736,7 +716,6 @@ describe("calendar and reminder discovery", () => {
       ["Proceed?", true],
       ["Show it once now", false],
       ["Calendars the proxy may use", ["*,Lavoro", "*"]],
-      ["Reminder lists the proxy may use", "none"],
     ]);
     const h = harness({ prompts, wrangler: fakeWrangler(), discover: fakeDiscover(discovered) });
 
@@ -755,7 +734,6 @@ describe("calendar and reminder discovery", () => {
       ["Proceed?", true],
       ["Show it once now", false],
       ["Calendars the proxy may use", ""],
-      ["Reminder lists the proxy may use", ""],
     ]);
     const wrangler = fakeWrangler();
     let deploys = 0;
@@ -771,7 +749,7 @@ describe("calendar and reminder discovery", () => {
 
     const afterFailure = h.store.history.at(-1);
     expect(afterFailure.stage).toBe("calendars_selected");
-    expect(afterFailure).toMatchObject({ allowedCalendars: "*", allowedReminderLists: "*" });
+    expect(afterFailure).toMatchObject({ allowedCalendars: "*" });
     expect(h.configs).toHaveLength(2);
   });
 });

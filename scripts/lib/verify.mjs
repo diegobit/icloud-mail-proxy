@@ -24,8 +24,6 @@ const WORKER_ERROR_CODES = new Set([
   "calendar_not_allowed",
   "configured_calendar_missing",
   "ambiguous_calendar_name",
-  "reminder_list_not_allowed",
-  "configured_reminder_list_missing",
   "read_only_collection",
   "conflict",
   "invalid_etag",
@@ -57,8 +55,6 @@ const MAIL_TOOLS = [
 ];
 const CALENDAR_READ_TOOLS = ["list_calendars", "list_events", "get_event"];
 const CALENDAR_WRITE_TOOLS = ["create_event", "update_event"];
-const REMINDER_READ_TOOLS = ["list_reminder_lists", "list_reminders", "get_reminder"];
-const REMINDER_WRITE_TOOLS = ["create_reminder", "update_reminder", "complete_reminder"];
 const ATTEMPT_TIMEOUT_MESSAGE = "timed out waiting for the endpoint";
 
 const defaultSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -168,38 +164,28 @@ function calendarDomainEnabled(allowlist) {
 }
 
 /** The tools the configured deployment must expose. */
-export function expectedToolNames({ calendars = "", reminderLists = "", calendarWrite = false, reminderWrite = false } = {}) {
+export function expectedToolNames({ calendars = "", calendarWrite = false } = {}) {
   const names = [...MAIL_TOOLS];
-  const calendarsOn = calendarDomainEnabled(calendars);
-  const remindersOn = calendarDomainEnabled(reminderLists);
-  if (calendarsOn) {
+  if (calendarDomainEnabled(calendars)) {
     names.push(...CALENDAR_READ_TOOLS);
     if (calendarWrite) names.push(...CALENDAR_WRITE_TOOLS);
-  }
-  if (remindersOn) {
-    names.push(...REMINDER_READ_TOOLS);
-    if (reminderWrite) names.push(...REMINDER_WRITE_TOOLS);
   }
   return names;
 }
 
 /** Tools that must not appear because their domain or write flag is off. */
-export function forbiddenToolNames({ calendars = "", reminderLists = "", calendarWrite = false, reminderWrite = false } = {}) {
+export function forbiddenToolNames({ calendars = "", calendarWrite = false } = {}) {
   const names = [];
-  const calendarsOn = calendarDomainEnabled(calendars);
-  const remindersOn = calendarDomainEnabled(reminderLists);
-  if (!calendarsOn) names.push(...CALENDAR_READ_TOOLS, ...CALENDAR_WRITE_TOOLS);
+  if (!calendarDomainEnabled(calendars)) names.push(...CALENDAR_READ_TOOLS, ...CALENDAR_WRITE_TOOLS);
   else if (!calendarWrite) names.push(...CALENDAR_WRITE_TOOLS);
-  if (!remindersOn) names.push(...REMINDER_READ_TOOLS, ...REMINDER_WRITE_TOOLS);
-  else if (!reminderWrite) names.push(...REMINDER_WRITE_TOOLS);
   return names;
 }
 
 /**
- * Read the unfiltered collection lists through the deployed Worker. Setup
- * cannot discover CalDAV itself: the Apple password is a Worker secret and
- * Cloudflare never returns it. `?all=1` works even while both domains are
- * disabled, so this runs right after the bootstrap deploy.
+ * Read the unfiltered calendar list through the deployed Worker. Setup cannot
+ * discover CalDAV itself: the Apple password is a Worker secret and Cloudflare
+ * never returns it. `?all=1` works even while the domain is disabled, so this
+ * runs right after the bootstrap deploy.
  */
 export async function discoverCollections({
   url,
@@ -212,36 +198,30 @@ export async function discoverCollections({
 }) {
   const base = url.replace(/\/+$/, "");
   const headers = { Authorization: `Bearer ${token}` };
-  const read = async (path, key) => {
-    const result = await withRetries(
-      () => attempt(fetchImpl, `${base}${path}`, { method: "GET", headers }, deadlineMs),
-      { attempts, sleep, delayMs },
-    );
-    if (result.networkError) {
-      throw new Error(`${path}: ${result.networkError}`);
-    }
-    if (result.status !== 200) {
-      const detail = result.body?.error?.message ?? result.text?.slice(0, 200) ?? "";
-      throw new Error(`${path} answered HTTP ${result.status}${detail ? `: ${detail}` : ""}`);
-    }
-    const list = result.body?.[key];
-    if (!Array.isArray(list)) {
-      throw new Error(`${path} did not return a ${key} array`);
-    }
-    return list
-      .filter((entry) => entry && typeof entry.name === "string" && entry.name.length > 0)
-      .map((entry) => ({
-        name: entry.name,
-        kind: typeof entry.kind === "string" ? entry.kind : key === "calendars" ? "calendar" : "reminders",
-        readOnly: entry.readOnly === true,
-      }));
-  };
-
-  const [calendars, reminderLists] = await Promise.all([
-    read("/v1/calendars?all=1", "calendars"),
-    read("/v1/reminder-lists?all=1", "reminderLists"),
-  ]);
-  return { calendars, reminderLists };
+  const path = "/v1/calendars?all=1";
+  const result = await withRetries(
+    () => attempt(fetchImpl, `${base}${path}`, { method: "GET", headers }, deadlineMs),
+    { attempts, sleep, delayMs },
+  );
+  if (result.networkError) {
+    throw new Error(`${path}: ${result.networkError}`);
+  }
+  if (result.status !== 200) {
+    const detail = result.body?.error?.message ?? result.text?.slice(0, 200) ?? "";
+    throw new Error(`${path} answered HTTP ${result.status}${detail ? `: ${detail}` : ""}`);
+  }
+  const list = result.body?.calendars;
+  if (!Array.isArray(list)) {
+    throw new Error(`${path} did not return a calendars array`);
+  }
+  const calendars = list
+    .filter((entry) => entry && typeof entry.name === "string" && entry.name.length > 0)
+    .map((entry) => ({
+      name: entry.name,
+      kind: "calendar",
+      readOnly: entry.readOnly === true,
+    }));
+  return { calendars };
 }
 
 /** Read a JSON-RPC message out of a JSON or SSE response body. */
@@ -276,9 +256,7 @@ export async function verifyDeployment({
   token,
   mailbox,
   calendars = "",
-  reminderLists = "",
   calendarWrite = false,
-  reminderWrite = false,
   calendar,
   fetchImpl = fetch,
   sleep = defaultSleep,
@@ -288,9 +266,7 @@ export async function verifyDeployment({
 }) {
   const base = url.replace(/\/+$/, "");
   const calendarAllowlist = typeof calendars === "string" ? calendars.trim() : "";
-  const reminderAllowlist = typeof reminderLists === "string" ? reminderLists.trim() : "";
   const calendarsEnabled = calendarDomainEnabled(calendarAllowlist);
-  const remindersEnabled = calendarDomainEnabled(reminderAllowlist);
   const checks = [];
   const retry = (run) => withRetries(run, { attempts, sleep, delayMs });
   // The metadata URLs answer 200 on a healthy Worker; a 401 right after a
@@ -350,18 +326,16 @@ export async function verifyDeployment({
       retry,
       deadlineMs,
       calendars: calendarAllowlist,
-      reminderLists: reminderAllowlist,
       calendarWrite,
-      reminderWrite,
     }),
   );
 
   // 4. Optional: the configured folder really exists upstream.
   if (mailbox) checks.push(await checkMailbox({ base, authHeaders, mailbox, fetchImpl, retry, deadlineMs }));
 
-  // 5. Calendar discovery and a bounded read, only when the domains are on.
+  // 5. Calendar discovery and a bounded read, only when the domain is on.
   // A mail-only deployment does not depend on CalDAV, so this is not probed.
-  if (calendarsEnabled || remindersEnabled) {
+  if (calendarsEnabled) {
     checks.push(
       await checkCalendarDiscovery({
         base,
@@ -369,8 +343,6 @@ export async function verifyDeployment({
         fetchImpl,
         retry,
         deadlineMs,
-        calendarsEnabled,
-        remindersEnabled,
       }),
     );
   }
@@ -500,9 +472,9 @@ function describeMcpChallenge(result, origin) {
   }
   const challenge = result.headers?.get?.("www-authenticate") ?? "";
   const metadataRef = `resource_metadata="${origin}/.well-known/oauth-protected-resource/mcp"`;
-  // Calendars and reminders add their read scopes to the challenge when the
-  // deployment enables them, so check that mail:read is among the named
-  // scopes rather than expecting the whole string to be exactly mail:read.
+  // Calendars add their read scope to the challenge when the deployment
+  // enables them, so check that mail:read is among the named scopes rather
+  // than expecting the whole string to be exactly mail:read.
   const scopeMatch = /scope="([^"]*)"/.exec(challenge);
   const scopes = scopeMatch ? scopeMatch[1].split(/\s+/).filter(Boolean) : [];
   if (!challenge.includes(metadataRef) || !scopes.includes("mail:read")) {
@@ -576,9 +548,7 @@ async function checkMcp({
   retry,
   deadlineMs,
   calendars = "",
-  reminderLists = "",
   calendarWrite = false,
-  reminderWrite = false,
 }) {
   const name = "MCP initialize and tools/list";
   const headers = {
@@ -633,8 +603,8 @@ async function checkMcp({
   }
 
   const actual = new Set(tools.map((tool) => tool.name));
-  const expected = expectedToolNames({ calendars, reminderLists, calendarWrite, reminderWrite });
-  const forbidden = forbiddenToolNames({ calendars, reminderLists, calendarWrite, reminderWrite });
+  const expected = expectedToolNames({ calendars, calendarWrite });
+  const forbidden = forbiddenToolNames({ calendars, calendarWrite });
   const missing = expected.filter((toolName) => !actual.has(toolName));
   const unexpected = forbidden.filter((toolName) => actual.has(toolName));
   if (missing.length > 0 || unexpected.length > 0) {
@@ -652,67 +622,54 @@ async function checkMcp({
 }
 
 /**
- * `?all=1` proves the deployed Worker can reach CalDAV and list collections
- * even while both domains are disabled. Only the enabled domains are probed,
- * so a calendar-only deployment is not failed by its reminder home.
+ * `?all=1` proves the deployed Worker can reach CalDAV and list calendars even
+ * while the domain is disabled.
  */
-async function checkCalendarDiscovery({
-  base,
-  authHeaders,
-  fetchImpl,
-  retry,
-  deadlineMs,
-  calendarsEnabled,
-  remindersEnabled,
-}) {
+async function checkCalendarDiscovery({ base, authHeaders, fetchImpl, retry, deadlineMs }) {
   const name = "calendar discovery (?all=1)";
-  const probes = [];
-  if (calendarsEnabled) {
-    probes.push({ label: "calendars", path: "/v1/calendars?all=1", key: "calendars" });
-  }
-  if (remindersEnabled) {
-    probes.push({ label: "reminder lists", path: "/v1/reminder-lists?all=1", key: "reminderLists" });
-  }
-
-  const results = await Promise.all(
-    probes.map((probe) =>
-      retry(() => attempt(fetchImpl, `${base}${probe.path}`, { method: "GET", headers: authHeaders }, deadlineMs)),
-    ),
+  const path = "/v1/calendars?all=1";
+  const result = await retry(() =>
+    attempt(fetchImpl, `${base}${path}`, { method: "GET", headers: authHeaders }, deadlineMs),
   );
 
-  const problems = [];
-  const counts = [];
-  results.forEach((result, index) => {
-    const { label, path, key } = probes[index];
-    if (result.networkError) {
-      problems.push(`${label}: ${result.networkError}`);
-      return;
-    }
-    if (result.status === 401 || result.status === 403) {
-      problems.push(`${label}: the Worker rejected this API token (HTTP ${result.status})`);
-      return;
-    }
-    if (result.status === 404) {
-      problems.push(`${label}: HTTP 404; the deployed Worker does not expose ${path} (does it predate CalDAV?)`);
-      return;
-    }
-    if (result.status !== 200) {
-      const detail = result.body?.error?.message ?? result.text?.slice(0, 160) ?? "";
-      problems.push(`${label}: HTTP ${result.status}${detail ? `: ${detail}` : ""}`);
-      return;
-    }
-    const list = result.body?.[key];
-    if (!Array.isArray(list)) {
-      problems.push(`${label}: ${path} did not return a ${key} array`);
-      return;
-    }
-    counts.push(`${list.length} ${key === "calendars" ? "calendar(s)" : "reminder list(s)"}`);
-  });
-
-  if (problems.length > 0) {
-    return { name, ok: false, kind: "calendar", detail: problems.join("; ") };
+  if (result.networkError) {
+    return { name, ok: false, kind: "calendar", detail: result.networkError };
   }
-  return { name, ok: true, detail: `${counts.join(" and ")} reported by iCloud` };
+  if (result.status === 401 || result.status === 403) {
+    return {
+      name,
+      ok: false,
+      kind: "calendar",
+      detail: `the Worker rejected this API token (HTTP ${result.status})`,
+    };
+  }
+  if (result.status === 404) {
+    return {
+      name,
+      ok: false,
+      kind: "calendar",
+      detail: `HTTP 404; the deployed Worker does not expose ${path} (does it predate CalDAV?)`,
+    };
+  }
+  if (result.status !== 200) {
+    const detail = result.body?.error?.message ?? result.text?.slice(0, 160) ?? "";
+    return {
+      name,
+      ok: false,
+      kind: "calendar",
+      detail: `HTTP ${result.status}${detail ? `: ${detail}` : ""}`,
+    };
+  }
+  const list = result.body?.calendars;
+  if (!Array.isArray(list)) {
+    return {
+      name,
+      ok: false,
+      kind: "calendar",
+      detail: `${path} did not return a calendars array`,
+    };
+  }
+  return { name, ok: true, detail: `${list.length} calendar(s) reported by iCloud` };
 }
 
 /**

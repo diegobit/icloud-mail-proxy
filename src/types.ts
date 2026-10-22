@@ -48,19 +48,16 @@ export interface Env {
   SMTP_HOST?: string;
   SMTP_PORT?: string;
   SEND_LEDGER: DurableObjectNamespace<SendLedger>;
-  // CalDAV (plans/calendar-reminders.md). Optional so existing deployments and
+  // CalDAV calendars. Optional so existing deployments and
   // tests keep working; the transport falls back to 15 s and 4 MiB.
   CALDAV_TIMEOUT_MS?: string;
   MAX_RESPONSE_BYTES?: string;
-  // An allowlist is a comma-separated list of collection names or the single
-  // value "*" (every collection). Empty disables the domain.
+  // An allowlist is a comma-separated list of calendar names or the single
+  // value "*" (every calendar). Empty disables the domain.
   ALLOWED_CALENDARS?: string;
-  ALLOWED_REMINDER_LISTS?: string;
   CALENDAR_WRITE?: string;
-  REMINDERS_WRITE?: string;
   MAX_CALENDAR_DAYS?: string;
   MAX_EVENT_RESULTS?: string;
-  MAX_REMINDERS?: string;
   MAX_RESOURCE_BYTES?: string;
   MAX_RESOURCES_PER_QUERY?: string;
   MAX_OCCURRENCES_PER_RESOURCE?: string;

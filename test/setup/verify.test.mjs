@@ -493,8 +493,6 @@ describe("per-attempt deadline", () => {
 
 const CALENDAR_READ_TOOLS = ["list_calendars", "list_events", "get_event"];
 const CALENDAR_WRITE_TOOLS = ["create_event", "update_event"];
-const REMINDER_READ_TOOLS = ["list_reminder_lists", "list_reminders", "get_reminder"];
-const REMINDER_WRITE_TOOLS = ["create_reminder", "update_reminder", "complete_reminder"];
 
 function mcpRules(names) {
   return [
@@ -523,7 +521,6 @@ function mcpRules(names) {
 function calendarEndpoint({
   tools = [...MAIL_TOOLS, ...CALENDAR_READ_TOOLS],
   allCalendars = { status: 200, body: { calendars: [{ name: "Scratch", kind: "calendar", readOnly: false }] } },
-  allReminders = { status: 200, body: { reminderLists: [{ name: "Reminders", kind: "reminders", readOnly: false }] } },
   eventResponse = {
     status: 200,
     body: {
@@ -540,7 +537,6 @@ function calendarEndpoint({
 } = {}) {
   return fakeFetch([
     ["/v1/calendars?all=1", allCalendars],
-    ["/v1/reminder-lists?all=1", allReminders],
     ["/v1/calendars/Scratch/events", eventResponse],
     ["/v1/calendars", { status: 200, body: { calendars: [{ name: "Scratch", kind: "calendar", readOnly: false }] } }],
     healthzRules({ status: 200, body: { ok: true } }),
@@ -551,14 +547,11 @@ function calendarEndpoint({
 
 describe("calendar verification", () => {
   it("checks ?all=1 and a read-only 7-day list_events when calendars are enabled", async () => {
-    const fetchImpl = calendarEndpoint({
-      tools: [...MAIL_TOOLS, ...CALENDAR_READ_TOOLS, ...REMINDER_READ_TOOLS],
-    });
+    const fetchImpl = calendarEndpoint({ tools: [...MAIL_TOOLS, ...CALENDAR_READ_TOOLS] });
     const result = await verifyDeployment({
       url: ORIGIN,
       token: TOKEN,
       calendars: "*",
-      reminderLists: "Reminders",
       fetchImpl,
       sleep: noSleep,
     });
@@ -580,31 +573,23 @@ describe("calendar verification", () => {
     expect(eventRequest.url).not.toContain("to=");
   });
 
-  it("expects all five write tools when both write flags are on", async () => {
-    const tools = [
-      ...MAIL_TOOLS,
-      ...CALENDAR_READ_TOOLS,
-      ...CALENDAR_WRITE_TOOLS,
-      ...REMINDER_READ_TOOLS,
-      ...REMINDER_WRITE_TOOLS,
-    ];
+  it("expects the calendar write tools when the write flag is on", async () => {
+    const tools = [...MAIL_TOOLS, ...CALENDAR_READ_TOOLS, ...CALENDAR_WRITE_TOOLS];
     const fetchImpl = calendarEndpoint({ tools });
     const result = await verifyDeployment({
       url: ORIGIN,
       token: TOKEN,
       calendars: "*",
-      reminderLists: "*",
       calendarWrite: true,
-      reminderWrite: true,
       fetchImpl,
       sleep: noSleep,
     });
 
     expect(result.ok).toBe(true);
     const mcp = result.checks.find((check) => check.name === "MCP initialize and tools/list");
-    expect(mcp.detail).toContain("19 tools");
+    expect(mcp.detail).toContain("13 tools");
     expect(mcp.detail).toContain("create_event");
-    expect(mcp.detail).toContain("complete_reminder");
+    expect(mcp.detail).toContain("update_event");
   });
 
   it("fails containment when a write tool appears while its flag is off", async () => {
@@ -681,7 +666,6 @@ describe("calendar verification", () => {
   it("prefers the calendar setup discovered when it is still allowed", async () => {
     const fetchImpl = fakeFetch([
       ["/v1/calendars?all=1", { status: 200, body: { calendars: [] } }],
-      ["/v1/reminder-lists?all=1", { status: 200, body: { reminderLists: [] } }],
       [
         "/v1/calendars/Family/events",
         {
@@ -720,22 +704,28 @@ describe("calendar verification", () => {
 });
 
 describe("collection discovery", () => {
-  it("returns names, kinds and read-only state from both domains", async () => {
+  it("returns names and read-only state from the calendar home", async () => {
     const fetchImpl = fakeFetch([
       [
         "/v1/calendars?all=1",
-        { status: 200, body: { calendars: [{ name: "Scratch", kind: "calendar", readOnly: false }] } },
-      ],
-      [
-        "/v1/reminder-lists?all=1",
-        { status: 200, body: { reminderLists: [{ name: "Reminders", kind: "reminders", readOnly: true }] } },
+        {
+          status: 200,
+          body: {
+            calendars: [
+              { name: "Scratch", kind: "calendar", readOnly: false },
+              { name: "Family", kind: "calendar", readOnly: true },
+            ],
+          },
+        },
       ],
     ]);
     const result = await discoverCollections({ url: ORIGIN, token: TOKEN, fetchImpl, sleep: noSleep });
 
     expect(result).toEqual({
-      calendars: [{ name: "Scratch", kind: "calendar", readOnly: false }],
-      reminderLists: [{ name: "Reminders", kind: "reminders", readOnly: true }],
+      calendars: [
+        { name: "Scratch", kind: "calendar", readOnly: false },
+        { name: "Family", kind: "calendar", readOnly: true },
+      ],
     });
     expect(fetchImpl.requests.every((request) => request.options.headers.Authorization === `Bearer ${TOKEN}`)).toBe(true);
   });
@@ -743,7 +733,6 @@ describe("collection discovery", () => {
   it("reports an HTTP error instead of returning a partial list", async () => {
     const fetchImpl = fakeFetch([
       ["/v1/calendars?all=1", { status: 403, body: { error: { code: "unauthorized", message: "forbidden" } } }],
-      ["/v1/reminder-lists?all=1", { status: 200, body: { reminderLists: [] } }],
     ]);
     await expect(discoverCollections({ url: ORIGIN, token: TOKEN, fetchImpl, sleep: noSleep })).rejects.toThrow(
       /HTTP 403/,

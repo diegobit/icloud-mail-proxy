@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { clearCalDavDiscoveryCache } from "../src/caldav";
-import { discoverCollections, listCollections, resolveCollection } from "../src/calendar-core";
+import { discoverCalendars, listCalendars, resolveCalendar } from "../src/calendar-core";
 import { ApiError } from "../src/core";
 import type { Env } from "../src/types";
 
@@ -81,7 +81,6 @@ const COLLECTIONS = collectionsXml(
     collection(`/${DSID}/calendars/cal-personale/`, "Personale", ["VEVENT"], ["read"]),
     collection(`/${DSID}/calendars/list-casa/`, "Casa SP⚠️", ["VTODO"], ["read", "write"]),
     collection(`/${DSID}/calendars/list-reminders/`, "Reminders", ["VTODO"], ["write"]),
-    collection(`/${DSID}/calendars/list-senza/`, "Senza permessi", ["VTODO"], null),
     collection(`/${DSID}/calendars/inbox/`, null, ["VEVENT"], ["read"]),
     collection(`/${DSID}/calendars/outbox/`, null, ["VEVENT", "VTODO"], ["read"]),
     collection(`/${DSID}/calendars/doppio/`, "Doppio", ["VEVENT", "VTODO"], ["read", "write"]),
@@ -135,24 +134,21 @@ beforeEach(() => {
   clearCalDavDiscoveryCache();
 });
 
-describe("discoverCollections", () => {
-  it("keeps only named collections with a single component kind", async () => {
+describe("discoverCalendars", () => {
+  it("keeps only named VEVENT collections", async () => {
     const { impl } = script();
-    const collections = await discoverCollections(makeEnv(), { fetchImpl: impl });
+    const calendars = await discoverCalendars(makeEnv(), { fetchImpl: impl });
 
-    expect(collections.map((entry) => [entry.name, entry.kind])).toEqual([
+    expect(calendars.map((entry) => [entry.name, entry.kind])).toEqual([
       ["Lavoro", "calendar"],
       ["Personale", "calendar"],
-      ["Casa SP⚠️", "reminders"],
-      ["Reminders", "reminders"],
-      ["Senza permessi", "reminders"],
     ]);
   });
 
-  it("reports the id, colour and writability of each collection", async () => {
+  it("reports the id, colour and writability of each calendar", async () => {
     const { impl } = script();
-    const collections = await discoverCollections(makeEnv(), { fetchImpl: impl });
-    const byName = new Map(collections.map((entry) => [entry.name, entry]));
+    const calendars = await discoverCalendars(makeEnv(), { fetchImpl: impl });
+    const byName = new Map(calendars.map((entry) => [entry.name, entry]));
 
     expect(byName.get("Lavoro")).toMatchObject({
       id: "cal-lavoro",
@@ -161,146 +157,100 @@ describe("discoverCollections", () => {
       readOnly: false,
     });
     expect(byName.get("Personale")).toMatchObject({ color: null, readOnly: true });
-    expect(byName.get("Casa SP⚠️")).toMatchObject({ readOnly: false });
-    expect(byName.get("Reminders")).toMatchObject({ readOnly: false });
-    expect(byName.get("Senza permessi")).toMatchObject({ readOnly: true });
   });
 
   it("refuses a malformed collection document", async () => {
     const { impl } = script("<D:not-a-multistatus/>");
-    await expect(discoverCollections(makeEnv(), { fetchImpl: impl })).rejects.toBeInstanceOf(Error);
+    await expect(discoverCalendars(makeEnv(), { fetchImpl: impl })).rejects.toBeInstanceOf(Error);
   });
 });
 
-describe("listCollections", () => {
+describe("listCalendars", () => {
   it("returns nothing for a disabled domain without any request", async () => {
     const { impl, calls } = script();
-    expect(await listCollections(makeEnv(), "calendar", { fetchImpl: impl })).toEqual([]);
-    expect(await listCollections(makeEnv(), "reminders", { fetchImpl: impl })).toEqual([]);
+    expect(await listCalendars(makeEnv(), { fetchImpl: impl })).toEqual([]);
     expect(calls).toHaveLength(0);
   });
 
-  it("returns every collection of the kind for *", async () => {
+  it("returns every calendar for *", async () => {
     const { impl } = script();
-    const calendars = await listCollections(makeEnv({ ALLOWED_CALENDARS: "*" }), "calendar", {
-      fetchImpl: impl,
-    });
+    const calendars = await listCalendars(makeEnv({ ALLOWED_CALENDARS: "*" }), { fetchImpl: impl });
     expect(calendars.map((entry) => entry.name)).toEqual(["Lavoro", "Personale"]);
   });
 
   it("filters by allowlisted names and sorts by name", async () => {
     const { impl } = script();
-    const reminders = await listCollections(
-      makeEnv({ ALLOWED_REMINDER_LISTS: "Senza permessi,Reminders,Casa SP⚠️" }),
-      "reminders",
-      { fetchImpl: impl },
-    );
-    expect(reminders.map((entry) => entry.name)).toEqual(["Casa SP⚠️", "Reminders", "Senza permessi"]);
+    const calendars = await listCalendars(makeEnv({ ALLOWED_CALENDARS: "Personale,Lavoro" }), {
+      fetchImpl: impl,
+    });
+    expect(calendars.map((entry) => entry.name)).toEqual(["Lavoro", "Personale"]);
   });
 
   it("fails closed when a calendar allowlist names a reminder list", async () => {
     const { impl } = script();
     expect(
-      await codeOf(
-        listCollections(makeEnv({ ALLOWED_CALENDARS: "Casa SP⚠️" }), "calendar", { fetchImpl: impl }),
-      ),
+      await codeOf(listCalendars(makeEnv({ ALLOWED_CALENDARS: "Casa SP⚠️" }), { fetchImpl: impl })),
     ).toBe("configured_calendar_missing");
   });
 
   it("fails closed when an allowlisted name does not exist", async () => {
     const { impl } = script();
     expect(
-      await codeOf(
-        listCollections(makeEnv({ ALLOWED_CALENDARS: "Lavoro,Vecchio" }), "calendar", { fetchImpl: impl }),
-      ),
+      await codeOf(listCalendars(makeEnv({ ALLOWED_CALENDARS: "Lavoro,Vecchio" }), { fetchImpl: impl })),
     ).toBe("configured_calendar_missing");
   });
 
-  it("lists every collection with all=1 even when the domain is disabled", async () => {
+  it("lists every calendar with all=1 even when the domain is disabled", async () => {
     const { impl } = script();
-    const calendars = await listCollections(makeEnv(), "calendar", { all: true, fetchImpl: impl });
+    const calendars = await listCalendars(makeEnv(), { all: true, fetchImpl: impl });
     expect(calendars.map((entry) => entry.name)).toEqual(["Lavoro", "Personale"]);
   });
 });
 
-describe("resolveCollection", () => {
+describe("resolveCalendar", () => {
   it("resolves a name when everything is allowed", async () => {
     const { impl } = script();
-    const collection = await resolveCollection(makeEnv({ ALLOWED_CALENDARS: "*" }), "calendar", "Lavoro", {
+    const calendar = await resolveCalendar(makeEnv({ ALLOWED_CALENDARS: "*" }), "Lavoro", {
       fetchImpl: impl,
     });
-    expect(collection).toMatchObject({ id: "cal-lavoro", name: "Lavoro", kind: "calendar" });
-  });
-
-  it("resolves a reminder list with a non-ASCII name", async () => {
-    const { impl } = script();
-    const collection = await resolveCollection(
-      makeEnv({ ALLOWED_REMINDER_LISTS: "*" }),
-      "reminders",
-      "Casa SP⚠️",
-      { fetchImpl: impl },
-    );
-    expect(collection.id).toBe("list-casa");
+    expect(calendar).toMatchObject({ id: "cal-lavoro", name: "Lavoro", kind: "calendar" });
   });
 
   it("refuses a name outside the allowlist before discovery", async () => {
     const { impl, calls } = script();
     expect(
-      await codeOf(
-        resolveCollection(makeEnv({ ALLOWED_CALENDARS: "Lavoro" }), "calendar", "Personale", {
-          fetchImpl: impl,
-        }),
-      ),
+      await codeOf(resolveCalendar(makeEnv({ ALLOWED_CALENDARS: "Lavoro" }), "Personale", { fetchImpl: impl })),
     ).toBe("calendar_not_allowed");
     expect(calls).toHaveLength(0);
-  });
-
-  it("refuses a reminder list name outside the reminder allowlist", async () => {
-    const { impl } = script();
-    expect(
-      await codeOf(
-        resolveCollection(makeEnv({ ALLOWED_REMINDER_LISTS: "Reminders" }), "reminders", "Casa SP⚠️", {
-          fetchImpl: impl,
-        }),
-      ),
-    ).toBe("reminder_list_not_allowed");
   });
 
   it("reports a configured name that disappeared", async () => {
     const { impl } = script();
     expect(
       await codeOf(
-        resolveCollection(makeEnv({ ALLOWED_CALENDARS: "Lavoro,Vecchio" }), "calendar", "Lavoro", {
-          fetchImpl: impl,
-        }),
+        resolveCalendar(makeEnv({ ALLOWED_CALENDARS: "Lavoro,Vecchio" }), "Lavoro", { fetchImpl: impl }),
       ),
     ).toBe("configured_calendar_missing");
   });
 
-  it("reports an unknown name under * as a missing collection", async () => {
+  it("reports an unknown name under * as a missing calendar", async () => {
     const { impl } = script();
     expect(
-      await codeOf(
-        resolveCollection(makeEnv({ ALLOWED_CALENDARS: "*" }), "calendar", "Nope", { fetchImpl: impl }),
-      ),
+      await codeOf(resolveCalendar(makeEnv({ ALLOWED_CALENDARS: "*" }), "Nope", { fetchImpl: impl })),
     ).toBe("configured_calendar_missing");
   });
 
   it("refuses an ambiguous name", async () => {
     const { impl } = script(AMBIGUOUS);
     expect(
-      await codeOf(
-        resolveCollection(makeEnv({ ALLOWED_CALENDARS: "*" }), "calendar", "Lavoro", { fetchImpl: impl }),
-      ),
+      await codeOf(resolveCalendar(makeEnv({ ALLOWED_CALENDARS: "*" }), "Lavoro", { fetchImpl: impl })),
     ).toBe("ambiguous_calendar_name");
   });
 
   it("does not resolve a reminder list as a calendar", async () => {
     const { impl } = script();
     expect(
-      await codeOf(
-        resolveCollection(makeEnv({ ALLOWED_CALENDARS: "*" }), "calendar", "Casa SP⚠️", { fetchImpl: impl }),
-      ),
+      await codeOf(resolveCalendar(makeEnv({ ALLOWED_CALENDARS: "*" }), "Casa SP⚠️", { fetchImpl: impl })),
     ).toBe("configured_calendar_missing");
   });
 });

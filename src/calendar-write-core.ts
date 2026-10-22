@@ -1,14 +1,11 @@
-// Shared helpers for the CalDAV write cores (events and reminders).
+// Shared helpers for the CalDAV event write surface.
 //
-// Both surfaces follow the same contract:
+// The contract:
 // - structured fields only, never raw iCalendar;
 // - strong ETags only for updates, with a re-read before the PUT;
 // - one written resource per call;
 // - a per-IP rate limit before any network work;
 // - one audit line per attempted write, never with user text.
-//
-// The event and reminder modules own their schemas and validation; this module
-// owns the pieces that must behave identically.
 
 import { CalDavError } from "./caldav";
 import type { CollectionInfo } from "./calendar-core";
@@ -29,12 +26,7 @@ export const FORBIDDEN_WRITE_PROPERTIES = new Set([
   "organizer",
 ]);
 
-export type WriteAction =
-  | "create_event"
-  | "update_event"
-  | "create_reminder"
-  | "update_reminder"
-  | "complete_reminder";
+export type WriteAction = "create_event" | "update_event";
 
 export interface WriteOptions {
   /** Recorded in the audit line; defaults to "unknown". */
@@ -124,24 +116,21 @@ export async function withWriteLimit<T>(
     throw new ApiError(
       500,
       "configuration_error",
-      "CALENDAR_WRITE_LIMITER is not configured; calendar and reminder writes are disabled",
+      "CALENDAR_WRITE_LIMITER is not configured; calendar writes are disabled",
     );
   }
   const { success } = await limiter.limit({ key: key ?? "unknown" });
   if (!success) {
-    throw new ApiError(429, "rate_limited", "too many calendar or reminder writes; retry in a minute");
+    throw new ApiError(429, "rate_limited", "too many calendar writes; retry in a minute");
   }
   return fn();
 }
 
-export function readOnlyCollectionError(
-  collection: CollectionInfo,
-  noun: "calendar" | "reminder list",
-): ApiError {
+export function readOnlyCollectionError(collection: CollectionInfo): ApiError {
   return new ApiError(
     403,
     "read_only_collection",
-    `the ${noun} ${JSON.stringify(collection.name)} is read-only for this account`,
+    `the calendar ${JSON.stringify(collection.name)} is read-only for this account`,
   );
 }
 
@@ -189,17 +178,16 @@ function logWrite(
 
 export function reconcileMutationError(
   error: unknown,
-  action: "create" | "update" | "complete",
+  action: "create" | "update",
   id: string,
-  readTool: "get_event" | "get_reminder",
+  readTool: "get_event",
 ): unknown {
   if (error instanceof CalDavError && error.code === "mutation_state_unknown") {
-    const noun = action === "complete" ? "completion" : action;
     return new CalDavError(
       "mutation_state_unknown",
       error.status,
       `${error.message} Reconcile with ${readTool} on ${JSON.stringify(id)} before retrying; ` +
-        `the ${noun} may already have landed.`,
+        `the ${action} may already have landed.`,
     );
   }
   return error;

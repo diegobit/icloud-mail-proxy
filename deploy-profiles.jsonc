@@ -14,14 +14,12 @@
     // what wrangler already infers from `routes`, stated explicitly.
     "workers_dev": false,
     "routes": [{ "pattern": "icloud-mail.diegobit.com", "custom_domain": true }],
-    // The owner's deployment opts in to every calendar and reminder list,
-    // including shared ones and ones created later, with writes enabled.
-    // The tracked defaults stay disabled so a fresh deployment has to opt in.
+    // The owner's deployment opts in to every calendar, including shared ones
+    // and ones created later, with writes enabled. The tracked defaults stay
+    // disabled so a fresh deployment has to opt in.
     "vars": {
       "ALLOWED_CALENDARS": "*",
-      "ALLOWED_REMINDER_LISTS": "*",
-      "CALENDAR_WRITE": "1",
-      "REMINDERS_WRITE": "1"
+      "CALENDAR_WRITE": "1"
     }
   }
 }

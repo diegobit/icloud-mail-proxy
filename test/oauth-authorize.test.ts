@@ -430,9 +430,7 @@ describe("POST /authorize/consent", () => {
     const helpers = fakeHelpers();
     const env = fakeEnv(helpers, TOKEN, {
       ALLOWED_CALENDARS: "*",
-      ALLOWED_REMINDER_LISTS: "*",
       CALENDAR_WRITE: "1",
-      REMINDERS_WRITE: "1",
     });
     const selected = ["mail:read", "calendar:read", "calendar:write", "calendar:read"];
     const response = await handleAuthorize(

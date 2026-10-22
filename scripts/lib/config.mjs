@@ -44,7 +44,6 @@ export function stateFragment(state) {
   // Present (including as "") means the owner made an explicit choice; absent
   // inherits the tracked default.
   if (typeof state.allowedCalendars === "string") vars.ALLOWED_CALENDARS = state.allowedCalendars;
-  if (typeof state.allowedReminderLists === "string") vars.ALLOWED_REMINDER_LISTS = state.allowedReminderLists;
   return {
     label: "local",
     description: `guided setup (${state.workerName} in account ${state.accountId})`,

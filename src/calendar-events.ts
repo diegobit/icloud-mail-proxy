@@ -1,7 +1,7 @@
 // Read side of CalDAV events: range listing and one-resource detail.
 //
 // The transport and the iCalendar model live in caldav.ts and ical.ts. This
-// module owns the product rules from plans/calendar-reminders.md: the window
+// module owns the product rules for the calendar surface: the window
 // defaults, the MAX_CALENDAR_DAYS and MAX_RESOURCES_PER_QUERY refusals, the
 // per-resource byte cap, overlap filtering, occurrence identity, and the
 // read-only reason a caller needs before attempting an update.
@@ -23,7 +23,7 @@ import {
   calendarsEnabled,
   type CalendarLimits,
 } from "./calendar-config";
-import { resolveCollection, type CollectionInfo } from "./calendar-core";
+import { resolveCalendar, type CollectionInfo } from "./calendar-core";
 import {
   byteLength,
   calendarData,
@@ -313,7 +313,7 @@ export async function listEvents(
   const limit = validateLimit(input.limit, limits);
   const caps = icalCaps(limits);
 
-  const collection = await resolveCollection(env, "calendar", input.calendar, {
+  const collection = await resolveCalendar(env, input.calendar, {
     fetchImpl: options.fetchImpl,
   });
   const caldav = createCalDav(env, { fetchImpl: options.fetchImpl });
@@ -428,10 +428,10 @@ export async function getEvent(
   const fromIso = isoInZone(from.instant, zone);
   const toIso = isoInZone(to, zone);
 
-  const collection = await resolveCollection(env, "calendar", input.calendar, {
+  const collection = await resolveCalendar(env, input.calendar, {
     fetchImpl: options.fetchImpl,
   });
-  const { ics, etag } = await readResource(env, collection, input.id, "event", options);
+  const { ics, etag } = await readResource(env, collection, input.id, options);
   const parsed = parseResource(ics, caps);
   if (parsed.kind !== "VEVENT") {
     throw new CalDavError("malformed", 0, "the resource is not a VEVENT");

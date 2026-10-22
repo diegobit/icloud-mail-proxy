@@ -7,8 +7,6 @@ import {
   calendarsEnabled,
   enabledResourceScopes,
   parseAllowlist,
-  reminderListsEnabled,
-  reminderWritesEnabled,
   requiredScopes,
   scopeProfile,
   supportedScopes,
@@ -48,101 +46,69 @@ describe("parseAllowlist", () => {
 });
 
 describe("calendarConfig", () => {
-  it("keeps both domains disabled by default", () => {
+  it("keeps calendars disabled by default", () => {
     const config = calendarConfig(makeEnv());
-    expect(config).toEqual({
-      calendars: [],
-      reminderLists: [],
-      calendarWrite: false,
-      remindersWrite: false,
-    });
+    expect(config).toEqual({ calendars: [], calendarWrite: false });
     expect(calendarsEnabled(makeEnv())).toBe(false);
-    expect(reminderListsEnabled(makeEnv())).toBe(false);
   });
 
-  it("enables a domain with names or *", () => {
+  it("enables calendars with names or *", () => {
     expect(calendarsEnabled(makeEnv({ ALLOWED_CALENDARS: "Lavoro" }))).toBe(true);
     expect(calendarsEnabled(makeEnv({ ALLOWED_CALENDARS: "*" }))).toBe(true);
-    expect(reminderListsEnabled(makeEnv({ ALLOWED_REMINDER_LISTS: "Reminders" }))).toBe(true);
-    expect(reminderListsEnabled(makeEnv({ ALLOWED_REMINDER_LISTS: "*" }))).toBe(true);
   });
 
-  it("reads write flags only as 1", () => {
+  it("reads the write flag only as 1", () => {
     expect(calendarConfig(makeEnv({ CALENDAR_WRITE: "1" })).calendarWrite).toBe(true);
     expect(calendarConfig(makeEnv({ CALENDAR_WRITE: "true" })).calendarWrite).toBe(false);
     expect(calendarConfig(makeEnv({ CALENDAR_WRITE: "0" })).calendarWrite).toBe(false);
-    expect(calendarConfig(makeEnv({ REMINDERS_WRITE: "1" })).remindersWrite).toBe(true);
   });
 
-  it("runs writes only when the domain is enabled and its flag is on", () => {
+  it("runs writes only when calendars are enabled and the flag is on", () => {
     expect(calendarWritesEnabled(makeEnv({ ALLOWED_CALENDARS: "*", CALENDAR_WRITE: "1" }))).toBe(true);
     expect(calendarWritesEnabled(makeEnv({ ALLOWED_CALENDARS: "", CALENDAR_WRITE: "1" }))).toBe(false);
     expect(calendarWritesEnabled(makeEnv({ ALLOWED_CALENDARS: "*", CALENDAR_WRITE: "0" }))).toBe(false);
-    expect(reminderWritesEnabled(makeEnv({ ALLOWED_REMINDER_LISTS: "*", REMINDERS_WRITE: "1" }))).toBe(true);
-    expect(reminderWritesEnabled(makeEnv({ ALLOWED_REMINDER_LISTS: "", REMINDERS_WRITE: "1" }))).toBe(false);
-    expect(reminderWritesEnabled(makeEnv({ ALLOWED_REMINDER_LISTS: "*", REMINDERS_WRITE: "0" }))).toBe(false);
   });
 
   it("passes a malformed allowlist through as a configuration error", () => {
     expect(() => calendarConfig(makeEnv({ ALLOWED_CALENDARS: "*,Lavoro" }))).toThrow();
-    expect(() => calendarsEnabled(makeEnv({ ALLOWED_REMINDER_LISTS: "*,Reminders" }))).toThrow();
   });
 });
 
 describe("scopes", () => {
-  it("offers only mail:read when nothing else is enabled", () => {
+  it("offers only mail:read when calendars are disabled", () => {
     expect(enabledResourceScopes(makeEnv())).toEqual(["mail:read"]);
     expect(supportedScopes(makeEnv())).toEqual(["mail:read", "offline_access"]);
     expect(requiredScopes(makeEnv())).toEqual(["mail:read"]);
   });
 
-  it("adds read scopes for enabled domains", () => {
-    const env = makeEnv({ ALLOWED_CALENDARS: "*", ALLOWED_REMINDER_LISTS: "Reminders" });
-    expect(enabledResourceScopes(env)).toEqual(["mail:read", "calendar:read", "reminders:read"]);
-    expect(requiredScopes(env)).toEqual(["mail:read", "calendar:read", "reminders:read"]);
+  it("adds calendar read scope for enabled calendars", () => {
+    const env = makeEnv({ ALLOWED_CALENDARS: "*" });
+    expect(enabledResourceScopes(env)).toEqual(["mail:read", "calendar:read"]);
+    expect(requiredScopes(env)).toEqual(["mail:read", "calendar:read"]);
   });
 
-  it("adds write scopes only when the write flag is on", () => {
-    const reads = makeEnv({ ALLOWED_CALENDARS: "*", ALLOWED_REMINDER_LISTS: "*" });
-    expect(enabledResourceScopes(reads)).toEqual(["mail:read", "calendar:read", "reminders:read"]);
+  it("adds the write scope only when the write flag is on", () => {
+    const reads = makeEnv({ ALLOWED_CALENDARS: "*" });
+    expect(enabledResourceScopes(reads)).toEqual(["mail:read", "calendar:read"]);
 
-    const writes = makeEnv({
-      ALLOWED_CALENDARS: "*",
-      ALLOWED_REMINDER_LISTS: "*",
-      CALENDAR_WRITE: "1",
-      REMINDERS_WRITE: "1",
-    });
-    expect(enabledResourceScopes(writes)).toEqual([
-      "mail:read",
-      "calendar:read",
-      "calendar:write",
-      "reminders:read",
-      "reminders:write",
-    ]);
+    const writes = makeEnv({ ALLOWED_CALENDARS: "*", CALENDAR_WRITE: "1" });
+    expect(enabledResourceScopes(writes)).toEqual(["mail:read", "calendar:read", "calendar:write"]);
     expect(supportedScopes(writes)).toContain("offline_access");
   });
 
-  it("does not offer write scopes for a disabled domain", () => {
-    const env = makeEnv({ CALENDAR_WRITE: "1", REMINDERS_WRITE: "1" });
-    expect(enabledResourceScopes(env)).toEqual(["mail:read"]);
+  it("does not offer the write scope for disabled calendars", () => {
+    expect(enabledResourceScopes(makeEnv({ CALENDAR_WRITE: "1" }))).toEqual(["mail:read"]);
   });
 
   it("keeps requiredScopes free of write scopes", () => {
-    const env = makeEnv({
-      ALLOWED_CALENDARS: "*",
-      ALLOWED_REMINDER_LISTS: "*",
-      CALENDAR_WRITE: "1",
-      REMINDERS_WRITE: "1",
-    });
-    expect(requiredScopes(env)).toEqual(["mail:read", "calendar:read", "reminders:read"]);
+    const env = makeEnv({ ALLOWED_CALENDARS: "*", CALENDAR_WRITE: "1" });
+    expect(requiredScopes(env)).toEqual(["mail:read", "calendar:read"]);
   });
 
   it("fingerprints the enabled scopes for the provider cache", () => {
     const calendarOnly = makeEnv({ ALLOWED_CALENDARS: "*" });
-    const both = makeEnv({ ALLOWED_CALENDARS: "*", ALLOWED_REMINDER_LISTS: "*" });
     expect(scopeProfile(calendarOnly)).toBe("mail:read,calendar:read");
-    expect(scopeProfile(both)).toBe("mail:read,calendar:read,reminders:read");
-    expect(scopeProfile(both)).toBe(scopeProfile(both));
+    expect(scopeProfile(calendarOnly)).toBe(scopeProfile(calendarOnly));
   });
 });
 
@@ -151,7 +117,6 @@ describe("calendarLimits", () => {
     expect(calendarLimits(makeEnv())).toEqual({
       maxCalendarDays: 90,
       maxEventResults: 50,
-      maxReminders: 200,
       maxResourceBytes: 262144,
       maxResourcesPerQuery: 300,
       maxOccurrencesPerResource: 200,

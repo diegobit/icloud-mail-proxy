@@ -35,14 +35,6 @@ const SCOPE_COPY: Record<ResourceScope, { label: string; detail: string }> = {
     label: "Create and update events",
     detail: "Add events and change existing ones. Deleting is not offered.",
   },
-  "reminders:read": {
-    label: "Read reminder lists and reminders",
-    detail: "List reminder lists and read reminders and their notes.",
-  },
-  "reminders:write": {
-    label: "Create, update and complete reminders",
-    detail: "Add reminders, change them and mark them complete. Deleting is not offered.",
-  },
 };
 
 /**

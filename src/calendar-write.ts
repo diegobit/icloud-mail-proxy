@@ -1,6 +1,6 @@
 // Write side of CalDAV events: create and update one non-recurring event.
 //
-// Product rules from plans/calendar-reminders.md:
+// Product rules for the calendar surface:
 // - inputs are structured fields, never raw iCalendar;
 // - a create generates a UUIDv4 resource (or accepts a caller id so a retry is
 //   idempotent) and uses If-None-Match: *;
@@ -22,7 +22,7 @@ import {
   calendarWritesEnabled,
   type CalendarLimits,
 } from "./calendar-config";
-import { resolveCollection } from "./calendar-core";
+import { resolveCalendar } from "./calendar-core";
 import {
   assertStrongEtag,
   byteLength,
@@ -345,10 +345,10 @@ export async function createEvent(
   validateCreatedEvent(ics, limits, { uid: id, summary, time });
 
   return withWriteLimit(env, options.rateLimitKey, async () => {
-    const collection = await resolveCollection(env, "calendar", input.calendar, {
+    const collection = await resolveCalendar(env, input.calendar, {
       fetchImpl: options.fetchImpl,
     });
-    if (collection.readOnly) throw readOnlyCollectionError(collection, "calendar");
+    if (collection.readOnly) throw readOnlyCollectionError(collection);
 
     return auditWrite(options, "create_event", collection.id, id, async () => {
       const caldav = createCalDav(env, { fetchImpl: options.fetchImpl });
@@ -423,13 +423,13 @@ export async function updateEvent(
     : null;
 
   return withWriteLimit(env, options.rateLimitKey, async () => {
-    const collection = await resolveCollection(env, "calendar", input.calendar, {
+    const collection = await resolveCalendar(env, input.calendar, {
       fetchImpl: options.fetchImpl,
     });
-    if (collection.readOnly) throw readOnlyCollectionError(collection, "calendar");
+    if (collection.readOnly) throw readOnlyCollectionError(collection);
 
     return auditWrite(options, "update_event", collection.id, input.id, async () => {
-      const current = await readResource(env, collection, input.id, "event", {
+      const current = await readResource(env, collection, input.id, {
         fetchImpl: options.fetchImpl,
       });
       if (current.etag !== etag) {

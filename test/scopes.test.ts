@@ -8,7 +8,6 @@ describe("authorityOf", () => {
     expect(authority).toEqual({ via: "bearer", scopes: [] });
     expect(hasScope(authority, "mail:read")).toBe(true);
     expect(hasScope(authority, "calendar:write")).toBe(true);
-    expect(hasScope(authority, "reminders:write")).toBe(true);
   });
 
   it("reads the approved scopes of an OAuth grant", () => {
@@ -47,15 +46,11 @@ describe("hasScope", () => {
 
   it("lets a write grant read, and nothing more", () => {
     expect(hasScope(oauth(["calendar:write"]), "calendar:read")).toBe(true);
-    expect(hasScope(oauth(["reminders:write"]), "reminders:read")).toBe(true);
-    expect(hasScope(oauth(["calendar:write"]), "reminders:read")).toBe(false);
-    expect(hasScope(oauth(["reminders:write"]), "calendar:read")).toBe(false);
     expect(hasScope(oauth(["calendar:read"]), "calendar:write")).toBe(false);
   });
 
-  it("does not let mail:read open the calendar or reminder domains", () => {
+  it("does not let mail:read open the calendar domain", () => {
     expect(hasScope(oauth(["mail:read"]), "calendar:read")).toBe(false);
-    expect(hasScope(oauth(["mail:read"]), "reminders:read")).toBe(false);
   });
 });
 
@@ -81,6 +76,6 @@ describe("requireScope", () => {
 
   it("allows everything to the static bearer", () => {
     const bearer = authorityOf({ via: "bearer" }, { scope: [] });
-    expect(() => requireScope(bearer, "reminders:write")).not.toThrow();
+    expect(() => requireScope(bearer, "calendar:write")).not.toThrow();
   });
 });

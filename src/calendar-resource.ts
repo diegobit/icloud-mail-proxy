@@ -1,4 +1,4 @@
-// Shared one-resource read for events and reminders.
+// One-resource read for calendar events.
 //
 // iCloud requires absolute pathname hrefs in a calendar-multiget, so the home
 // URL from discovery is needed even though the collection path is already
@@ -52,8 +52,8 @@ export function assertStrongEtag(value: string): string {
     throw new ApiError(
       400,
       "invalid_etag",
-      "etag must be exactly one strong, quoted ETag returned by get_event or " +
-        "get_reminder; W/, *, and comma-separated lists are refused",
+      "etag must be exactly one strong, quoted ETag returned by get_event; " +
+        "W/, *, and comma-separated lists are refused",
     );
   }
   return value;
@@ -113,9 +113,9 @@ export async function readResource(
   env: Env,
   collection: CollectionInfo,
   id: string,
-  label: "event" | "reminder",
   options: ResourceReadOptions = {},
 ): Promise<ResourceContent> {
+  const label = "event";
   const limits = calendarLimits(env);
   const caldav = createCalDav(env, { fetchImpl: options.fetchImpl });
   const { homeUrl } = await caldav.discover();
