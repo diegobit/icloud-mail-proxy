@@ -134,8 +134,11 @@ An older grant holding only `mail:read` must reconnect before using calendars.
 
 - One VCALENDAR contains one component type; the calendar path reads VEVENT
   only. A resource mixing VEVENT and VTODO is rejected.
-- Handles `TZID`, `Z`, floating and `VALUE=DATE` values, `VTIMEZONE`
-  definitions, Apple time zones and `Europe/Rome` defaults.
+- Handles `Z`, floating and `VALUE=DATE` values, and `TZID` values known to the
+  platform `Intl` database, including the IANA identifiers Apple normally
+  writes; `Europe/Rome` is the default. Embedded `VTIMEZONE` definitions are
+  preserved on update but are not interpreted, so a custom `TZID` that `Intl`
+  cannot resolve stays unresolved.
 - Recurrence is expanded with a bounded cursor over the requested window, not
   `ical.js`'s iterator. `RRULE`, `RDATE`, `EXDATE`, `RECURRENCE-ID` and
   overrides are supported; candidate counts are capped per rule and per
