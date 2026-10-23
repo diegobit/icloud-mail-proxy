@@ -225,7 +225,7 @@ mailbox (and, when `SEND_SENT_COPY` is enabled, a copy of a sent message into
 `Sent Messages`), and a mutation issues a read-write `SELECT` followed by
 `UID MOVE`, or by `UID COPY` + `\Deleted` + `UID EXPUNGE` when the server
 advertises `UIDPLUS` but not `MOVE`. A mutation files exactly one message into
-a fixed, configured destination. See [Filing and deleting](#filing-and-deleting).
+a fixed, configured destination. See [Filing, restoring and deleting](#filing-restoring-and-deleting).
 
 Sending is a separate client (`src/smtp.ts`) to `smtp.mail.me.com:587`
 (STARTTLS, `AUTH PLAIN`), reachable only through the `send_mail` tool. The
@@ -388,7 +388,7 @@ to get fresh `(uidValidity, uid)` pairs before retrying.
 
 File one message into the account's archive or trash. There is no request body:
 the destination is configured server-side, never taken from the caller (see
-[Filing and deleting](#filing-and-deleting)).
+[Filing, restoring and deleting](#filing-restoring-and-deleting)).
 
 ```
 curl -X POST -H "Authorization: Bearer $API_TOKEN" \
@@ -685,8 +685,8 @@ A stateless Streamable HTTP MCP server is served at `/mcp`. It exposes eight
 mail tools that mirror the REST endpoints — `list_mailboxes`, `search_mail`,
 `get_mail_message`, and `get_mail_attachment` (returns
 `{ filename, mimeType, size, contentBase64 }`, base64 of the decoded content,
-subject to the same type allowlist and size cap) — plus two filing tools,
-`archive_mail` and `delete_mail`, and two sending tools: `send_mail` (a new
+subject to the same type allowlist and size cap) — plus three filing tools,
+`archive_mail`, `delete_mail` and `restore_mail`, and two sending tools: `send_mail` (a new
 message, a reply or a forward, submitted immediately) and `save_draft` (the same
 message put into iCloud's `Drafts` folder, to be finished from any mail app).
 When calendars are enabled it adds up to six more: three read tools and three
@@ -755,12 +755,12 @@ caller passes `allowDuplicate: true`: that is what keeps a client that retries
 after a timeout from sending twice. Sends are logged as metadata only
 (principal, recipient count and domains, SMTP code, duration), never content.
 
-## Filing and deleting
+## Filing, restoring and deleting
 
-Any authenticated client can file one message at a time: `archive_mail` and
-`delete_mail` over MCP, or `POST /v1/messages/:mailbox/:uidValidity/:uid/archive`
-and `.../trash` over REST. Both take the id from a search result
-(`mailbox`, `uidValidity`, `uid`).
+Any authenticated client can move one message at a time: `archive_mail`,
+`delete_mail` and `restore_mail` over MCP, or `POST /v1/messages/:mailbox/:uidValidity/:uid/archive`,
+`.../trash` and `.../restore` over REST. All three take the id from a search
+result (`mailbox`, `uidValidity`, `uid`).
 
 - **Two fixed destinations, chosen by configuration, never by the caller.**
   `archive_mail` files into `ALLOWED_ARCHIVE_MAILBOX` (default `Archive`) and
@@ -770,8 +770,17 @@ and `.../trash` over REST. Both take the id from a search result
   trash, where it stays recoverable for Apple's retention window (about 30
   days). This proxy has no permanent-delete command: emptying the trash stays
   the owner's action in a mail client.
-- **It files the message, and only that message.** The source mailbox must be
-  in `ALLOWED_MAILBOXES`. The server uses `UID MOVE` (RFC 6851) when it
+- **`restore_mail` only undoes one of those two moves.** Its destination is
+  fixed at `INBOX`, and its source must be exactly the configured archive or
+  trash folder — not any mailbox in `ALLOWED_MAILBOXES`. That matters because
+  the trash is normally *not* readable through this proxy: restore is the one
+  operation allowed to name it, and only to move a message out. To find the uid
+  of a trashed message, add `Deleted Messages` to `ALLOWED_MAILBOXES` (which
+  makes the trash searchable and readable) or restore from the archive, which
+  is searchable by default. A message cannot be restored anywhere but `INBOX`.
+- **It files the message, and only that message.** For archive and trash the
+  source mailbox must be in `ALLOWED_MAILBOXES`. The server uses `UID MOVE`
+  (RFC 6851) when it
   advertises `MOVE`; otherwise it falls back to `UID COPY` + `\Deleted` + `UID
   EXPUNGE` when the server advertises `UIDPLUS`. If the server advertises
   neither, the call fails with `502 unsupported_move` rather than issuing a
@@ -791,8 +800,8 @@ and `.../trash` over REST. Both take the id from a search result
   `wrangler tail` shows. There is no durable mutation history; the `SEND_LEDGER`
   audit trail covers sends only.
 
-Unlike sending, filing is reversible from a mail client: archive a message back
-to the INBOX or restore it from the trash by hand.
+Unlike sending, filing is reversible from a mail client or through
+`restore_mail`: archive a message back to the INBOX or restore it from the trash.
 
 ## Calendars
 
@@ -1000,7 +1009,7 @@ EventKit companion on a Mac); it is not part of this Worker.
   the agent send real mail, archive a message, or move it to the trash; the
   send caps bound the volume, the mutation destinations are fixed, and the
   audit output shows what happened, but nothing else stands in the way (see
-  [Sending mail](#sending-mail) and [Filing and deleting](#filing-and-deleting)).
+  [Sending mail](#sending-mail) and [Filing, restoring and deleting](#filing-restoring-and-deleting)).
 - **Calendar text is untrusted input.** Event summaries, descriptions and
   locations are third-party content. `get_event` labels them under
   `untrustedCalendarContent`, and the MCP tool descriptions and server
@@ -1010,7 +1019,7 @@ EventKit companion on a Mac); it is not part of this Worker.
   invite. See [Calendars](#calendars).
 - **Hard caps everywhere.** Only mailboxes in `ALLOWED_MAILBOXES` can be
   read, and a mutation can only move one uid into one of its two configured
-  destinations; `MAX_RESULTS` caps how many summaries a search returns;
+  destinations (or, for `restore_mail`, out of one of them and into `INBOX`); `MAX_RESULTS` caps how many summaries a search returns;
   `MAX_SEARCH_DAYS` caps how far back a search can look (an explicit `after`
   can only narrow this window, never widen it); `MAX_MESSAGE_BYTES` caps how
   many bytes of a message are ever fetched (larger messages are returned

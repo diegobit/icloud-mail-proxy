@@ -86,6 +86,38 @@ describe("mutateMessage", () => {
       code: "invalid_mutation_destination",
     });
   });
+
+  it("restores only from the archive or the configured trash", async () => {
+    const env = makeEnv();
+    await expect(mutateMessage(env, "restore", "INBOX", 1, 42)).rejects.toMatchObject({
+      status: 400,
+      code: "restore_source_not_allowed",
+    });
+    // In ALLOWED_MAILBOXES, but not one of the two folders this server files
+    // into, so it is not a restore source either.
+    await expect(mutateMessage(env, "restore", "Sent Messages", 1, 42)).rejects.toMatchObject({
+      status: 400,
+      code: "restore_source_not_allowed",
+    });
+  });
+
+  it("accepts the trash as a restore source even when it is not readable", async () => {
+    const env = makeEnv({ ALLOWED_MAILBOXES: "INBOX,Archive" });
+    // Past the source check the next rejection is the uid: opening IMAP is
+    // what this Node test must avoid, not what it is asserting.
+    await expect(mutateMessage(env, "restore", "Deleted Messages", 1, 0)).rejects.toMatchObject({
+      status: 400,
+      code: "invalid_uid",
+    });
+  });
+
+  it("refuses a restore whose source is also the destination", async () => {
+    const env = makeEnv({ ALLOWED_ARCHIVE_MAILBOX: "INBOX" });
+    await expect(mutateMessage(env, "restore", "INBOX", 1, 42)).rejects.toMatchObject({
+      status: 400,
+      code: "destination_is_source",
+    });
+  });
 });
 
 describe("mutation routes", () => {
@@ -125,5 +157,11 @@ describe("mutation routes", () => {
     const response = await handleRest(post("/v1/messages/INBOX/1/1/frobnicate"), makeEnv());
     expect(response.status).toBe(404);
     expect(await response.json()).toMatchObject({ error: { code: "not_found" } });
+  });
+
+  it("routes the restore path to the same handler", async () => {
+    const response = await handleRest(post("/v1/messages/Archive/1/0/restore"), makeEnv());
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({ error: { code: "invalid_uid" } });
   });
 });
