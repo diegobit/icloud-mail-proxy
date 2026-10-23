@@ -80,7 +80,7 @@ describe("calendar MCP surface", () => {
 
   it("registers delete_event with destructive annotations", async () => {
     const tools = await mcpToolsListDetailed(current.base, TOKEN_A);
-    expect(tools).toHaveLength(14);
+    expect(tools).toHaveLength(15);
     const remove = tools.find((tool) => tool.name === "delete_event");
     expect(remove).toBeDefined();
     expect(remove.annotations).toMatchObject({

@@ -391,12 +391,13 @@ export async function getMessage(
 }
 
 /** The two mailbox mutations this proxy performs (plans/mailbox-mutations.md). */
-export type MutationAction = "archive" | "trash";
+export type MutationAction = "archive" | "trash" | "restore";
 
 /** Destinations used when the corresponding env var is unset or blank. */
 const DEFAULT_MUTATION_DESTINATION: Record<MutationAction, string> = {
   archive: "Archive",
   trash: "Deleted Messages",
+  restore: "INBOX",
 };
 
 export interface MutationResult {
@@ -410,9 +411,13 @@ export interface MutationResult {
 /**
  * Resolve an action's one fixed destination from configuration. The request
  * never names it: the worst a prompt-injected caller can do is file a message
- * into one of these two mailboxes, where the owner can still see it.
+ * into Archive or the trash, or pull one back into INBOX, where the owner can
+ * still see it.
  */
 function mutationDestination(env: Env, action: MutationAction): string {
+  // A restore always lands in INBOX: there is no configuration for it, so a
+  // message cannot be pulled out of the trash straight into another folder.
+  if (action === "restore") return DEFAULT_MUTATION_DESTINATION.restore;
   const configured =
     action === "archive" ? env.ALLOWED_ARCHIVE_MAILBOX : env.ALLOWED_TRASH_MAILBOX;
   const trimmed = (configured ?? "").trim();
@@ -431,10 +436,21 @@ function mutationDestination(env: Env, action: MutationAction): string {
 }
 
 /**
+ * The only mailboxes a restore may pull from: the two folders this server
+ * itself files into. The trash is deliberately absent from ALLOWED_MAILBOXES
+ * (it is not meant to be readable through this proxy), so the usual allowlist
+ * cannot be the guard here — this closed pair is.
+ */
+function restoreSources(env: Env): string[] {
+  return [mutationDestination(env, "archive"), mutationDestination(env, "trash")];
+}
+
+/**
  * File one message into a fixed destination: `archive` -> ALLOWED_ARCHIVE_MAILBOX,
- * `trash` -> ALLOWED_TRASH_MAILBOX. This is the only write beyond APPEND, and
- * it can never expunge permanently: trashing moves the message into iCloud's
- * trash, where it stays recoverable for the server's retention window.
+ * `trash` -> ALLOWED_TRASH_MAILBOX, `restore` -> INBOX. This is the only write
+ * beyond APPEND, and it can never expunge permanently: trashing moves the
+ * message into iCloud's trash, where it stays recoverable for the server's
+ * retention window, and a restore only pulls it back out.
  *
  * Re-running is safe: a uid that is no longer in the source mailbox is a 404
  * message_not_found, and after a "BYE" retry the message may already have moved.
@@ -447,7 +463,20 @@ export async function mutateMessage(
   uid: number,
   options: { principal?: string } = {},
 ): Promise<MutationResult> {
-  assertMailboxAllowed(env, mailbox);
+  if (action === "restore") {
+    const sources = restoreSources(env);
+    if (!sources.includes(mailbox)) {
+      throw new ApiError(
+        400,
+        "restore_source_not_allowed",
+        `restore only moves a message out of ${sources
+          .map((name) => JSON.stringify(name))
+          .join(" or ")}`,
+      );
+    }
+  } else {
+    assertMailboxAllowed(env, mailbox);
+  }
   if (!Number.isSafeInteger(uidValidity) || uidValidity <= 0) {
     throw new ApiError(400, "invalid_uidvalidity", "uidValidity must be a positive integer");
   }

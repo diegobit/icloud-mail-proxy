@@ -163,9 +163,9 @@ moved):
   button and this proxy must land in the same folder or the owner will find two
   archives. Verify the destination is the same one Apple Mail uses before
   shipping the default.
-- **No batch, no undo.** One uid per call, no "restore" tool. Restoring is the
-  owner's action in a mail client; adding `restore_mail` later is cheap once
-  `mutateMessage` exists (same shape, reversed destination).
+- **No batch; one undo.** One uid per call. `restore_mail` (added later) covers
+  the reverse move, archive or trash back to `INBOX`, but there is still no bulk
+  operation, and a restore does not return a message to the folder it came from.
 
 ## Estimate
 

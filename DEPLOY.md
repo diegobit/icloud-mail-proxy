@@ -80,6 +80,11 @@ Filing mail adds two base vars, both destinations and never request input:
 - Neither folder needs to be in `ALLOWED_MAILBOXES` (the trash is normally not
   readable through this proxy), and a destination equal to the source mailbox
   is refused at runtime.
+- `restore_mail` and `POST .../restore` add no configuration: they always move a
+  message back into `INBOX`, and accept only one of those two folders as the
+  source. Finding the uid of a *trashed* message therefore needs
+  `Deleted Messages` in `ALLOWED_MAILBOXES` (which makes the trash readable);
+  the archive is searchable by default.
 
 ### Calendars (opt-in)
 

@@ -230,9 +230,10 @@ async function handleGetAttachment(
 }
 
 /**
- * POST /v1/messages/:mailbox/:uidValidity/:uid/{archive,trash}: file one
- * message into the fixed archive or trash mailbox. The destination is
- * configured server-side and never read from the request.
+ * POST /v1/messages/:mailbox/:uidValidity/:uid/{archive,trash,restore}: file
+ * one message into the fixed archive or trash mailbox, or pull one back into
+ * INBOX. The destination is configured server-side (INBOX for a restore) and
+ * never read from the request.
  */
 async function handleMutation(
   segments: string[],
@@ -556,13 +557,13 @@ export async function handleRest(request: Request, env: Env): Promise<Response> 
       return await handleSearch(request, env);
     }
 
-    // POST /v1/messages/:mailbox/:uidValidity/:uid/archive | .../trash
+    // POST /v1/messages/:mailbox/:uidValidity/:uid/archive | .../trash | .../restore
     if (
       request.method === "POST" &&
       segments.length === 6 &&
       segments[0] === "v1" &&
       segments[1] === "messages" &&
-      (segments[5] === "archive" || segments[5] === "trash")
+      (segments[5] === "archive" || segments[5] === "trash" || segments[5] === "restore")
     ) {
       return await handleMutation(segments.slice(2), segments[5], env);
     }
