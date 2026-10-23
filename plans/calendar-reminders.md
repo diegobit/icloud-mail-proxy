@@ -327,8 +327,9 @@ longer exists.
 
 ## Open items
 
-- Optional cleanup of CalDAV-only test artifacts: the `MCP Acceptance` VTODO
-  list and its reminder, the legacy `Reminders` test reminder, and
-  `acceptance-reminder-2026-10-24` / `mcp-test-2026-10-23`. They do not appear
-  in the Reminders app. `delete_event` cannot remove VTODO resources; cleanup
-  remains a direct CalDAV or Apple Calendar action.
+- ~~Cleanup of CalDAV-only test artifacts.~~ Done on 2026-10-23: the
+  `MCP Acceptance` list and its `acceptance-reminder-2026-10-24` reminder, and
+  the `mcp-test-2026-10-23` resource in the legacy `Reminders` list, were
+  deleted directly over CalDAV. The `Casa SP⚠️` list and the `Reminders` list
+  itself were left alone. `delete_event` still cannot remove VTODO resources,
+  so this stays a manual action.

@@ -127,6 +127,8 @@ function and error mapping.
 
 ## Open items
 
-- The legacy VTODO test artifacts from the calendar plan are not removable
-  through this tool; they remain a separate direct CalDAV/Apple Calendar
-  cleanup.
+- `delete_event` still refuses VTODO resources, so they cannot be removed
+  through the API. The artifacts this branch left behind were removed by hand
+  over CalDAV on 2026-10-23 (recorded in
+  [calendar-reminders.md](calendar-reminders.md#open-items)); the limitation
+  stands.
