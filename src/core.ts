@@ -1,4 +1,4 @@
-// Shared, transport-agnostic logic for the read-only iCloud Mail proxy.
+// Shared, transport-agnostic logic for the iCloud Mail proxy.
 //
 // This module knows nothing about HTTP or MCP: it takes an Env plus plain
 // parameters, talks to IMAP via ImapSession, parses messages with postal-mime
@@ -447,9 +447,9 @@ function restoreSources(env: Env): string[] {
 
 /**
  * File one message into a fixed destination: `archive` -> ALLOWED_ARCHIVE_MAILBOX,
- * `trash` -> ALLOWED_TRASH_MAILBOX, `restore` -> INBOX. This is the only write
- * beyond APPEND, and it can never expunge permanently: trashing moves the
- * message into iCloud's trash, where it stays recoverable for the server's
+ * `trash` -> ALLOWED_TRASH_MAILBOX, `restore` -> INBOX. It can never expunge
+ * permanently: trashing moves the message into iCloud's trash, where it
+ * stays recoverable for the server's
  * retention window, and a restore only pulls it back out.
  *
  * Re-running is safe: a uid that is no longer in the source mailbox is a 404
@@ -554,6 +554,55 @@ export async function mutateMessage(
       );
 
       return { ok: true as const, action, mailbox, uid, destination };
+    } finally {
+      await session.logout();
+    }
+  });
+}
+
+/** Mark one existing message read without moving it or changing other flags. */
+export async function markMessageRead(
+  env: Env,
+  mailbox: string,
+  uidValidity: number,
+  uid: number,
+  options: { principal?: string } = {},
+): Promise<{ ok: true; action: "read"; mailbox: string; uid: number; seen: true }> {
+  assertMailboxAllowed(env, mailbox);
+  if (!Number.isSafeInteger(uidValidity) || uidValidity <= 0) {
+    throw new ApiError(400, "invalid_uidvalidity", "uidValidity must be a positive integer");
+  }
+  if (!Number.isSafeInteger(uid) || uid <= 0) {
+    throw new ApiError(400, "invalid_uid", "uid must be a positive integer");
+  }
+
+  // Adding \\Seen is idempotent, so a dropped connection can be retried safely.
+  return withRetryOnce(async () => {
+    const session = await ImapSession.open(env.ICLOUD_USER, env.ICLOUD_APP_PASSWORD);
+    try {
+      const selected = await session.select(mailbox);
+      if (selected.uidValidity !== uidValidity) {
+        throw new ApiError(
+          409,
+          "uidvalidity_mismatch",
+          `UIDVALIDITY changed (now ${selected.uidValidity}); re-run the search to get fresh ids`,
+        );
+      }
+      // UID STORE of a missing uid can return OK without changing anything.
+      try {
+        await session.fetchSize(uid);
+      } catch (e) {
+        if (e instanceof ImapError && (e.code === "PARSE" || e.code === "NO")) {
+          throw new ApiError(404, "message_not_found", `no message with uid ${uid}`);
+        }
+        throw e;
+      }
+      await session.uidMarkRead(uid);
+      console.log(
+        "mail_mutation",
+        JSON.stringify({ principal: options.principal ?? "unknown", action: "read", mailbox, uid }),
+      );
+      return { ok: true as const, action: "read" as const, mailbox, uid, seen: true as const };
     } finally {
       await session.logout();
     }

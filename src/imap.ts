@@ -10,6 +10,7 @@ import {
   buildCopy,
   buildMove,
   buildStoreDeleted,
+  buildStoreSeen,
   buildUidExpunge,
   chooseMoveStrategy,
 } from "./imap-mutations";
@@ -159,6 +160,15 @@ export class ImapSession {
     try {
       const untagged = await this.command(`SELECT ${quoteImapString(mailbox)}`, "SELECT");
       return parseExamineResponse(textLines(untagged));
+    } catch (e) {
+      throw toImapError(e);
+    }
+  }
+
+  /** Mark one message read in the selected mailbox, preserving other flags. */
+  async uidMarkRead(uid: number): Promise<void> {
+    try {
+      await this.command(buildStoreSeen(uid), "UID STORE");
     } catch (e) {
       throw toImapError(e);
     }

@@ -146,7 +146,23 @@ describe("direct send end to end", () => {
     const save = byName.get("save_draft")?.annotations;
     expect(save?.readOnlyHint).toBe(false);
     expect(save?.openWorldHint).toBe(false);
+    expect(byName.get("read_mail")?.annotations).toMatchObject({
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    });
   }, 60_000);
+
+  it("routes read_mail with the same mailbox validation as the REST endpoint", async () => {
+    const result = await mcpToolCall(current.base, TOKEN_A, "read_mail", {
+      mailbox: "Not Allowed",
+      uidValidity: 1,
+      uid: 42,
+    });
+    expect(result.isError).toBe(true);
+    expect(result.text).toContain("mailbox_not_allowed");
+  });
 
   it("sends immediately, once, with every envelope recipient and no Bcc header", async () => {
     const before = smtp.state.connections;

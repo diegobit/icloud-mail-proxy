@@ -14,6 +14,7 @@ import {
   getMessage,
   healthCheck,
   listMailboxes,
+  markMessageRead,
   mutateMessage,
   searchMail,
   type MutationAction,
@@ -230,14 +231,14 @@ async function handleGetAttachment(
 }
 
 /**
- * POST /v1/messages/:mailbox/:uidValidity/:uid/{archive,trash,restore}: file
+ * POST /v1/messages/:mailbox/:uidValidity/:uid/{archive,trash,restore,read}: file
  * one message into the fixed archive or trash mailbox, or pull one back into
  * INBOX. The destination is configured server-side (INBOX for a restore) and
- * never read from the request.
+ * never read from the request. `read` only adds the Seen flag.
  */
 async function handleMutation(
   segments: string[],
-  action: MutationAction,
+  action: MutationAction | "read",
   env: Env,
 ): Promise<Response> {
   const [mailboxEnc, uidValidityStr, uidStr] = segments;
@@ -250,9 +251,11 @@ async function handleMutation(
   if (!/^\d+$/.test(uidValidityStr) || !/^\d+$/.test(uidStr)) {
     return errorBody("invalid_request", "uidValidity and uid must be integers", 400);
   }
-  const result = await mutateMessage(env, action, mailbox, Number(uidValidityStr), Number(uidStr), {
-    principal: "bearer",
-  });
+  const result = action === "read"
+    ? await markMessageRead(env, mailbox, Number(uidValidityStr), Number(uidStr), { principal: "bearer" })
+    : await mutateMessage(env, action, mailbox, Number(uidValidityStr), Number(uidStr), {
+        principal: "bearer",
+      });
   return json(result);
 }
 
@@ -557,13 +560,13 @@ export async function handleRest(request: Request, env: Env): Promise<Response> 
       return await handleSearch(request, env);
     }
 
-    // POST /v1/messages/:mailbox/:uidValidity/:uid/archive | .../trash | .../restore
+    // POST /v1/messages/:mailbox/:uidValidity/:uid/{archive,trash,restore,read}
     if (
       request.method === "POST" &&
       segments.length === 6 &&
       segments[0] === "v1" &&
       segments[1] === "messages" &&
-      (segments[5] === "archive" || segments[5] === "trash" || segments[5] === "restore")
+      (segments[5] === "archive" || segments[5] === "trash" || segments[5] === "restore" || segments[5] === "read")
     ) {
       return await handleMutation(segments.slice(2), segments[5], env);
     }

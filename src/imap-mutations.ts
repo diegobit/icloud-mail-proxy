@@ -1,11 +1,10 @@
 // Pure framing for mailbox mutations (plans/mailbox-mutations.md, step 1).
 // Kept out of imap.ts so it is Node-testable, like imap-append.ts.
 //
-// A mutation is one of two fixed destinations chosen by the caller in
-// src/core.ts, never by the request: the archive mailbox or the trash. These
-// builders only know how to file a single uid there — there is deliberately no
-// builder for EXPUNGE without a uid, for arbitrary flags, or for CREATE/DELETE
-// of a mailbox.
+// Filing destinations are chosen by src/core.ts, never by the request. These
+// builders act on a single uid, either filing it or adding the Seen flag.
+// There is no builder for EXPUNGE without a uid, for arbitrary flags, or for
+// CREATE/DELETE of a mailbox.
 
 import { ImapParseError, quoteImapString } from "./imap-parse";
 
@@ -52,6 +51,12 @@ export function buildCopy(uid: number, destination: string): string {
 export function buildStoreDeleted(uid: number): string {
   assertUid(uid);
   return `UID STORE ${uid} +FLAGS.SILENT (\\Deleted)`;
+}
+
+/** Add only \\Seen, preserving all other flags on this one message. */
+export function buildStoreSeen(uid: number): string {
+  assertUid(uid);
+  return `UID STORE ${uid} +FLAGS.SILENT (\\Seen)`;
 }
 
 /**

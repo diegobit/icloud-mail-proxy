@@ -3,6 +3,7 @@ import {
   buildCopy,
   buildMove,
   buildStoreDeleted,
+  buildStoreSeen,
   buildUidExpunge,
   chooseMoveStrategy,
 } from "../src/imap-mutations";
@@ -29,6 +30,7 @@ describe("mutation builders", () => {
     expect(buildMove(42, "Archive")).toBe('UID MOVE 42 "Archive"');
     expect(buildCopy(42, "Deleted Messages")).toBe('UID COPY 42 "Deleted Messages"');
     expect(buildStoreDeleted(42)).toBe("UID STORE 42 +FLAGS.SILENT (\\Deleted)");
+    expect(buildStoreSeen(42)).toBe("UID STORE 42 +FLAGS.SILENT (\\Seen)");
     expect(buildUidExpunge(42)).toBe("UID EXPUNGE 42");
   });
 
@@ -42,6 +44,7 @@ describe("mutation builders", () => {
       expect(() => buildMove(uid, "Archive")).toThrow(ImapParseError);
       expect(() => buildCopy(uid, "Archive")).toThrow(ImapParseError);
       expect(() => buildStoreDeleted(uid)).toThrow(ImapParseError);
+      expect(() => buildStoreSeen(uid)).toThrow(ImapParseError);
       expect(() => buildUidExpunge(uid)).toThrow(ImapParseError);
     }
   });

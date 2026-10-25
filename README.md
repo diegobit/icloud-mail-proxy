@@ -219,8 +219,10 @@ Agent  --HTTPS (REST /v1 or MCP /mcp)-->  Cloudflare Worker  --IMAPS:993-->     
 The Worker speaks a small, hand-rolled IMAP client (`src/imap.ts`) directly
 over a TLS socket (`cloudflare:sockets`) to `imap.mail.me.com:993`. Reads only
 ever issue `LOGIN`, `EXAMINE`, `UID SEARCH`, `UID FETCH` (always
-`BODY.PEEK[...]`, never `BODY[...]`) and `LOGOUT`, so no command can mark a
-message as read. Writes are narrow: `APPEND` saves a draft into the `Drafts`
+`BODY.PEEK[...]`, never `BODY[...]`) and `LOGOUT`, so fetching a message leaves
+its read state unchanged. The explicit `read_mail` command uses `SELECT` and
+`UID STORE +FLAGS.SILENT (\Seen)` to mark one message read. Other writes are
+narrow: `APPEND` saves a draft into the `Drafts`
 mailbox (and, when `SEND_SENT_COPY` is enabled, a copy of a sent message into
 `Sent Messages`), and a mutation issues a read-write `SELECT` followed by
 `UID MOVE`, or by `UID COPY` + `\Deleted` + `UID EXPUNGE` when the server
@@ -403,6 +405,27 @@ curl -X POST -H "Authorization: Bearer $API_TOKEN" \
 permanently. `409 uidvalidity_mismatch` and `400 mailbox_not_allowed` mean the
 same as on the read endpoints, and a uid that is no longer in the source
 mailbox returns `404 message_not_found`, which makes the call safe to re-run.
+
+### `POST /v1/messages/:mailbox/:uidValidity/:uid/read`
+
+Mark one message as read. There is no request body. Use the `mailbox`,
+`uidValidity` and `uid` from a search result:
+
+```bash
+curl -X POST -H "Authorization: Bearer $API_TOKEN" \
+  "https://icloud-mail.diegobit.com/v1/messages/INBOX/1699999999/4821/read"
+```
+
+```json
+{ "ok": true, "action": "read", "mailbox": "INBOX", "uid": 4821, "seen": true }
+```
+
+This adds only the `\Seen` flag: other flags and the mailbox stay unchanged.
+Repeating the call is safe, including after a timeout or when the message is
+already read. An expired identity returns `409 uidvalidity_mismatch`, a
+missing message returns `404 message_not_found`, and a mailbox outside
+`ALLOWED_MAILBOXES` returns `400 mailbox_not_allowed`. Fetching a message or
+attachment does not mark it read.
 
 ### `GET /v1/messages/:mailbox/:uidValidity/:uid/attachments/:index`
 
@@ -681,12 +704,13 @@ next update or delete.
 
 ## MCP
 
-A stateless Streamable HTTP MCP server is served at `/mcp`. It exposes eight
+A stateless Streamable HTTP MCP server is served at `/mcp`. It exposes ten
 mail tools that mirror the REST endpoints — `list_mailboxes`, `search_mail`,
 `get_mail_message`, and `get_mail_attachment` (returns
 `{ filename, mimeType, size, contentBase64 }`, base64 of the decoded content,
 subject to the same type allowlist and size cap) — plus three filing tools,
-`archive_mail`, `delete_mail` and `restore_mail`, and two sending tools: `send_mail` (a new
+`archive_mail`, `delete_mail` and `restore_mail`, plus `read_mail` to mark one
+message read, and two sending tools: `send_mail` (a new
 message, a reply or a forward, submitted immediately) and `save_draft` (the same
 message put into iCloud's `Drafts` folder, to be finished from any mail app).
 When calendars are enabled it adds up to six more: three read tools and three
@@ -942,12 +966,13 @@ EventKit companion on a Mac); it is not part of this Worker.
 - **Reads are read-only; writes are narrow.** Reading sends `EXAMINE` (the
   read-only form of `SELECT`), `UID SEARCH`, `UID FETCH` with `BODY.PEEK[...]`
   (never `BODY[...]`, which would set `\Seen`), and `LOGOUT`. The only writes
-  are `APPEND` (a draft into `Drafts`, or the optional sent copy) and the two
+  are `APPEND` (a draft into `Drafts`, or the optional sent copy), `read_mail`
+  (`SELECT` followed by `UID STORE +FLAGS.SILENT (\Seen)`), and filing
   mutations, which use `SELECT` and then `UID MOVE`, or `UID COPY` + `UID
   STORE` with exactly `\Deleted` + `UID EXPUNGE` on the same uid when only
-  `UIDPLUS` is available. There is no bare `EXPUNGE`, no `STORE` of any other
-  flag, no `CREATE`/`DELETE` of a mailbox, and no permanent delete. Nothing can
-  mark a message read.
+  `UIDPLUS` is available. There is no bare `EXPUNGE`, no `STORE` of flags other
+  than `\Seen` or `\Deleted`, no `CREATE`/`DELETE` of a mailbox, and no permanent
+  delete. Only the explicit `read_mail` command marks an existing message read.
 - **Sending is direct, by the owner's decision.** The agent sends; there is no
   approval step. An email whose content instructs the agent to send something
   can therefore produce a real message, bounded only by the caps above and
