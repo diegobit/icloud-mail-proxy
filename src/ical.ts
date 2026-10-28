@@ -1463,9 +1463,29 @@ function sortKey(time: IcalTime): number {
 
 export type EventAlarm = { minutesBefore: number } | { kind: "other" };
 
+const ALARM_CORE_PROPERTIES = new Set(["action", "description", "trigger"]);
+/**
+ * Apple gives every alarm a UID and X-WR-ALARMUID. They identify the alarm but
+ * say nothing about when it fires, so a plain display reminder written on an
+ * iPhone is still describable; any other extra property is vendor semantics we
+ * must not drop, and the alarm stays "other".
+ */
+const ALARM_IDENTITY_PROPERTIES = new Set(["uid", "x-wr-alarmuid"]);
+
 function describeAlarm(component: JCalComponent): EventAlarm {
-  if (component[2].length || component[1].some(([name]) => !["action", "description", "trigger"].includes(name.toLowerCase()))) return { kind: "other" };
-  if (["action", "description", "trigger"].some((name) => component[1].filter(([key]) => key.toLowerCase() === name).length !== 1)) return { kind: "other" };
+  const names = component[1].map(([name]) => name.toLowerCase());
+  if (
+    component[2].length ||
+    names.some((name) => !ALARM_CORE_PROPERTIES.has(name) && !ALARM_IDENTITY_PROPERTIES.has(name))
+  ) {
+    return { kind: "other" };
+  }
+  for (const name of ALARM_CORE_PROPERTIES) {
+    if (names.filter((entry) => entry === name).length !== 1) return { kind: "other" };
+  }
+  for (const name of ALARM_IDENTITY_PROPERTIES) {
+    if (names.filter((entry) => entry === name).length > 1) return { kind: "other" };
+  }
   const action = propertyOf(component, "action");
   const description = propertyOf(component, "description");
   // Unknown parameters may carry vendor semantics; never discard them on replacement.
