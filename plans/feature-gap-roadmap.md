@@ -495,3 +495,24 @@ Device display of a series and delivery of a display alarm are still
 unverified; the owner was checking a 21:00 event with a 5-minute alert on a
 device. Unit 6's alarm writer also still needs that confirmation before
 release.
+
+### iPhone alarm shape and classifier fix (2026-10-28)
+
+An event created on iPhone OS 27 (`X-APPLE-CREATOR-IDENTITY:com.apple.mobilecal`)
+with one 5-minute alert stores two `VALARM`s in the resource:
+
+- `ACTION:DISPLAY`, `DESCRIPTION:Reminder`, `TRIGGER:-PT5M`, plus `UID` and
+  `X-WR-ALARMUID`.
+- `ACTION:NONE` with `TRIGGER;VALUE=DATE-TIME:19760401T005545Z`, Apple's
+  "no second alert" sentinel.
+
+`get_event` reported both as `{ kind: "other" }` because `describeAlarm`
+refused any property beyond `ACTION`, `DESCRIPTION` and `TRIGGER`. `UID` and
+`X-WR-ALARMUID` identify an alarm without changing when it fires, so they are
+now treated as identity: the display reminder reads as `{ minutesBefore: 5 }`
+and an `alarms` array replaces it, while Apple's sentinel stays "other" and is
+preserved. Any other extra property or parameter still makes an alarm "other".
+The live resource also showed the earlier delivery test could not have fired:
+the event was dated 2026-10-01, a month before the 21:00 check, so the missing
+notification was a wrong event date, not a delivery failure. Device delivery
+of a future-dated event with a display alert still has to be confirmed.
