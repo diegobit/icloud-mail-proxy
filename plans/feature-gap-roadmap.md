@@ -473,7 +473,25 @@ for release. Device notification delivery remains unverified.
 Unit 7's creation path is implemented and the local suite passes: `npm test`
 (873 tests), `npm run typecheck` and `npm run check:bundle`. The series
 update/delete it depends on was already committed. Not deployed, so there is no
-version id or live tool count, and no live acceptance has been run: creating a
-real series and reading it back on a device still needs the Scratch calendar,
-and device delivery of a display alarm remains unverified. Unit 6's alarm writer
-and device alert probe likewise still need live acceptance before release.
+version id or live tool count.
+
+Live acceptance was run on the same day against `Scratch` with a local
+`wrangler dev` Worker (`ALLOWED_CALENDARS=Scratch`, `CALENDAR_WRITE=1`), not a
+deployment:
+
+- `POST /v1/calendars/Scratch/events` created `accept-series-20261028`, weekly
+  from 2026-10-29 09:00 `Europe/Rome`, `COUNT=3`, one 10-minute alarm. The
+  response carried `recurrenceRule: "FREQ=WEEKLY;COUNT=3"` and a strong ETag.
+- `GET` returned `recurring: true`, `readOnlyReason: null`,
+  `recurrenceRule: "FREQ=WEEKLY;COUNT=3"` and three occurrences (29 October,
+  5 and 12 November, 09:00 +01:00), with the alarm preserved. iCloud accepted
+  the `TZID` anchor and stored its own `VTIMEZONE`.
+- The master was renamed through `PUT` with `If-Match`, and the whole series
+  removed with `DELETE ?series=true`; a following `GET` returned 404.
+- The three audit lines carried principal, action, calendar id, resource id and
+  outcome only.
+
+Device display of a series and delivery of a display alarm are still
+unverified; the owner was checking a 21:00 event with a 5-minute alert on a
+device. Unit 6's alarm writer also still needs that confirmation before
+release.
