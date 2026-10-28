@@ -10,6 +10,7 @@
 // href and gives both the ETag and the data in the same round trip. All
 // expansion is client-side because iCloud ignores C:expand.
 
+import { eventAlarms, type EventAlarm } from "./ical";
 import {
   CalDavError,
   calendarQuery,
@@ -160,6 +161,7 @@ export interface EventDetail {
   scheduling: boolean;
   readOnlyReason: ReadOnlyReason | null;
   recurrenceRule: string | null;
+  alarms: EventAlarm[];
   /** RFC 5545 STATUS of the master component. */
   status: string | null;
   allDay: boolean;
@@ -552,6 +554,7 @@ export async function getEvent(
     scheduling: parsed.scheduling,
     readOnlyReason: readOnlyReasonOf(parsed),
     recurrenceRule: parsed.master.rruleText,
+    alarms: eventAlarms(parsed.master),
     status: parsed.master.status,
     allDay: start.dateOnly,
     start: formatAbsolute(start),

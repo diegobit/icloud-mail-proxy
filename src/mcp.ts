@@ -223,6 +223,7 @@ export function buildServer(
           .boolean()
           .optional()
           .describe("Inferred from the form of start/end when omitted"),
+        alarms: z.array(z.object({ minutesBefore: z.number().int().min(0).max(10080) }).strict()).max(2).optional(),
         location: eventText.describe("Location; at most 8 KB"),
         description: eventText.describe("Description; at most 8 KB"),
       })
@@ -236,7 +237,7 @@ export function buildServer(
           "YYYY-MM-DDTHH:MM:SS read in `timeZone` (default Europe/Rome), or YYYY-MM-DD for an " +
           "all-day event; `allDay` is inferred from the form when omitted, and the end is " +
           "exclusive. The event is stored as UTC (timed) or DATE (all-day); this server never " +
-          "writes TZID, RRULE, RDATE, EXDATE, ATTENDEE, ORGANIZER or VALARM. Pass `id` to make a " +
+          "writes TZID, RRULE, RDATE, EXDATE, ATTENDEE or ORGANIZER. Optional alarms are display reminders before the start. Pass `id` to make a " +
           "retry idempotent: if the resource already exists the call returns already_exists, so " +
           "call get_event and compare instead of creating a second copy. Returns { calendar, " +
           "collectionId, resourceId, uid, etag, summary, start, end, timeZone, allDay }; if etag " +
@@ -275,6 +276,7 @@ export function buildServer(
           .boolean()
           .optional()
           .describe("Inferred from the form of start/end when omitted"),
+        alarms: z.array(z.object({ minutesBefore: z.number().int().min(0).max(10080) }).strict()).max(2).optional(),
         location: z.string().max(8192).nullable().optional().describe("null removes the location"),
         description: z
           .string()
@@ -296,7 +298,7 @@ export function buildServer(
           "ETag returns conflict, so call get_event again and never blind-retry. To change times " +
           "pass both start and end; the form selects timed or all-day, allDay is inferred when " +
           "omitted, timeZone defaults to Europe/Rome, and the end is exclusive. Pass location " +
-          "or description null to remove it. Returns the same shape as create_event; if etag is " +
+          "or description null to remove it. Omit alarms to preserve them; an array replaces supported display reminders while preserving other alarms. Returns the same shape as create_event; if etag is " +
           "null, call get_event before the next update. A mutation_state_unknown means the " +
           "update may have landed: reconcile with get_event on the id.",
         inputSchema: updateEventSchema,

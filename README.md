@@ -981,9 +981,10 @@ and `delete_event` under the separate `calendar:delete` scope. Deletion is
 immediate: unlike mail there is no trash. Only one-off events can be deleted;
 recurring and scheduling (`ORGANIZER`/`ATTENDEE`) resources remain read-only.
 There is no recurrence editing, no invitations, free/busy, sharing or contacts.
-A created event never carries a `VALARM`; an existing one is preserved by an
-update. Events accept only summary, start/end, time zone, location and
-description.
+Events accept up to two display alarms, specified as minutes before the start
+(from 0 to 10080). An update that omits alarms preserves them; an array replaces
+supported display alarms while preserving other alarms. Events also accept
+summary, start/end, time zone, location and description.
 
 Writes are structured and narrow:
 
@@ -991,7 +992,7 @@ Writes are structured and narrow:
   `timeZone` (default `Europe/Rome`), or `YYYY-MM-DD` for all-day values. The
   server stores timed values as UTC and all-day values as `DATE`; it never
   writes a bare `TZID`, `RRULE`, `RDATE`, `EXDATE`, `ATTENDEE`, `ORGANIZER` or
-  `VALARM`. `end` is exclusive.
+  `VALARM` except for the optional display alarms described above. `end` is exclusive.
 - `update_event` requires exactly one strong, quoted ETag from `get_event`.
   The server re-reads the resource, checks the ETag again, refuses a recurring
   or scheduling resource, then PUTs with `If-Match`. A stale tag returns `409

@@ -63,6 +63,7 @@ const createEventBodySchema = z
     allDay: z.boolean().optional(),
     location: z.string().nullable().optional(),
     description: z.string().nullable().optional(),
+    alarms: z.array(z.object({ minutesBefore: z.number().int().min(0).max(10080) }).strict()).max(2).optional(),
   })
   .strict();
 
@@ -76,6 +77,7 @@ const updateEventBodySchema = z
     allDay: z.boolean().optional(),
     location: z.string().nullable().optional(),
     description: z.string().nullable().optional(),
+    alarms: z.array(z.object({ minutesBefore: z.number().int().min(0).max(10080) }).strict()).max(2).optional(),
   })
   .strict();
 
@@ -88,6 +90,7 @@ const CREATE_EVENT_FIELDS = new Set([
   "allDay",
   "location",
   "description",
+  "alarms",
 ]);
 const UPDATE_EVENT_FIELDS = new Set([
   "etag",
@@ -98,6 +101,7 @@ const UPDATE_EVENT_FIELDS = new Set([
   "allDay",
   "location",
   "description",
+  "alarms",
 ]);
 
 /** Translate any thrown value into a JSON error Response. */

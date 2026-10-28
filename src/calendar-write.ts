@@ -80,6 +80,7 @@ export interface CreateEventInput {
   allDay?: boolean;
   location?: string | null;
   description?: string | null;
+  alarms?: { minutesBefore: number }[];
 }
 
 export interface UpdateEventInput {
@@ -96,6 +97,7 @@ export interface UpdateEventInput {
   location?: string | null;
   /** null removes the property. */
   description?: string | null;
+  alarms?: { minutesBefore: number }[];
 }
 
 export interface DeleteEventInput {
@@ -230,6 +232,7 @@ function buildEventIcs(input: {
   description: string | null;
   time: ResolvedEventTime;
   now: number;
+  alarms: { minutesBefore: number }[];
 }): string {
   const lines = [
     "BEGIN:VCALENDAR",
@@ -250,6 +253,7 @@ function buildEventIcs(input: {
   lines.push(`SUMMARY:${escapeIcalText(input.summary)}`);
   if (input.location !== null) lines.push(`LOCATION:${escapeIcalText(input.location)}`);
   if (input.description !== null) lines.push(`DESCRIPTION:${escapeIcalText(input.description)}`);
+  for (const alarm of input.alarms) lines.push("BEGIN:VALARM", "ACTION:DISPLAY", "DESCRIPTION:Reminder", `TRIGGER:${alarm.minutesBefore === 0 ? "PT0S" : `-PT${alarm.minutesBefore}M`}`, "END:VALARM");
   lines.push("END:VEVENT", "END:VCALENDAR");
   return serializeIcal(lines);
 }
@@ -282,9 +286,6 @@ function validateCreatedEvent(
       "the event would carry a recurrence or scheduling property, which v1 never writes",
     );
   }
-  if (parsed.master.alarms > 0) {
-    throw new ApiError(400, "unsupported_field", "the event would carry a VALARM, which is not supported");
-  }
   if (parsed.master.summary !== expected.summary) {
     throw new ApiError(500, "internal_error", "the serialized summary did not round-trip");
   }
@@ -313,6 +314,11 @@ function validateCreatedEvent(
   return parsed;
 }
 
+function validateAlarms(alarms: { minutesBefore: number }[] | undefined): void {
+  if (alarms === undefined) return;
+  if (!Array.isArray(alarms) || alarms.length > 2 || alarms.some((a) => !a || Object.keys(a).some((k) => k !== "minutesBefore") || !Number.isInteger(a.minutesBefore) || a.minutesBefore < 0 || a.minutesBefore > 10080)) throw new ApiError(400, "invalid_request", "alarms must contain at most two minutesBefore values between 0 and 10080");
+}
+
 function assertCalendarWriteEnabled(env: Env): void {
   if (calendarWritesEnabled(env)) return;
   throw new ApiError(
@@ -331,6 +337,7 @@ export async function createEvent(
 ): Promise<EventWriteResult> {
   assertCalendarWriteEnabled(env);
   const limits = calendarLimits(env);
+  validateAlarms(input.alarms);
   const summary = normalizeSummary(input.summary);
   const location = normalizeText(input.location, "location") ?? null;
   const description = normalizeText(input.description, "description") ?? null;
@@ -351,6 +358,7 @@ export async function createEvent(
     description,
     time,
     now: options.now ?? Date.now(),
+    alarms: input.alarms ?? [],
   });
   const bytes = byteLength(ics);
   if (bytes > limits.maxResourceBytes) {
@@ -417,6 +425,7 @@ export async function updateEvent(
     );
   }
   assertStrongEtag(input.etag);
+  validateAlarms(input.alarms);
   const etag = input.etag;
 
   const summary = input.summary === undefined ? undefined : normalizeSummary(input.summary);
@@ -433,7 +442,7 @@ export async function updateEvent(
   if (hasTime && (input.start === undefined || input.end === undefined)) {
     throw new ApiError(400, "invalid_request", "start and end must be provided together");
   }
-  if (summary === undefined && location === undefined && description === undefined && !hasTime) {
+  if (summary === undefined && location === undefined && description === undefined && !hasTime && input.alarms === undefined) {
     throw new ApiError(400, "invalid_request", "update_event needs at least one field to change");
   }
   const time = hasTime
@@ -482,6 +491,7 @@ export async function updateEvent(
       }
 
       const output = mutateResource(current.ics, parsed.uid, (editor) => {
+        if (input.alarms !== undefined) editor.setAlarms(input.alarms);
         if (summary !== undefined) editor.setText("summary", summary);
         if (location !== undefined) {
           if (location === null) editor.remove("location");

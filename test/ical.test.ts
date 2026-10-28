@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { CalDavError } from "../src/caldav";
 import {
   createRecurrenceBudget,
+  eventAlarms,
   expandResource,
   mutateResource,
   parseResource,
@@ -953,5 +954,17 @@ describe("ical.js types that must stay out of the request path", () => {
         });
       }
     }
+  });
+});
+
+
+describe("event alarm editing", () => {
+  it("replaces display reminders but preserves audio and Apple alarms", () => {
+    const source = calendar(["BEGIN:VEVENT", "UID:alarm-test", "DTSTAMP:20260101T000000Z", "DTSTART:20270101T090000Z", "DTEND:20270101T100000Z", "BEGIN:VALARM", "ACTION:DISPLAY", "DESCRIPTION:Reminder", "TRIGGER:-PT30M", "END:VALARM", "BEGIN:VALARM", "ACTION:AUDIO", "TRIGGER:-PT5M", "END:VALARM", "BEGIN:VALARM", "ACTION:DISPLAY", "DESCRIPTION:Apple", "TRIGGER:-PT10M", "X-APPLE-DEFAULT-ALARM:TRUE", "END:VALARM", "END:VEVENT"].join("\r\n"));
+    expect(eventAlarms(parseResource(source).master)).toEqual([{ minutesBefore: 30 }, { kind: "other" }, { kind: "other" }]);
+    const updated = mutateResource(source, "alarm-test", (editor) => editor.setAlarms([{ minutesBefore: 0 }, { minutesBefore: 60 }]));
+    expect(eventAlarms(parseResource(updated).master)).toEqual([{ kind: "other" }, { kind: "other" }, { minutesBefore: 0 }, { minutesBefore: 60 }]);
+    const removed = mutateResource(updated, "alarm-test", (editor) => editor.setAlarms([]));
+    expect(eventAlarms(parseResource(removed).master)).toEqual([{ kind: "other" }, { kind: "other" }]);
   });
 });

@@ -1460,6 +1460,24 @@ function sortKey(time: IcalTime): number {
 
 // --- Mutation --------------------------------------------------------------
 
+export type EventAlarm = { minutesBefore: number } | { kind: "other" };
+
+function describeAlarm(component: JCalComponent): EventAlarm {
+  if (component[2].length || component[1].some(([name]) => !["action", "description", "trigger"].includes(name.toLowerCase()))) return { kind: "other" };
+  if (["action", "description", "trigger"].some((name) => component[1].filter(([key]) => key.toLowerCase() === name).length !== 1)) return { kind: "other" };
+  const action = propertyOf(component, "action");
+  const trigger = propertyOf(component, "trigger");
+  if (String(action?.[3] ?? "").toUpperCase() !== "DISPLAY" || !trigger || trigger[2] !== "duration" || Object.keys(trigger[1]).some((key) => key.toLowerCase() !== "related") || (parameterOf(trigger, "related") ?? "START").toUpperCase() !== "START") return { kind: "other" };
+  const match = /^-?P(?:(\d+)W)?(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?)?$/i.exec(String(trigger[3]));
+  if (!match || (!String(trigger[3]).startsWith("-") && String(trigger[3]) !== "PT0S")) return { kind: "other" };
+  const seconds = Number(match[1] ?? 0)*604800 + Number(match[2] ?? 0)*86400 + Number(match[3] ?? 0)*3600 + Number(match[4] ?? 0)*60 + Number(match[5] ?? 0);
+  return seconds % 60 === 0 && seconds <= 604800 ? { minutesBefore: seconds / 60 } : { kind: "other" };
+}
+
+export function eventAlarms(component: ParsedComponent): EventAlarm[] {
+  return component.jcal[2].filter((child) => child[0].toLowerCase() === "valarm").map(describeAlarm);
+}
+
 export interface ComponentEditor {
   readonly name: string;
   text(name: string): string | null;
@@ -1470,6 +1488,7 @@ export interface ComponentEditor {
   setDate(name: string, value: string): void;
   setDateTimeUtc(name: string, value: string): void;
   setDuration(name: string, value: string): void;
+  setAlarms(alarms: { minutesBefore: number }[]): void;
   remove(name: string): void;
 }
 
@@ -1570,6 +1589,11 @@ class Editor implements ComponentEditor {
       name,
     );
     setProperty(this.component, [normalizePropertyName(name), {}, "date-time", value]);
+  }
+
+  setAlarms(alarms: { minutesBefore: number }[]): void {
+    this.component[2] = this.component[2].filter((child) => child[0].toLowerCase() !== "valarm" || "kind" in describeAlarm(child));
+    for (const alarm of alarms) this.component[2].push(["valarm", [["action", {}, "text", "DISPLAY"], ["description", {}, "text", "Reminder"], ["trigger", {}, "duration", alarm.minutesBefore === 0 ? "PT0S" : `-PT${alarm.minutesBefore}M`]], []]);
   }
 
   setDuration(name: string, value: string): void {

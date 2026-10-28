@@ -440,3 +440,10 @@ time, then delete the event. This checks device delivery; it does not replace
 live acceptance of the proxy's alarm writer once implemented.
 
 Units 6 and 7 remain unimplemented and must not be released as complete.
+
+### Partial implementation continuation
+
+Alarm input, output and selective replacement have been started, with a local
+parser/mutation test. Unit 6 still needs complete refusal and integration tests,
+live acceptance and a review. Unit 7 is not implemented. Neither unit is ready
+for release. Device notification delivery remains unverified.
