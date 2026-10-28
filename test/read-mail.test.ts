@@ -129,3 +129,23 @@ describe("mark mail read", () => {
     expect(session.logout).toHaveBeenCalledOnce();
   });
 });
+
+describe("set mail flag", () => {
+  it("rejects invalid flags before opening a connection", async () => {
+    const { setMailFlag } = await import("../src/core");
+    const open = vi.spyOn(ImapSession, "open");
+    await expect(setMailFlag(env, "INBOX", 1, 42, "deleted" as never, true)).rejects.toMatchObject({ code: "invalid_flag" });
+    expect(open).not.toHaveBeenCalled();
+  });
+  it("refuses stale and missing messages before storing flags", async () => {
+    const { setMailFlag } = await import("../src/core");
+    const session = { select: vi.fn().mockResolvedValue({ uidValidity: 2 }), fetchSize: vi.fn(), uidSetFlag: vi.fn(), logout: vi.fn() };
+    vi.spyOn(ImapSession, "open").mockResolvedValue(session as unknown as ImapSession);
+    await expect(setMailFlag(env, "INBOX", 1, 42, "seen", false)).rejects.toMatchObject({ code: "uidvalidity_mismatch" });
+    expect(session.uidSetFlag).not.toHaveBeenCalled();
+    session.select.mockResolvedValue({ uidValidity: 1 });
+    session.fetchSize.mockRejectedValue(new ImapError("PARSE", "missing"));
+    await expect(setMailFlag(env, "INBOX", 1, 42, "flagged", true)).rejects.toMatchObject({ code: "message_not_found" });
+    expect(session.uidSetFlag).not.toHaveBeenCalled();
+  });
+});

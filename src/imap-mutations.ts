@@ -59,6 +59,13 @@ export function buildStoreSeen(uid: number): string {
   return `UID STORE ${uid} +FLAGS.SILENT (\\Seen)`;
 }
 
+/** Change one explicitly supported flag without touching the others. */
+export function buildStoreFlag(uid: number, flag: "seen" | "flagged", value: boolean): string {
+  assertUid(uid);
+  if ((flag !== "seen" && flag !== "flagged") || typeof value !== "boolean") throw new ImapParseError("invalid flag");
+  return `UID STORE ${uid} ${value ? "+" : "-"}FLAGS.SILENT (\\${flag === "seen" ? "Seen" : "Flagged"})`;
+}
+
 /**
  * `UID EXPUNGE <uid>` (RFC 4315): removes only the named uid's `\Deleted`
  * message, which is why the fallback requires UIDPLUS.

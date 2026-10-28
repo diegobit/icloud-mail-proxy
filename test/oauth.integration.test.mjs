@@ -224,6 +224,7 @@ describe("OAuth on /mcp, end to end", () => {
     const compose = { to: ["marco@example.org"], text: "Ciao" };
     const refusals = [
       ["read_mail", id, "mail:modify"],
+      ["set_mail_flag", { ...id, flag: "seen", value: false }, "mail:modify"],
       ["archive_mail", id, "mail:modify"],
       ["restore_mail", id, "mail:modify"],
       ["save_draft", compose, "mail:modify"],

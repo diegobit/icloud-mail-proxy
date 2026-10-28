@@ -397,3 +397,21 @@ Nothing deployed yet. Units 1–3 are committed but have not had a complete
 independent review or live acceptance in this continuation. Units 4–7 remain
 incomplete; the Scratch probes for units 6 and 7 have not been run. Record
 here per unit: version id, `verifyDeployment` tool count, and live acceptance.
+
+
+### Continuation results (2026-10-28)
+
+No deployment or live acceptance was performed. A read-only CalDAV discovery
+using the local account succeeded, but found no calendar named `Scratch`.
+No events were created or removed. Consequently the required disposable-event
+probes, device alert confirmation, and live acceptance for units 6 and 7 could
+not be performed. These units remain unimplemented and require a Scratch
+calendar before their probe gates can be satisfied. Unit 4b remains blocked as
+recorded above.
+
+Units 4a and 5 have implementation and test changes in this continuation,
+including the search builder, flag tool and updated tool verification. They
+still need a complete independent review and acceptance against the full unit
+contracts before being considered ready to deploy. Units 1–3 passed the local
+suite but have not received the requested independent review or live acceptance
+in this continuation. No deployment version or live tool count exists.

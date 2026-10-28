@@ -11,6 +11,7 @@ import {
   buildMove,
   buildStoreDeleted,
   buildStoreSeen,
+  buildStoreFlag,
   buildUidExpunge,
   chooseMoveStrategy,
 } from "./imap-mutations";
@@ -172,6 +173,11 @@ export class ImapSession {
     } catch (e) {
       throw toImapError(e);
     }
+  }
+
+  async uidSetFlag(uid: number, flag: "seen" | "flagged", value: boolean): Promise<void> {
+    try { await this.command(buildStoreFlag(uid, flag, value), "UID STORE"); }
+    catch (e) { throw toImapError(e); }
   }
 
   /**

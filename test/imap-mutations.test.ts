@@ -351,3 +351,14 @@ describe("ImapSession.uidMove", () => {
     await script;
   });
 });
+
+describe("flag store", () => {
+  it("whitelists two flags and both directions", async () => {
+    const { buildStoreFlag } = await import("../src/imap-mutations");
+    expect(buildStoreFlag(7, "seen", true)).toBe("UID STORE 7 +FLAGS.SILENT (\\Seen)");
+    expect(buildStoreFlag(7, "seen", false)).toBe("UID STORE 7 -FLAGS.SILENT (\\Seen)");
+    expect(buildStoreFlag(7, "flagged", true)).toBe("UID STORE 7 +FLAGS.SILENT (\\Flagged)");
+    expect(buildStoreFlag(7, "flagged", false)).toBe("UID STORE 7 -FLAGS.SILENT (\\Flagged)");
+    expect(() => buildStoreFlag(7, "deleted" as never, true)).toThrow();
+  });
+});

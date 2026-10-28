@@ -120,11 +120,22 @@ export interface SearchParams {
   mailbox: string;
   after?: string;   // YYYY-MM-DD
   before?: string;  // YYYY-MM-DD
-  from?: string;
-  subject?: string;
-  text?: string;
+  // Substring filters. An array (at most 4) means OR within that one field;
+  // the IMAP criteria are built only by src/search-criteria.ts.
+  from?: string | string[];
+  to?: string;
+  cc?: string;
+  subject?: string | string[];
+  text?: string | string[];
+  // Exclusions: every listed value is excluded (NOT ... NOT ...).
+  not?: { from?: string | string[]; subject?: string | string[]; text?: string | string[] };
   limit?: number;
   unseen?: boolean;
+  // true: only flagged messages; false: only unflagged ones.
+  flagged?: boolean;
+  // Post-filter on the fetched page (BODYSTRUCTURE); a page may hold fewer
+  // than `limit` messages.
+  hasAttachment?: boolean;
   beforeUid?: number; // cursor: only return matches with uid < beforeUid
 }
 

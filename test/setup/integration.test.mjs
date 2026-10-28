@@ -77,6 +77,7 @@ function endpoint() {
               { name: "get_mail_message" },
               { name: "get_mail_attachment" },
               { name: "read_mail" },
+              { name: "set_mail_flag" },
               { name: "archive_mail" },
               { name: "delete_mail" },
               { name: "restore_mail" },

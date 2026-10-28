@@ -49,6 +49,7 @@ const MAIL_TOOLS = [
   "get_mail_message",
   "get_mail_attachment",
   "read_mail",
+  "set_mail_flag",
   "archive_mail",
   "delete_mail",
   "restore_mail",

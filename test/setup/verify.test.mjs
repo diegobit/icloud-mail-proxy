@@ -10,6 +10,7 @@ const MAIL_TOOLS = [
   "get_mail_message",
   "get_mail_attachment",
   "read_mail",
+  "set_mail_flag",
   "archive_mail",
   "delete_mail",
   "restore_mail",
@@ -609,7 +610,7 @@ describe("calendar verification", () => {
 
     expect(result.ok).toBe(true);
     const mcp = result.checks.find((check) => check.name === "MCP initialize and tools/list");
-    expect(mcp.detail).toContain("16 tools");
+    expect(mcp.detail).toContain("17 tools");
     expect(mcp.detail).toContain("create_event");
     expect(mcp.detail).toContain("update_event");
     expect(mcp.detail).toContain("delete_event");

@@ -93,6 +93,7 @@ const MAIL_TOOLS: { tool: string; scope: string; args: Record<string, unknown> }
   { tool: "get_mail_message", scope: "mail:read", args: id },
   { tool: "get_mail_attachment", scope: "mail:read", args: { ...id, index: 0 } },
   { tool: "read_mail", scope: "mail:modify", args: id },
+  { tool: "set_mail_flag", scope: "mail:modify", args: { ...id, flag: "seen", value: false } },
   { tool: "archive_mail", scope: "mail:modify", args: id },
   { tool: "restore_mail", scope: "mail:modify", args: { ...id, mailbox: "Archive" } },
   { tool: "save_draft", scope: "mail:modify", args: compose },
@@ -259,10 +260,10 @@ describe("contact tool scopes", () => {
       const onNames = (await on.listTools()).tools.map((tool) => tool.name);
       const offNames = (await off.listTools()).tools.map((tool) => tool.name);
       expect(onNames).toEqual(expect.arrayContaining(["search_contacts", "get_contact"]));
-      expect(onNames).toHaveLength(18);
+      expect(onNames).toHaveLength(19);
       expect(offNames).not.toContain("search_contacts");
       expect(offNames).not.toContain("get_contact");
-      expect(offNames).toHaveLength(16);
+      expect(offNames).toHaveLength(17);
       const search = (await on.listTools()).tools.find((tool) => tool.name === "search_contacts");
       expect(search?.annotations).toMatchObject({ readOnlyHint: true });
       expect(search?.description).toContain("untrusted");

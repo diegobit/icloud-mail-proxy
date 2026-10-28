@@ -335,7 +335,7 @@ curl -X POST -H "Authorization: Bearer $API_TOKEN" \
 
 `mailbox`, `after`/`before` (`YYYY-MM-DD`), `from`, `subject`, `text`,
 `limit`, and `unseen` are the only accepted fields (unknown keys are
-rejected). `from` / `subject` / `text` are ASCII-only IMAP substring filters —
+rejected). `from` / `subject` / `text` accept a string or up to four alternatives; `to` and `cc` match headers, and `not` excludes from, subject, or text. `flagged` filters flags. `hasAttachment` filters the fetched page, so it may return fewer than the requested limit. All terms are ASCII-only IMAP substring filters —
 non-ASCII search terms are rejected with `invalid_criteria`. `unseen: true`
 restricts results to unread messages; each summary also carries `seen` /
 `flagged` / `answered` booleans reflecting the message's IMAP flags at search
@@ -763,13 +763,13 @@ shape, or `404 not_found`. More than 30 lookups per minute from one IP return
 
 ## MCP
 
-A stateless Streamable HTTP MCP server is served at `/mcp`. It exposes ten
-mail tools that mirror the REST endpoints — `list_mailboxes`, `search_mail`,
+A stateless Streamable HTTP MCP server is served at `/mcp`. It exposes eleven
+mail tools — `list_mailboxes`, `search_mail`,
 `get_mail_message`, and `get_mail_attachment` (returns
 `{ filename, mimeType, size, contentBase64 }`, base64 of the decoded content,
 subject to the same type allowlist and size cap) — plus three filing tools,
 `archive_mail`, `delete_mail` and `restore_mail`, plus `read_mail` to mark one
-message read, and two sending tools: `send_mail` (a new
+message read and `set_mail_flag` to set or clear seen or flagged on one message, and two sending tools: `send_mail` (a new
 message, a reply or a forward, submitted immediately) and `save_draft` (the same
 message put into iCloud's `Drafts` folder, to be finished from any mail app).
 When calendars are enabled it adds up to six more: three read tools and three
@@ -857,7 +857,7 @@ result (`mailbox`, `uidValidity`, `uid`).
 - **Two fixed destinations, chosen by configuration, never by the caller.**
   `archive_mail` files into `ALLOWED_ARCHIVE_MAILBOX` (default `Archive`) and
   `delete_mail` into `ALLOWED_TRASH_MAILBOX` (default `Deleted Messages`).
-  Requests cannot name a mailbox, set flags, or create/delete folders.
+  Filing requests cannot choose a destination or create/delete folders. `set_mail_flag` can set or clear seen and flagged on one message.
 - **`delete_mail` means trash, not expunge.** The message is moved into iCloud's
   trash, where it stays recoverable for Apple's retention window (about 30
   days). This proxy has no permanent-delete command: emptying the trash stays
@@ -937,7 +937,7 @@ a deployment with calendars and writes on, and 18 with contacts enabled too:
 | Tool | Scope | Enabled by |
 | --- | --- | --- |
 | `list_mailboxes`, `search_mail`, `get_mail_message`, `get_mail_attachment` | `mail:read` | always |
-| `read_mail`, `archive_mail`, `restore_mail`, `save_draft` | `mail:modify` (implies `mail:read`) | always |
+| `read_mail`, `set_mail_flag`, `archive_mail`, `restore_mail`, `save_draft` | `mail:modify` (implies `mail:read`) | always |
 | `delete_mail` | `mail:trash` (implies `mail:read`) | always |
 | `send_mail` | `mail:send` (implies `mail:read`) | always |
 | `list_calendars`, `list_events`, `get_event` | `calendar:read` | `ALLOWED_CALENDARS` |
@@ -1065,13 +1065,13 @@ set `"CONTACTS_ENABLED": "1"` in the deployment's vars and redeploy.
 - **Reads are read-only; writes are narrow.** Reading sends `EXAMINE` (the
   read-only form of `SELECT`), `UID SEARCH`, `UID FETCH` with `BODY.PEEK[...]`
   (never `BODY[...]`, which would set `\Seen`), and `LOGOUT`. The only writes
-  are `APPEND` (a draft into `Drafts`, or the optional sent copy), `read_mail`
+  are `APPEND` (a draft into `Drafts`, or the optional sent copy), `set_mail_flag` (one seen or flagged value), `read_mail`
   (`SELECT` followed by `UID STORE +FLAGS.SILENT (\Seen)`), and filing
   mutations, which use `SELECT` and then `UID MOVE`, or `UID COPY` + `UID
   STORE` with exactly `\Deleted` + `UID EXPUNGE` on the same uid when only
   `UIDPLUS` is available. There is no bare `EXPUNGE`, no `STORE` of flags other
-  than `\Seen` or `\Deleted`, no `CREATE`/`DELETE` of a mailbox, and no permanent
-  delete. Only the explicit `read_mail` command marks an existing message read.
+  than `\Seen`, `\Flagged` or `\Deleted`, no `CREATE`/`DELETE` of a mailbox, and no permanent
+  delete. `read_mail` and `set_mail_flag` can change read state. An injected instruction could mark a message read or unread or flag it, hiding it from view; changes are reversible and audited, and bulk changes are absent.
 - **Sending is direct, by the owner's decision.** The agent sends; there is no
   approval step. An email whose content instructs the agent to send something
   can therefore produce a real message, bounded only by the caps above and
