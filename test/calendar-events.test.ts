@@ -773,6 +773,22 @@ describe("listEvents", () => {
     }
   });
 
+  it("reads a resource whose id iCloud percent-encodes", async () => {
+    // An imported Google Calendar event: iCloud keeps the address-like id and
+    // percent-encodes the @ in the href.
+    const encoded = "6hhmcdb16gsmabb66csj6b9k70p36b9p68sm6b9jckr3gdj1c8sm2dpg6c%40google.com";
+    const decoded = "6hhmcdb16gsmabb66csj6b9k70p36b9p68sm6b9jckr3gdj1c8sm2dpg6c@google.com";
+    stubFetch({
+      query: multistatus("cal-lavoro", [
+        { id: encoded, ics: calendar(event(decoded, "DTSTART:20261022T080000Z")) },
+      ]),
+    });
+
+    const result = await list(makeEnv(), { calendar: "Lavoro", from: "2026-10-21", to: "2026-10-24" });
+
+    expect(result.events.map((entry) => entry.resourceId)).toEqual([decoded]);
+  });
+
   it("fails closed when calendars are disabled, before any network call", async () => {
     const calls = stubFetch();
     try {
@@ -954,6 +970,24 @@ describe("getEvent", () => {
       "LOCATION:Office",
     ),
   );
+
+  it("reads an id that iCloud stores percent-encoded", async () => {
+    const calls = stubFetch({
+      multiget: multistatus("cal-lavoro", [
+        {
+          id: "abc%40google.com",
+          ics: calendar(event("abc@google.com", "DTSTART:20261022T080000Z")),
+          etag: '"etag-enc"',
+        },
+      ]),
+    });
+
+    const result = await detail(makeEnv(), { calendar: "Lavoro", id: "abc@google.com" });
+
+    expect(result.resourceId).toBe("abc@google.com");
+    expect(result.etag).toBe('"etag-enc"');
+    expect(calls.find((call) => call.method === "REPORT")?.body).toContain("abc%40google.com.ics");
+  });
 
   it("reads one resource with its ETag and next occurrences", async () => {
     const calls = stubFetch({

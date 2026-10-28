@@ -1,12 +1,15 @@
 # UTF-8 search terms
 
-**Status (2026-10-28): blocked by the probe gate in
-[feature-gap-roadmap.md](feature-gap-roadmap.md), unit 4b.** A read-only
-probe against `imap.mail.me.com` accepted `SEARCH CHARSET UTF-8` and
-synchronizing UTF-8 literals, responding with `+ go ahead`, but did not
-advertise `UTF8=ACCEPT`. The roadmap explicitly requires stopping if either
-condition is absent. Search result counts do not establish Unicode matching
-correctness. No deployment or live acceptance was performed.
+**Status (2026-10-28): probe answered, implementation not started; the
+decision is Diego's.** A read-only probe against `imap.mail.me.com` accepted
+`SEARCH CHARSET UTF-8` and synchronizing UTF-8 literals, responding with
+`+ go ahead`, and matched non-ASCII terms (`TEXT "perché"` matched 159
+messages) while rejecting an unknown charset. The server advertises neither
+`UTF8=ACCEPT` nor `LITERAL+`, and its search matches whole words and word
+prefixes rather than substrings. The roadmap's gate named the advertisement;
+behaviour is what matters, so the recommendation is to accept the probe and
+implement literal framing. That needs the owner's go-ahead: search is
+ASCII-only today and refuses non-ASCII values with `invalid_criteria`.
 
 **What**: Allow non-ASCII `from`/`subject`/`text` search values in `/v1/search`
 and `search_mail`, instead of rejecting them with `invalid_criteria`.

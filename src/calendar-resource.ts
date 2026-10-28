@@ -22,7 +22,7 @@ import { ApiError } from "./core";
 import type { IcalCaps, ParsedResource } from "./ical";
 import type { Env } from "./types";
 
-const RESOURCE_ID = /^[A-Za-z0-9._-]{1,128}$/;
+const RESOURCE_ID = /^[A-Za-z0-9._@-]{1,128}$/;
 const ETAG = /^(?:W\/)?"[\x21\x23-\x7e]*"$/;
 
 export type ReadOnlyReason = "recurring" | "scheduling";

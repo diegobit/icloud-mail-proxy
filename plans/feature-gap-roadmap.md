@@ -271,11 +271,15 @@ that plan rather than guessing. When this lands, update the status line of
 arrays refused), `invalid_criteria` for unknown keys, literal framing in
 `test/imap-parse.test.ts`, fake-server integration for 4b.
 
-**Effort:** 4a S, 4b M. **Status:** 4a has incomplete uncommitted work;
-4b is blocked by the probe gate. On 2026-10-28 the read-only IMAP probe
-accepted `SEARCH CHARSET UTF-8` and synchronizing literals, but the server
-did not advertise `UTF8=ACCEPT`. See [utf8-search.md](utf8-search.md).
-The partial implementation is not accepted or ready for deployment.
+**Effort:** 4a S, 4b M. **Status:** 4a implemented; 4b unbuilt and waiting on
+the owner's decision. On 2026-10-28 the read-only IMAP probe showed
+`imap.mail.me.com` accepts `SEARCH CHARSET UTF-8` with UTF-8 literals and
+returns matches, although it advertises neither `UTF8=ACCEPT` nor `LITERAL+`
+and matches words and word prefixes rather than substrings. The roadmap's gate
+named the advertisement, not the behaviour, so the result is recorded and the
+decision is Diego's: accept the probe and implement the literal framing, or
+keep search ASCII-only. See [utf8-search.md](utf8-search.md). Nothing is
+implemented for 4b.
 
 ## 5. Mark unread and flag
 
@@ -304,7 +308,7 @@ exactly two flags on one message:
 `uidvalidity_mismatch`, `message_not_found`, scope refusal, no command is sent
 for an invalid flag.
 
-**Effort:** S. **Status:** ready.
+**Effort:** S. **Status:** implemented (`set_mail_flag`), not deployed.
 
 ## 6. Event reminders (`VALARM`)
 
@@ -345,7 +349,8 @@ VALARM").
 preserves an Apple `X-` alarm and an audio alarm; `[]` removes only describable
 alarms; `get_event` shape.
 
-**Effort:** M. **Status:** ready, gated on the probe.
+**Effort:** M. **Status:** implemented; the stored alarm reads back as written,
+device delivery unconfirmed (see "Device alert check" below).
 
 ## 7. Basic recurrence on create
 
@@ -530,3 +535,20 @@ enabled in the phone's calendar list. The owner asked to stop investigating for
 now, so device delivery stays unconfirmed: unit 6's writer must not be
 described as device-verified, and a release note should say the alarm has only
 been verified in the stored resource.
+
+### Imported resources with percent-encoded ids (2026-10-28)
+
+Two events in `Personale` come from an imported Google Calendar and keep an
+address-like id (`6hhmcdb…@google.com`). iCloud stores the `@` percent-encoded
+in the href. The read path decoded the segment and then rejected `@` in the id,
+so a 61-day query failed with `malformed` ("an href outside the selected
+collection") and `get_event` could not read those events at all. Both id
+validators now accept `@`, and `resourcePath` already re-encodes it to `%40`
+for a multiget, update or delete. Verified live: the 61-day `Personale` query
+returns 12 occurrences, and `get_event` reads one imported event (it reports
+`readOnlyReason: scheduling` because Google wrote an organizer). Tests cover a
+listed `%40` href and `get_event` by the decoded id.
+
+A related worry, that iCloud's `&#13;` line-ending encoding could leak into
+calendar text, did not reproduce: descriptions read back with real newlines and
+empty lines.
