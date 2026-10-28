@@ -415,3 +415,28 @@ still need a complete independent review and acceptance against the full unit
 contracts before being considered ready to deploy. Units 1–3 passed the local
 suite but have not received the requested independent review or live acceptance
 in this continuation. No deployment version or live tool count exists.
+
+### Scratch probe (2026-10-28)
+
+Scratch was discovered with the local account. Two pairs of disposable events
+were created and read back, then all four were deleted with their strong ETags;
+each subsequent GET returned 404. No deployment was performed.
+
+- A DISPLAY alarm with `DESCRIPTION:Reminder` and `TRIGGER:-PT30M` was
+  preserved on GET; exactly one VALARM was present. Device delivery has not
+  been verified.
+- A weekly series starting 2027-03-21 at 09:00 Europe/Rome, with COUNT=3 and
+  TZID but no VTIMEZONE in the PUT, was accepted. GET retained the TZID and
+  RRULE and iCloud added a VTIMEZONE. A calendar-query with `expand` returned
+  the master rather than expanded occurrences, so server-side expansion and
+  device display across the DST transition remain unverified. The local
+  recurrence cursor must still be tested against the transition.
+
+To verify delivery, on a device signed into this iCloud account, enable
+Calendar notifications and ensure the Scratch calendar is visible. Create a
+Scratch event a few minutes in the future with a display alert one minute
+before it, wait for the notification, report whether it appeared and at what
+time, then delete the event. This checks device delivery; it does not replace
+live acceptance of the proxy's alarm writer once implemented.
+
+Units 6 and 7 remain unimplemented and must not be released as complete.
