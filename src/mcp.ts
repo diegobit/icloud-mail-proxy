@@ -410,7 +410,7 @@ export function buildServer(
         "`unseen: true` restricts results to unread messages. Attachment filtering applies after fetching a page and can return fewer than limit. `limit` is capped server-side. " +
         "To page through older results, pass the `nextBeforeUid` from the previous response " +
         "as `beforeUid`; a null `nextBeforeUid` means there are no older matches.",
-      inputSchema: {
+      inputSchema: z.object({
         mailbox: z.string().min(1).describe("Mailbox name, exactly as returned by list_mailboxes"),
         after: z.string().optional().describe("Only messages on/after this date (YYYY-MM-DD)"),
         before: z.string().optional().describe("Only messages before this date (YYYY-MM-DD)"),
@@ -430,7 +430,7 @@ export function buildServer(
           .positive()
           .optional()
           .describe("Pass nextBeforeUid from the previous page to get older results"),
-      },
+      }).strict(),
       annotations: { readOnlyHint: true, idempotentHint: true },
     },
     async (args) =>

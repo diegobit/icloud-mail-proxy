@@ -218,11 +218,14 @@ export async function getContact(env: Env, input: { id: unknown }, options: Cont
   try {
     const contact = await withContactLimit(env, options.rateLimitKey, async () => {
       const dav = createCardDav(env, { fetchImpl: options.fetchImpl, ...options.davOptions });
+      let found: Contact | undefined;
       for (const book of await addressBooks(dav)) {
         const response = await dav.report(book, addressbookMultiget([contactHref(book, id)]), 1);
         const match = contactsOf(response.body, book).find((candidate) => candidate.id === id);
-        if (match) return match;
+        if (match && found) throw new ApiError(409, "ambiguous_contact_id", "contact id exists in multiple address books");
+        if (match) found = match;
       }
+      if (found) return found;
       throw new ApiError(404, "not_found", "no contact with that id");
     });
     audit("contact_read", options.principal, 1, "ok");

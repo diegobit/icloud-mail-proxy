@@ -428,13 +428,21 @@ export async function listEvents(
 
       const parsed = parseResource(ics, caps);
       if (parsed.kind !== "VEVENT") continue;
-      const expansion = expandResource(parsed, {
+      let expansion: ReturnType<typeof expandResource>;
+      try {
+        expansion = expandResource(parsed, {
         from: window.from,
         to: window.to,
         timeZone: DEFAULT_TIME_ZONE,
         budget,
         ...caps,
-      });
+        });
+      } catch (error) {
+        if (merged && error instanceof CalDavError && error.code === "recurrence_too_complex") {
+          throw new CalDavError(error.code, error.status, `${error.message} Calendar: ${JSON.stringify(collection.name)}.`);
+        }
+        throw error;
+      }
       if (merged && expansion.truncatedReason === "recurrence_budget") {
         throw new ApiError(
           422,

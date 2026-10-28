@@ -316,6 +316,14 @@ describe("searchContacts", () => {
 });
 
 describe("getContact", () => {
+  it("refuses an id shared by different address books", async () => {
+    const second = `/${DSID}/carddavhome/other/`;
+    const books = BOOKS.replace("</multistatus>", `<response><href>${second}</href><propstat><prop><resourcetype><collection/><addressbook xmlns="urn:ietf:params:xml:ns:carddav"/></resourcetype></prop><status>HTTP/1.1 200 OK</status></propstat></response></multistatus>`);
+    const script = scripted([...discovery(), xml(books), xml(cards([ANNA])), xml(cards([ANNA]).replaceAll(BOOK, second))]);
+    await expect(getContact(makeEnv(), { id: ANNA.name }, { fetchImpl: script.impl })).rejects.toMatchObject({
+      status: 409, code: "ambiguous_contact_id",
+    });
+  });
   it("multigets one contact by id and returns the search shape", async () => {
     const script = scripted([...discovery(), xml(BOOKS), xml(cards([ANNA]))]);
     const contact = await getContact(makeEnv(), { id: "anna-bianchi" }, { fetchImpl: script.impl });

@@ -137,6 +137,11 @@ afterEach(() => {
 });
 
 describe("mail tool scopes", () => {
+  it("rejects unknown search fields before opening a connection", async () => {
+    const result = await callTool(oauth("mail:read"), "search_mail", { mailbox: "INBOX", hasAttachments: true });
+    expect(result.isError).toBe(true);
+    expectNoNetwork();
+  });
   for (const { tool, scope, args } of MAIL_TOOLS) {
     const wrong = ALL_SCOPES.filter((candidate) => !satisfying(scope).includes(candidate));
     for (const held of wrong) {
