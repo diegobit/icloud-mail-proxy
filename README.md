@@ -505,13 +505,16 @@ the domain is disabled. It is the bootstrap view used to choose names, and it
 is available only with the static bearer token (REST never accepts OAuth
 grants).
 
-### `GET /v1/calendars/:calendar/events`
+### `GET /v1/calendars/:calendar/events` and `GET /v1/events`
 
-List event occurrences overlapping a date window. `from` is inclusive and
+List event occurrences overlapping a date window, in one calendar or, through
+`/v1/events`, in every allowlisted calendar merged by start. `from` is inclusive and
 defaults to today in `Europe/Rome`; `to` is exclusive and defaults to seven
 days after `from`. A range wider than `MAX_CALENDAR_DAYS` (90) returns `400
 range_too_wide`. `limit` is capped at `MAX_EVENT_RESULTS` (50). `text` filters
-case-insensitively over the summary and location.
+case-insensitively over the summary, location and description; each result's
+`matchedIn` lists which of them matched (`[]` without a filter). A description
+match never puts the description into the list: read it with `get_event`.
 
 ```
 curl -H "Authorization: Bearer $API_TOKEN" \
@@ -521,10 +524,12 @@ curl -H "Authorization: Bearer $API_TOKEN" \
 ```json
 {
   "calendar": "Work",
+  "calendars": ["Work"],
   "from": "2026-10-21T00:00:00+02:00",
   "to": "2026-10-28T00:00:00+02:00",
   "events": [
     {
+      "calendar": "Work",
       "collectionId": "3ED435B2-4C0A-4B7E-9A25-2A5F0C8D1E11",
       "resourceId": "8F02A7D1-1B44-4E6A-9C3D-5A0B7E2F6C10",
       "uid": "8F02A7D1-1B44-4E6A-9C3D-5A0B7E2F6C10",
@@ -540,7 +545,8 @@ curl -H "Authorization: Bearer $API_TOKEN" \
       "timeZoneUnresolved": false,
       "isOverride": false,
       "unsupportedRange": false,
-      "readOnlyReason": null
+      "readOnlyReason": null,
+      "matchedIn": []
     }
   ],
   "total": 1,
@@ -561,6 +567,15 @@ Occurrences are sorted by start. `total` counts matches before `limit`;
 `truncatedReason` is `"limit"`, `"recurrence_budget"` or `"occurrence_cap"`.
 `readOnlyReason` is `"recurring"` or `"scheduling"` when the resource may not
 be written; see [Writes](#writes).
+
+`calendar` is the requested name, or `null` for `/v1/events`; `calendars`
+lists what was read, and every event names its own `calendar`. Reading every
+calendar shares one budget: `MAX_RESOURCES_PER_QUERY` and the recurrence
+budgets count across all calendars, and running out refuses the whole request
+(`422 too_many_resources` or `422 recurrence_too_complex`, naming the calendar
+that tipped it) instead of returning a partial merge. One failing calendar
+fails the request. Duplicate calendar names return `409
+ambiguous_calendar_name`; name one calendar instead.
 
 Floating and unresolved-`TZID` occurrences name no instant, so they are
 excluded from range results; `get_event` still reports them. Malformed or
@@ -937,7 +952,8 @@ an older `calendar:write` grant must reconnect before using `delete_event`.
 
 ### Reads
 
-Calendar reads take a calendar name (not an id) and a date window. `from` is
+Calendar reads take a calendar name (not an id) and a date window;
+`list_events` may omit the name to search every allowlisted calendar. `from` is
 inclusive and defaults to today in `Europe/Rome`; `to` is exclusive and
 defaults to seven days after `from`. A window wider than `MAX_CALENDAR_DAYS`
 (90) is refused with `range_too_wide`, and a query matching more than

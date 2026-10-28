@@ -226,7 +226,15 @@ budget object, `matchesText` over the description), `src/mcp.ts` and
 match with `matchedIn`, shared budget exceeded, a calendar error fails the
 request, truncation flags.
 
-**Effort:** S. **Status:** ready.
+**Effort:** S. **Status:** implemented (unit 3 commit). REST gained `GET
+/v1/events` for the all-calendars form (the per-calendar route is unchanged).
+Each listed event now carries `calendar` and `matchedIn` (empty without a
+filter); the result carries `calendar` (null when merged) and `calendars`.
+Reading all calendars refuses duplicate display names with
+`ambiguous_calendar_name`, since each result is identified by name. A
+`recurrence_budget` truncation in merged mode is refused as
+`recurrence_too_complex`; the per-resource `occurrence_cap` stays a truncation
+flag, as in single-calendar mode.
 
 ## 4. Richer mail search
 

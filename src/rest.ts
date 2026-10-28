@@ -306,11 +306,12 @@ function decodeSegment(value: string, label: string): string {
 }
 
 /** GET /v1/calendars/:calendar/events?from=&to=&limit=&text= */
-async function handleListEvents(url: URL, calendarSegment: string, env: Env): Promise<Response> {
+/** GET /v1/events?... reads every allowed calendar; the calendar route reads one. */
+async function handleListEvents(url: URL, calendarSegment: string | undefined, env: Env): Promise<Response> {
   if (!calendarsEnabled(env)) {
     return errorBody("not_supported", "calendars are disabled: ALLOWED_CALENDARS is empty", 404);
   }
-  const calendar = decodeSegment(calendarSegment, "calendar");
+  const calendar = calendarSegment === undefined ? undefined : decodeSegment(calendarSegment, "calendar");
   return json(
     await listEvents(env, {
       calendar,
@@ -521,6 +522,16 @@ export async function handleRest(request: Request, env: Env): Promise<Response> 
       segments[1] === "calendars"
     ) {
       return await handleCollections(url, env);
+    }
+
+    // GET /v1/events (every allowed calendar)
+    if (
+      request.method === "GET" &&
+      segments.length === 2 &&
+      segments[0] === "v1" &&
+      segments[1] === "events"
+    ) {
+      return await handleListEvents(url, undefined, env);
     }
 
     // GET /v1/calendars/:calendar/events/:id
