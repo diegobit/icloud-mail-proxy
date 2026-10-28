@@ -491,10 +491,10 @@ deployment:
 - The three audit lines carried principal, action, calendar id, resource id and
   outcome only.
 
-Device display of a series and delivery of a display alarm are still
-unverified; the owner was checking a 21:00 event with a 5-minute alert on a
-device. Unit 6's alarm writer also still needs that confirmation before
-release.
+Device display of a series and delivery of a display alarm remain unverified.
+The 21:00 event the owner was checking turned out to be dated 2026-10-01, a
+month earlier, so it could not have alerted; a corrected future-dated check is
+recorded below.
 
 ### iPhone alarm shape and classifier fix (2026-10-28)
 
@@ -514,5 +514,19 @@ and an `alarms` array replaces it, while Apple's sentinel stays "other" and is
 preserved. Any other extra property or parameter still makes an alarm "other".
 The live resource also showed the earlier delivery test could not have fired:
 the event was dated 2026-10-01, a month before the 21:00 check, so the missing
-notification was a wrong event date, not a delivery failure. Device delivery
-of a future-dated event with a display alert still has to be confirmed.
+notification was a wrong event date, not a delivery failure.
+
+### Device alert check (2026-10-28, no notification)
+
+With a local Worker on `Scratch`, `create_event` wrote "Prova avviso" for 21:25
+`Europe/Rome` with `alarms: [{ minutesBefore: 1 }]`; `get_event` read back that
+one minute before the start, so the resource was correct. No notification
+appeared on the device at 21:24. The event was then deleted (204, and a
+following GET returned 404).
+
+Serialisation and reading are therefore not the failure: the candidates are the
+device's notification permission for Calendar, a Focus mode, or `Scratch` not
+enabled in the phone's calendar list. The owner asked to stop investigating for
+now, so device delivery stays unconfirmed: unit 6's writer must not be
+described as device-verified, and a release note should say the alarm has only
+been verified in the stored resource.
