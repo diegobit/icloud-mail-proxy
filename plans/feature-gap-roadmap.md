@@ -268,7 +268,11 @@ that plan rather than guessing. When this lands, update the status line of
 arrays refused), `invalid_criteria` for unknown keys, literal framing in
 `test/imap-parse.test.ts`, fake-server integration for 4b.
 
-**Effort:** 4a S, 4b M. **Status:** 4a ready; 4b gated on the charset probe.
+**Effort:** 4a S, 4b M. **Status:** 4a has incomplete uncommitted work;
+4b is blocked by the probe gate. On 2026-10-28 the read-only IMAP probe
+accepted `SEARCH CHARSET UTF-8` and synchronizing literals, but the server
+did not advertise `UTF8=ACCEPT`. See [utf8-search.md](utf8-search.md).
+The partial implementation is not accepted or ready for deployment.
 
 ## 5. Mark unread and flag
 
@@ -389,5 +393,7 @@ Do not release creation without the series update and delete.
 
 ## Deployment and acceptance
 
-Nothing deployed yet. Record here per unit: version id, `verifyDeployment`
-tool count, and the live acceptance that was run.
+Nothing deployed yet. Units 1–3 are committed but have not had a complete
+independent review or live acceptance in this continuation. Units 4–7 remain
+incomplete; the Scratch probes for units 6 and 7 have not been run. Record
+here per unit: version id, `verifyDeployment` tool count, and live acceptance.
