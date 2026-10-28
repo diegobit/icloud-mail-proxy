@@ -1466,6 +1466,9 @@ function describeAlarm(component: JCalComponent): EventAlarm {
   if (component[2].length || component[1].some(([name]) => !["action", "description", "trigger"].includes(name.toLowerCase()))) return { kind: "other" };
   if (["action", "description", "trigger"].some((name) => component[1].filter(([key]) => key.toLowerCase() === name).length !== 1)) return { kind: "other" };
   const action = propertyOf(component, "action");
+  const description = propertyOf(component, "description");
+  // Unknown parameters may carry vendor semantics; never discard them on replacement.
+  if (Object.keys(action?.[1] ?? {}).length || Object.keys(description?.[1] ?? {}).length) return { kind: "other" };
   const trigger = propertyOf(component, "trigger");
   if (String(action?.[3] ?? "").toUpperCase() !== "DISPLAY" || !trigger || trigger[2] !== "duration" || Object.keys(trigger[1]).some((key) => key.toLowerCase() !== "related") || (parameterOf(trigger, "related") ?? "START").toUpperCase() !== "START") return { kind: "other" };
   const match = /^-?P(?:(\d+)W)?(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?)?$/i.exec(String(trigger[3]));
