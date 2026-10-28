@@ -22,10 +22,28 @@ export interface ScopeChoice {
 
 const SCOPE_COPY: Record<ResourceScope, { label: string; detail: string }> = {
   "mail:read": {
-    label: "Read and manage mail",
+    label: "Read mail",
     detail:
-      "List folders, search and read messages, download allowed attachments, send mail and " +
-      "save drafts, and move messages into Archive or Trash.",
+      "List folders, search and read messages, and download allowed attachments. Sending, " +
+      "drafts and moving messages are not included.",
+  },
+  "mail:modify": {
+    label: "Organize mail and save drafts",
+    detail:
+      "Mark messages read, archive them, move them back into the inbox, and save drafts. " +
+      "Nothing is sent and nothing goes to the trash.",
+  },
+  "mail:trash": {
+    label: "Move mail to the trash",
+    detail:
+      "Move one message at a time into iCloud's trash, where it stays recoverable for about " +
+      "30 days. Nothing is deleted permanently.",
+  },
+  "mail:send": {
+    label: "Send mail",
+    detail:
+      "Send messages, replies and forwards from this address immediately, within the daily " +
+      "limits. Sent mail cannot be recalled.",
   },
   "calendar:read": {
     label: "Read calendars and events",
@@ -159,7 +177,7 @@ export function tokenEntryPage(options: { client: ClientFacts; authQuery: string
     "Connect iCloud Mail",
     `<h1>Connect iCloud Mail</h1>
 ${clientFactsHtml(client)}
-<p>Signing in grants this app access to the mailbox folders this proxy exposes, and lets it send mail and save drafts from this address.</p>
+<p>Signing in lets this app use the mailbox folders this proxy exposes. On the next page you choose what it may do: read mail, organize it and save drafts, move it to the trash, send from this address, and use calendars when they are enabled.</p>
 ${errorHtml}
 <form method="post" action="/authorize">
 <input type="hidden" name="authQuery" value="${escapeHtml(authQuery)}">

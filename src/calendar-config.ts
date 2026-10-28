@@ -62,10 +62,13 @@ export function calendarWritesEnabled(env: Env): boolean {
   return calendarsEnabled(env) && calendarConfig(env).calendarWrite;
 }
 
+/** The mail scopes, offered by every deployment. */
+export const MAIL_SCOPES: readonly ResourceScope[] = ["mail:read", "mail:modify", "mail:trash", "mail:send"];
+
 /** The resource scopes this deployment can actually offer. */
 export function enabledResourceScopes(env: Env): ResourceScope[] {
   const config = calendarConfig(env);
-  const scopes: ResourceScope[] = ["mail:read"];
+  const scopes: ResourceScope[] = [...MAIL_SCOPES];
   if (calendarsEnabled(env)) {
     scopes.push("calendar:read");
     if (config.calendarWrite) scopes.push("calendar:write", "calendar:delete");

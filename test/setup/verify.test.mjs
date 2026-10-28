@@ -9,8 +9,10 @@ const MAIL_TOOLS = [
   "search_mail",
   "get_mail_message",
   "get_mail_attachment",
+  "read_mail",
   "archive_mail",
   "delete_mail",
+  "restore_mail",
   "send_mail",
   "save_draft",
 ];
@@ -57,7 +59,14 @@ const okResource = {
     bearer_methods_supported: ["header"],
   },
 };
-const okAuthorization = { status: 200, body: { issuer: ORIGIN, client_id_metadata_document_supported: true } };
+const okAuthorization = {
+  status: 200,
+  body: {
+    issuer: ORIGIN,
+    client_id_metadata_document_supported: true,
+    scopes_supported: ["mail:read", "mail:modify", "mail:trash", "mail:send", "offline_access"],
+  },
+};
 const challengeMatcher = (url, options) => url.endsWith("/mcp") && !options.headers?.Authorization;
 const challenge401 = (header = `Bearer realm="OAuth", resource_metadata="${ORIGIN}/.well-known/oauth-protected-resource/mcp", scope="mail:read"`) => ({
   status: 401,
@@ -356,6 +365,19 @@ describe("OAuth discovery", () => {
     expect(result.checks[2].detail).toContain("global_fetch_strictly_public");
   });
 
+  it("tells a Worker from before the mail scope split apart from a current one", async () => {
+    const fetchImpl = oauthFixture({
+      authorization: {
+        status: 200,
+        body: { issuer: ORIGIN, client_id_metadata_document_supported: true, scopes_supported: ["mail:read", "offline_access"] },
+      },
+    });
+    const result = await verifyDeployment({ url: "https://w.example.workers.dev", token: TOKEN, fetchImpl, sleep: noSleep });
+    expect(result.ok).toBe(false);
+    expect(result.checks[2]).toMatchObject({ ok: false, kind: "oauth" });
+    expect(result.checks[2].detail).toContain("lacks mail:modify, mail:trash, mail:send");
+  });
+
   it("tells a pre-OAuth deployment apart from a broken one", async () => {
     const fetchImpl = oauthFixture({ resource: { status: 401, body: { error: { code: "unauthorized" } } } });
     const result = await verifyDeployment({ url: "https://w.example.workers.dev", token: TOKEN, fetchImpl, sleep: noSleep });
@@ -587,7 +609,7 @@ describe("calendar verification", () => {
 
     expect(result.ok).toBe(true);
     const mcp = result.checks.find((check) => check.name === "MCP initialize and tools/list");
-    expect(mcp.detail).toContain("14 tools");
+    expect(mcp.detail).toContain("16 tools");
     expect(mcp.detail).toContain("create_event");
     expect(mcp.detail).toContain("update_event");
     expect(mcp.detail).toContain("delete_event");

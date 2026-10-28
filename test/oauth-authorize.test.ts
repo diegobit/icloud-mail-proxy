@@ -265,8 +265,14 @@ describe("POST /authorize", () => {
     const body = await response.text();
     expect(body).toContain('name="handle" value="handle-1"');
     expect(body).toContain(`name="epoch" value="${await grantEpoch(TOKEN)}"`);
-    expect(body).toContain("Read and manage mail (mail:read)");
+    expect(body).toContain("Read mail (mail:read)");
     expect(body).toContain('name="scope" value="mail:read" checked');
+    // The mail write scopes are offered but not preselected for a client that
+    // asked for mail:read only (every connector minted before the split).
+    for (const scope of ["mail:modify", "mail:trash", "mail:send"]) {
+      expect(body).toContain(`name="scope" value="${scope}"`);
+      expect(body).not.toContain(`name="scope" value="${scope}" checked`);
+    }
     expect(body).not.toContain('name="scope" value="calendar:read"');
     expect(body).not.toContain('name="scope" value="calendar:delete"');
   });
@@ -437,6 +443,7 @@ describe("POST /authorize/consent", () => {
     });
     const selected = [
       "mail:read",
+      "mail:send",
       "calendar:read",
       "calendar:write",
       "calendar:delete",
@@ -452,7 +459,7 @@ describe("POST /authorize/consent", () => {
     );
 
     expect(response.status).toBe(302);
-    const expected = ["mail:read", "calendar:read", "calendar:write", "calendar:delete"];
+    const expected = ["mail:read", "mail:send", "calendar:read", "calendar:write", "calendar:delete"];
     const [, , approveOptions] = helpers.approveConsent.mock.calls[0]!;
     expect(approveOptions?.scope).toEqual(expected);
     const [authOptions] = helpers.completeAuthorization.mock.calls[0]!;

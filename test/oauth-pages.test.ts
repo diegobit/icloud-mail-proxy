@@ -22,7 +22,7 @@ describe("tokenEntryPage", () => {
     const html = tokenEntryPage({ client: CLIENT, authQuery: "client_id=x&state=y" });
     expect(html).toContain("Example App");
     expect(html).toContain("example.com");
-    expect(html).toContain("lets it send mail and save drafts from this address");
+    expect(html).toContain("you choose what it may do");
     expect(html).toContain('<input type="password" id="token" name="token"');
     expect(html).toContain('method="post" action="/authorize"');
     expect(html).toContain('name="authQuery" value="client_id=x&amp;state=y"');
@@ -83,6 +83,16 @@ describe("scopeChoices", () => {
     ]);
   });
 
+  it("preselects only mail:read among the mail scopes when nothing offered was asked for", () => {
+    const choices = scopeChoices(["mail:read", "mail:modify", "mail:trash", "mail:send"], ["profile"]);
+    expect(choices.map((choice) => [choice.scope, choice.checked])).toEqual([
+      ["mail:read", true],
+      ["mail:modify", false],
+      ["mail:trash", false],
+      ["mail:send", false],
+    ]);
+  });
+
   it("does not offer scopes the deployment did not enable", () => {
     const choices = scopeChoices(["mail:read"], ["calendar:write"]);
     expect(choices.map((choice) => choice.scope)).toEqual(["mail:read"]);
@@ -92,14 +102,17 @@ describe("scopeChoices", () => {
 
 describe("consentPage", () => {
   const SCOPES = scopeChoices(
-    ["mail:read", "calendar:read", "calendar:write", "calendar:delete"],
+    ["mail:read", "mail:modify", "mail:trash", "mail:send", "calendar:read", "calendar:write", "calendar:delete"],
     ["mail:read"],
   );
 
   it("shows the offered permissions as checkboxes and posts handle, epoch plus action", () => {
     const html = consentPage({ client: CLIENT, handle: "h-1", epoch: "epoch-1", scopes: SCOPES });
-    expect(html).toContain("Read and manage mail (mail:read)");
-    expect(html).toContain("send mail and save drafts");
+    expect(html).toContain("Read mail (mail:read)");
+    expect(html).toContain("Sending, drafts and moving messages are not included.");
+    expect(html).toContain("Organize mail and save drafts (mail:modify)");
+    expect(html).toContain("Move mail to the trash (mail:trash)");
+    expect(html).toContain("Send mail (mail:send)");
     expect(html).toContain('value="calendar:read"');
     expect(html).toContain('value="calendar:write"');
     expect(html).toContain('value="calendar:delete"');

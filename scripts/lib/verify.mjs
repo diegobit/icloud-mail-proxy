@@ -48,11 +48,15 @@ const MAIL_TOOLS = [
   "search_mail",
   "get_mail_message",
   "get_mail_attachment",
+  "read_mail",
   "archive_mail",
   "delete_mail",
+  "restore_mail",
   "send_mail",
   "save_draft",
 ];
+/** Every deployment offers these; a Worker missing one predates the mail split. */
+const MAIL_SCOPES = ["mail:read", "mail:modify", "mail:trash", "mail:send"];
 const CALENDAR_READ_TOOLS = ["list_calendars", "list_events", "get_event"];
 const CALENDAR_WRITE_TOOLS = ["create_event", "update_event", "delete_event"];
 const ATTEMPT_TIMEOUT_MESSAGE = "timed out waiting for the endpoint";
@@ -458,7 +462,19 @@ function describeAuthorizationServer(result, origin) {
         "compatibility flag is probably missing from the deploy.",
     };
   }
-  return { name, ok: true, detail: `issuer ${origin}, client_id_metadata_document_supported: true` };
+  const supported = Array.isArray(result.body.scopes_supported) ? result.body.scopes_supported : [];
+  const missingScopes = MAIL_SCOPES.filter((scope) => !supported.includes(scope));
+  if (missingScopes.length > 0) {
+    return {
+      name,
+      ok: false,
+      kind: "oauth",
+      detail:
+        `scopes_supported lacks ${missingScopes.join(", ")}: the deployed Worker predates the mail ` +
+        "scope split. Deploy this checkout, then re-check.",
+    };
+  }
+  return { name, ok: true, detail: `issuer ${origin}, client_id_metadata_document_supported: true, mail scopes offered` };
 }
 
 function describeMcpChallenge(result, origin) {

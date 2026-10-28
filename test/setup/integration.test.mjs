@@ -51,7 +51,7 @@ function endpoint() {
     ],
     [
       "/.well-known/oauth-authorization-server",
-      { status: 200, body: { issuer: origin, client_id_metadata_document_supported: true } },
+      { status: 200, body: { issuer: origin, client_id_metadata_document_supported: true, scopes_supported: ["mail:read", "mail:modify", "mail:trash", "mail:send", "offline_access"] } },
     ],
     [
       (url, options) => url.endsWith("/mcp") && !options.headers?.Authorization,
@@ -76,8 +76,10 @@ function endpoint() {
               { name: "search_mail" },
               { name: "get_mail_message" },
               { name: "get_mail_attachment" },
+              { name: "read_mail" },
               { name: "archive_mail" },
               { name: "delete_mail" },
+              { name: "restore_mail" },
               { name: "send_mail" },
               { name: "save_draft" },
             ],

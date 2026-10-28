@@ -98,7 +98,13 @@ behaviour; the bearer reaches everything; an old `mail:read`-only grant keeps
 reading (extend `test/scopes.test.ts`, `test/oauth.integration.test.mjs`,
 `test/oauth-pages.test.ts`).
 
-**Effort:** M. **Status:** ready.
+**Effort:** M. **Status:** implemented (unit 1 commit). `requiredScopes` (the
+401 challenge and the protected-resource metadata) still names only
+`mail:read` (plus `calendar:read`), so new connectors preselect read only and
+the owner ticks the write scopes on the consent page. `scripts/lib/verify.mjs`
+now also expects `read_mail` and `restore_mail` (they were missing from its
+exact tool list) and fails a deployment whose authorization-server metadata
+lacks any of the four mail scopes. Not yet deployed.
 
 ## 2. Contacts, read-only
 

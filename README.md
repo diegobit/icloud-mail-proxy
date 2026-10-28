@@ -722,14 +722,20 @@ Codex CLI, curl) and OAuth 2.1 access tokens issued by this Worker for
 connectors that cannot send custom headers (ChatGPT developer mode, claude.ai).
 The server publishes its OAuth metadata under `/.well-known/`; the consent flow
 asks for the API token once per connector and binds the grant to it. The
-consent page offers the scopes this deployment has enabled — `mail:read`, plus
-`calendar:read`, `calendar:write` and `calendar:delete` — preselected with what
-the client requested, and the owner may deselect. The stored grant can only
-narrow that offer. `mail:read` is the umbrella for all eight mail tools,
-including sending and filing; `calendar:write` and `calendar:delete` each imply
-`calendar:read`, but not each other. In particular, a grant that approved only
+consent page offers the scopes this deployment has enabled — `mail:read`,
+`mail:modify`, `mail:trash` and `mail:send`, plus `calendar:read`,
+`calendar:write` and `calendar:delete` — preselected with what the client
+requested, and the owner may deselect. The stored grant can only narrow that
+offer. Each scope reaches only its own tools (see the table under
+[Calendars](#calendars)): `mail:read` only reads; `mail:modify` marks read,
+archives, restores and saves drafts; `mail:trash` moves to the trash; and
+`mail:send` sends. Every write scope implies the read scope of its domain, but
+no write scope implies another. In particular, a grant that approved only
 `calendar:write` before `delete_event` existed cannot delete: it must reconnect
-and the owner must approve `calendar:delete` explicitly. Every authorization
+and the owner must approve `calendar:delete` explicitly. Likewise a grant
+minted before the mail scopes were split holds only `mail:read`: it keeps
+reading and answers `insufficient_scope` on every mail write tool until it
+reconnects and the owner approves the write scopes it should have. Every authorization
 request must carry a PKCE `S256` challenge: requests without one are refused
 before the consent page. A grant minted before calendars existed holds only
 `mail:read`, so the connector must reconnect once before the calendar tools
@@ -744,7 +750,8 @@ claude mcp add --transport http icloud-mail https://icloud-mail.diegobit.com/mcp
 
 ## Sending mail
 
-Any authenticated client can send. Two tools do it:
+The static bearer and OAuth grants holding `mail:send` can send; saving a draft
+needs `mail:modify`. Two tools do it:
 
 - **`send_mail`** validates the recipients, builds the final RFC 5322 message
   and submits it over `smtp.mail.me.com:587` (STARTTLS, `AUTH PLAIN`) right
@@ -781,8 +788,9 @@ after a timeout from sending twice. Sends are logged as metadata only
 
 ## Filing, restoring and deleting
 
-Any authenticated client can move one message at a time: `archive_mail`,
-`delete_mail` and `restore_mail` over MCP, or `POST /v1/messages/:mailbox/:uidValidity/:uid/archive`,
+The static bearer can move one message at a time, and so can an OAuth grant
+holding `mail:modify` (archive and restore) or `mail:trash` (trash):
+`archive_mail`, `delete_mail` and `restore_mail` over MCP, or `POST /v1/messages/:mailbox/:uidValidity/:uid/archive`,
 `.../trash` and `.../restore` over REST. All three take the id from a search
 result (`mailbox`, `uidValidity`, `uid`).
 
@@ -863,20 +871,23 @@ redeploy:
     "https://<worker>/v1/calendars?all=1"
   ```
 
-The MCP surface adds up to six tools; with the eight mail tools that is 14 in
+The MCP surface adds up to six tools; with the ten mail tools that is 16 in
 a deployment with calendars and writes on:
 
 | Tool | Scope | Enabled by |
 | --- | --- | --- |
+| `list_mailboxes`, `search_mail`, `get_mail_message`, `get_mail_attachment` | `mail:read` | always |
+| `read_mail`, `archive_mail`, `restore_mail`, `save_draft` | `mail:modify` (implies `mail:read`) | always |
+| `delete_mail` | `mail:trash` (implies `mail:read`) | always |
+| `send_mail` | `mail:send` (implies `mail:read`) | always |
 | `list_calendars`, `list_events`, `get_event` | `calendar:read` | `ALLOWED_CALENDARS` |
-| `create_event`, `update_event` | `calendar:write` | `ALLOWED_CALENDARS` + `CALENDAR_WRITE=1` |
-| `delete_event` | `calendar:delete` | `ALLOWED_CALENDARS` + `CALENDAR_WRITE=1` |
-| the eight mail tools | `mail:read` | always |
+| `create_event`, `update_event` | `calendar:write` (implies `calendar:read`) | `ALLOWED_CALENDARS` + `CALENDAR_WRITE=1` |
+| `delete_event` | `calendar:delete` (implies `calendar:read`) | `ALLOWED_CALENDARS` + `CALENDAR_WRITE=1` |
 
 The static bearer token reaches every enabled tool. OAuth connectors get the
 scopes selected on the consent page, which is why an older grant holding only
-`mail:read` must reconnect before using calendars, and an older `calendar:write`
-grant must reconnect before using `delete_event`.
+`mail:read` must reconnect before using calendars or any mail write tool, and
+an older `calendar:write` grant must reconnect before using `delete_event`.
 
 ### Reads
 
@@ -998,9 +1009,12 @@ EventKit companion on a Mac); it is not part of this Worker.
   cannot send a custom header, `/mcp` also accepts OAuth 2.1 access tokens:
   the sign-in and consent pages hand one out only after the owner enters
   `API_TOKEN`, and the grant holds only the scopes selected on the consent
-  page, bounded by what the deployment enables (`mail:read` plus the enabled
-  calendar scopes). It therefore reads exactly the mailboxes and calendars
-  those scopes expose. The static bearer itself is also accepted
+  page, bounded by what the deployment enables (the four mail scopes plus the
+  enabled calendar scopes). A grant holding only `mail:read` reads mail and
+  can do nothing else with it: marking read, filing and drafts need
+  `mail:modify`, the trash needs `mail:trash`, and sending needs `mail:send`.
+  The static bearer is the owner and still holds every scope, so a leaked
+  bearer is not narrowed by this split. The static bearer itself is also accepted
   on `/mcp` as an external token — it is this deployment's own credential and
   is never forwarded upstream. There is no remember-consent: ChatGPT's CIMD
   `client_id` is shared by every ChatGPT user, and a remembered consent would
@@ -1009,8 +1023,8 @@ EventKit companion on a Mac); it is not part of this Worker.
   including a consent page left open across the rotation, which cannot be
   approved afterwards; grants minted before the PKCE requirement was
   introduced are refused the same way (see [DEPLOY.md](DEPLOY.md)). A grant
-  can also send, like the bearer; the audit trail records which principal
-  performed each send or draft save.
+  holding `mail:send` can send, like the bearer; the audit trail records which
+  principal performed each send or draft save.
 - **Calendar writes are opt-in and bounded.** The flag defaults to off. When
   on, only allowlisted calendars are reachable, only one-off resources without
   an organizer or attendees can be created, changed or deleted, every update

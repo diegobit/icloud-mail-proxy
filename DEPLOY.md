@@ -239,6 +239,13 @@ generate a new token, because that would break every existing client.
   connector reconnects once through the sign-in page. A consent page left open
   across the upgrade is refused at approval. Nothing to do by hand; this is
   the same path as a rotation.
+- **Upgrade across the mail scope split:** `mail:read` used to cover every
+  mail tool; it now covers only reading. Marking read, archiving, restoring and
+  saving drafts need `mail:modify`, `delete_mail` needs `mail:trash` and
+  `send_mail` needs `mail:send`. An existing grant keeps reading and answers
+  `insufficient_scope` on those tools, so **reconnect every ChatGPT and
+  claude.ai connector once after deploying** and tick the mail scopes it should
+  have on the consent page. The static bearer is the owner and is unaffected.
 - **Replace the Apple app-specific password:** revoke it at appleid.apple.com
   → Sign-In and Security → App-Specific Passwords, create a new one, then run
   `npm run setup` and answer yes to replacing the credentials. Do this
@@ -253,8 +260,9 @@ generate a new token, because that would break every existing client.
 - **Kill switch:** set `SEND_MAX_PER_DAY=0` in `wrangler.base.jsonc` and
   deploy. Every `send_mail` is then refused with `daily_limit_reached`, while
   reading and `save_draft` keep working.
-- **Revoke a connector's ability to send:** rotate `API_TOKEN`; the connector
-  must reconnect before it can send again.
+- **Revoke a connector's ability to send:** reconnect it and leave `mail:send`
+  unticked on the consent page, or rotate `API_TOKEN`, which cuts every grant;
+  the connector must reconnect before it can send again.
 - **Inspect what happened:** `wrangler tail` shows one `send_event` line per
   attempt — principal, event, recipient count and domains, SMTP code,
   duration; never the subject, the body or address local parts. The Durable
@@ -289,8 +297,9 @@ generate a new token, because that would break every existing client.
   a second copy would be filed. Check both mailboxes first.
 - **"uidvalidity_mismatch":** the mailbox was reorganized; re-run the search
   and use the fresh ids. Nothing was moved.
-- **Restoring mail:** move the message back from `Archive` or the trash in a
-  mail client. This proxy has no restore tool and never empties the trash.
+- **Restoring mail:** `restore_mail` moves one message from `Archive` or the
+  trash back into `INBOX`; a mail client works too. This proxy never empties
+  the trash.
 
 ## Calendar operations
 

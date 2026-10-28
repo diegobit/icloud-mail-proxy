@@ -278,9 +278,9 @@ describe("direct send end to end", () => {
     expect(invalid.isError).toBe(true);
   }, 60_000);
 
-  it("lets an OAuth grant send as well", async () => {
+  it("lets an OAuth grant holding mail:send send as well", async () => {
     const before = smtp.state.connections;
-    const tokens = await oauthExchange(current.base, TOKEN_A);
+    const tokens = await oauthExchange(current.base, TOKEN_A, undefined, ["mail:send"]);
     const result = await sendMail(current.base, tokens.access_token, {
       subject: "Da OAuth",
       text: "ciao dal grant",
@@ -288,6 +288,19 @@ describe("direct send end to end", () => {
     expect(result.isError, result.text).toBe(false);
     expect(result.json.status).toBe("sent");
     expect(smtp.state.connections).toBe(before + 1);
+  }, 120_000);
+
+  it("refuses send_mail to a mail:read grant without opening an SMTP connection", async () => {
+    const before = smtp.state.connections;
+    const tokens = await oauthExchange(current.base, TOKEN_A);
+    const result = await sendMail(current.base, tokens.access_token, {
+      subject: "Solo lettura",
+      text: "non deve partire",
+    });
+    expect(result.isError).toBe(true);
+    expect(result.text).toContain("insufficient_scope");
+    expect(result.text).toContain("mail:send");
+    expect(smtp.state.connections).toBe(before);
   }, 120_000);
 });
 

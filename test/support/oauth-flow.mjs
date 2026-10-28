@@ -173,8 +173,11 @@ export function tokenRequest(base, params) {
   return fetch(`${base}/oauth/token`, { method: "POST", headers: FORM, body: new URLSearchParams(params) });
 }
 
-/** Register a client, sign in, consent and exchange: returns the tokens. */
-export async function oauthExchange(base, apiToken, tokenExchange = tokenRequest) {
+/**
+ * Register a client, sign in, consent to `scopes` and exchange: returns the
+ * tokens.
+ */
+export async function oauthExchange(base, apiToken, tokenExchange = tokenRequest, scopes = ["mail:read"]) {
   const clientId = await registerClient(base);
   const { verifier, challenge } = pkce();
   const query = authorizeQuery(clientId, challenge, "state-helper");
@@ -188,12 +191,12 @@ export async function oauthExchange(base, apiToken, tokenExchange = tokenRequest
   const approved = await fetch(`${base}/authorize/consent`, {
     method: "POST",
     headers: { ...FORM, Cookie: cookie },
-    body: new URLSearchParams({
-      handle: hidden(consentHtml, "handle"),
-      action: "approve",
-      epoch: hidden(consentHtml, "epoch"),
-      scope: "mail:read",
-    }),
+    body: new URLSearchParams([
+      ["handle", hidden(consentHtml, "handle")],
+      ["action", "approve"],
+      ["epoch", hidden(consentHtml, "epoch")],
+      ...scopes.map((scope) => ["scope", scope]),
+    ]),
     redirect: "manual",
   });
   const code = new URL(approved.headers.get("location")).searchParams.get("code");

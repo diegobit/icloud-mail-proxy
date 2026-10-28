@@ -75,25 +75,28 @@ describe("calendarConfig", () => {
 });
 
 describe("scopes", () => {
-  it("offers only mail:read when calendars are disabled", () => {
-    expect(enabledResourceScopes(makeEnv())).toEqual(["mail:read"]);
-    expect(supportedScopes(makeEnv())).toEqual(["mail:read", "offline_access"]);
+  it("offers only the mail scopes when calendars are disabled", () => {
+    expect(enabledResourceScopes(makeEnv())).toEqual(["mail:read", "mail:modify", "mail:trash", "mail:send"]);
+    expect(supportedScopes(makeEnv())).toEqual(["mail:read", "mail:modify", "mail:trash", "mail:send", "offline_access"]);
     expect(requiredScopes(makeEnv())).toEqual(["mail:read"]);
   });
 
   it("adds calendar read scope for enabled calendars", () => {
     const env = makeEnv({ ALLOWED_CALENDARS: "*" });
-    expect(enabledResourceScopes(env)).toEqual(["mail:read", "calendar:read"]);
+    expect(enabledResourceScopes(env)).toEqual(["mail:read", "mail:modify", "mail:trash", "mail:send", "calendar:read"]);
     expect(requiredScopes(env)).toEqual(["mail:read", "calendar:read"]);
   });
 
   it("adds the write scope only when the write flag is on", () => {
     const reads = makeEnv({ ALLOWED_CALENDARS: "*" });
-    expect(enabledResourceScopes(reads)).toEqual(["mail:read", "calendar:read"]);
+    expect(enabledResourceScopes(reads)).toEqual(["mail:read", "mail:modify", "mail:trash", "mail:send", "calendar:read"]);
 
     const writes = makeEnv({ ALLOWED_CALENDARS: "*", CALENDAR_WRITE: "1" });
     expect(enabledResourceScopes(writes)).toEqual([
       "mail:read",
+      "mail:modify",
+      "mail:trash",
+      "mail:send",
       "calendar:read",
       "calendar:write",
       "calendar:delete",
@@ -103,22 +106,22 @@ describe("scopes", () => {
   });
 
   it("does not offer the write scope for disabled calendars", () => {
-    expect(enabledResourceScopes(makeEnv({ CALENDAR_WRITE: "1" }))).toEqual(["mail:read"]);
+    expect(enabledResourceScopes(makeEnv({ CALENDAR_WRITE: "1" }))).toEqual(["mail:read", "mail:modify", "mail:trash", "mail:send"]);
   });
 
-  it("keeps requiredScopes free of write scopes", () => {
+  it("keeps requiredScopes free of write scopes, mail included", () => {
     const env = makeEnv({ ALLOWED_CALENDARS: "*", CALENDAR_WRITE: "1" });
     expect(requiredScopes(env)).toEqual(["mail:read", "calendar:read"]);
   });
 
   it("fingerprints the enabled scopes for the provider cache", () => {
     const calendarOnly = makeEnv({ ALLOWED_CALENDARS: "*" });
-    expect(scopeProfile(calendarOnly)).toBe("mail:read,calendar:read");
+    expect(scopeProfile(calendarOnly)).toBe("mail:read,mail:modify,mail:trash,mail:send,calendar:read");
     expect(scopeProfile(calendarOnly)).toBe(scopeProfile(calendarOnly));
 
     const writes = makeEnv({ ALLOWED_CALENDARS: "*", CALENDAR_WRITE: "1" });
     expect(scopeProfile(writes)).toBe(
-      "mail:read,calendar:read,calendar:write,calendar:delete",
+      "mail:read,mail:modify,mail:trash,mail:send,calendar:read,calendar:write,calendar:delete",
     );
   });
 });

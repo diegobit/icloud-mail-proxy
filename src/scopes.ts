@@ -6,15 +6,21 @@
 // to an empty array there, so `props.via === "bearer"` is the owner and holds
 // every scope. A naive `scope.includes(...)` would break every bearer client.
 //
-// `calendar:write` and `calendar:delete` each imply `calendar:read`, so a grant
-// can read the ETag it needs. They do not imply each other: a connector that
+// Every write scope implies the read scope of its domain, so a grant can read
+// what it acts on (the ids a mutation takes, the parent a reply quotes, the
+// ETag an update needs). Write scopes never imply each other: a connector that
 // approved create/update before delete existed cannot delete until it
-// reconnects and the owner approves `calendar:delete`.
+// reconnects and the owner approves `calendar:delete`, and a grant that
+// predates the mail split holds only `mail:read`, which no longer reaches the
+// mail write tools.
 
 import { ApiError } from "./core";
 
 export const SCOPES = [
   "mail:read",
+  "mail:modify",
+  "mail:trash",
+  "mail:send",
   "calendar:read",
   "calendar:write",
   "calendar:delete",
@@ -45,16 +51,16 @@ export function authorityOf(
   return { via: "oauth", scopes };
 }
 
+/** The scopes that also grant a read scope; nothing else is implied. */
+const IMPLIES_READ: Partial<Record<ResourceScope, readonly ResourceScope[]>> = {
+  "mail:read": ["mail:modify", "mail:trash", "mail:send"],
+  "calendar:read": ["calendar:write", "calendar:delete"],
+};
+
 export function hasScope(authority: Authority, scope: ResourceScope): boolean {
   if (authority.via === "bearer") return true;
   if (authority.scopes.includes(scope)) return true;
-  if (scope === "calendar:read") {
-    return (
-      authority.scopes.includes("calendar:write") ||
-      authority.scopes.includes("calendar:delete")
-    );
-  }
-  return false;
+  return (IMPLIES_READ[scope] ?? []).some((implying) => authority.scopes.includes(implying));
 }
 
 /** Throws the ApiError both surfaces report as `insufficient_scope`. */
