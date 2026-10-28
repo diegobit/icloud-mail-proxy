@@ -970,7 +970,7 @@ describe("getEvent", () => {
       etag: '"etag-1"',
       recurring: true,
       scheduling: false,
-      readOnlyReason: "recurring",
+      readOnlyReason: null,
       recurrenceRule: "FREQ=WEEKLY;COUNT=3",
       allDay: false,
       start: "2026-10-21T09:00:00+02:00",

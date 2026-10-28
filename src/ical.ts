@@ -616,6 +616,7 @@ export function parseResource(ics: string, options: Partial<IcalCaps> = {}): Par
   const recurring =
     master.rrule !== null ||
     master.rdate.length > 0 ||
+    master.jcal[1].some((property) => (property[0] === "exdate" || property[0] === "exrule")) ||
     overrides.length > 0 ||
     master.jcal[1].some((property) => property[0] === "rrule" || property[0] === "rdate");
   const scheduling = components.some((component) => component.organizer || component.attendee);

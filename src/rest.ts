@@ -446,9 +446,13 @@ async function handleDeleteEvent(
       400,
     );
   }
+  const seriesValues = new URL(request.url).searchParams.getAll("series");
+  if (seriesValues.length > 1 || (seriesValues.length === 1 && !["true", "false"].includes(seriesValues[0]!))) {
+    throw new ApiError(400, "invalid_request", "series must be true or false");
+  }
   const result = await deleteEvent(
     env,
-    { calendar, id, etag },
+    { calendar, id, etag, series: seriesValues[0] === "true" },
     {
       principal: "bearer",
       rateLimitKey: request.headers.get("CF-Connecting-IP") ?? "unknown",

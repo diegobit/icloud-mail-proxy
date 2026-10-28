@@ -331,18 +331,17 @@ generate a new token, because that would break every existing client.
   Read it and compare instead of creating a second copy with a new id.
 - **"not_an_event":** the resource is a `VTODO`, not a calendar event; it
   cannot be updated or deleted through this proxy.
-- **"recurring_not_supported" / "scheduling_not_supported":** recurring events
-  and events with an organizer or attendees cannot be changed or deleted
+- **"recurring_not_supported" / "scheduling_not_supported":** complex recurring events, series time changes, series deletion without explicit
+  consent, and events with an organizer or attendees cannot be changed or deleted
   through this proxy. Edit them in Apple Calendar. Retrying will not help.
 - **"read_only_collection":** iCloud's privileges say the calendar is not
   writable for this account, even though the write flag is on. Pick another
   calendar or change the sharing/ownership in Apple Calendar.
 - **"rate_limited":** more than 30 writes per minute came from the same
   connecting IP. Wait a minute.
-- **Delete only one-off events; no invitations:** `delete_event` removes one
-  non-recurring event after an ETag check, but CalDAV deletion is immediate
-  and there is no trash. Recurring and scheduling resources stay read-only and
-  must be edited in Apple Calendar. There is no recurrence editor, no
+- **Event deletion and invitations:** `delete_event` removes a one-off event or,
+  with `series: true`, a simple series after an ETag check. Deletion is immediate
+  and there is no trash. Complex recurring and scheduling resources stay read-only. There is no recurrence editor, no
   attendee/organizer editing and no free/busy, sharing or contacts.
 - **Choosing or re-checking calendars:** `GET /v1/calendars?all=1` with the
   bearer token lists every calendar before allowlist filtering, even while the

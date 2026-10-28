@@ -1,20 +1,4 @@
-// Write side of CalDAV events: create, update or delete one non-recurring
-// event.
-//
-// Product rules for the calendar surface:
-// - inputs are structured fields, never raw iCalendar;
-// - a create generates a UUIDv4 resource (or accepts a caller id so a retry is
-//   idempotent) and uses If-None-Match: *;
-// - an update or delete requires the exact strong ETag from get_event,
-//   re-reads the resource, refuses recurring/scheduling resources, then uses
-//   If-Match; deletion is immediate and has no trash;
-// - the serialized payload is UTC or DATE only: no TZID, RRULE, RDATE,
-//   EXDATE, ATTENDEE, ORGANIZER or VALARM is ever written;
-// - every attempted write is logged with the principal, action, collection,
-//   resource and outcome, but never with the summary or the description.
-//
-// The read-modify-write is deliberate: an iCloud event can carry a VTIMEZONE,
-// VALARMs and Apple X- properties that a naive overwrite would destroy.
+// CalDAV event writes preserve existing resource properties and use conditional requests.
 
 import { CalDavError, createCalDav, resourcePath } from "./caldav";
 import {
@@ -30,6 +14,7 @@ import {
   byteLength,
   icalCaps,
   isResourceId,
+  isSimpleSeries,
   readResource,
 } from "./calendar-resource";
 import {
@@ -101,6 +86,7 @@ export interface UpdateEventInput {
 }
 
 export interface DeleteEventInput {
+  series?: boolean;
   calendar: string;
   id: string;
   /** The strong ETag returned by get_event. */
@@ -475,18 +461,18 @@ export async function updateEvent(
           "this resource is not a VEVENT; update_event only updates calendar events",
         );
       }
-      if (parsed.recurring) {
-        throw new ApiError(
-          422,
-          "recurring_not_supported",
-          "this event is recurring; v1 only writes one-off events, so it was not changed",
-        );
-      }
       if (parsed.scheduling) {
         throw new ApiError(
           422,
           "scheduling_not_supported",
           "this event has an organizer or attendees; v1 does not change scheduling resources",
+        );
+      }
+      if (parsed.recurring && (!isSimpleSeries(parsed) || time !== null)) {
+        throw new ApiError(
+          422,
+          "recurring_not_supported",
+          "only simple series can be updated, and their times cannot be changed",
         );
       }
 
@@ -515,7 +501,7 @@ export async function updateEvent(
             editor.setDateTimeUtc("dtend", isoInZone(time.endInstant!, "UTC"));
           }
         }
-      });
+      }, { allowRecurring: parsed.recurring });
 
       const bytes = byteLength(output);
       if (bytes > limits.maxResourceBytes) {
@@ -529,8 +515,16 @@ export async function updateEvent(
         uid: parsed.uid,
         summary,
         time,
+        recurring: parsed.recurring,
       });
 
+      if (parsed.recurring) {
+        const protectedProperties = (resource: ParsedResource) => resource.master.jcal[1]
+          .filter((property) => ["rrule", "dtstart", "dtend", "duration"].includes(property[0]));
+        if (JSON.stringify(protectedProperties(parsed)) !== JSON.stringify(protectedProperties(updated))) {
+          throw new ApiError(500, "internal_error", "the updated series changed its recurrence or times");
+        }
+      }
       const caldav = createCalDav(env, { fetchImpl: options.fetchImpl });
       const { homeUrl } = await caldav.discover();
       const href = new URL(resourcePath(collection.id, input.id), homeUrl).pathname;
@@ -572,8 +566,8 @@ export async function updateEvent(
 }
 
 /**
- * Delete one non-recurring, non-scheduling event. The read-before-delete is
- * deliberate: it checks the caller's ETag, refuses a VTODO or a recurring /
+ * Delete one event or an explicitly selected simple series. The read-before-delete is
+ * deliberate: it checks the caller's ETag, refuses a VTODO or a complex recurring /
  * scheduling resource, and gives the audit line a definite outcome before the
  * DELETE is sent. CalDAV deletion is immediate; there is no trash.
  */
@@ -620,18 +614,18 @@ export async function deleteEvent(
           "this resource is not a VEVENT; delete_event only deletes calendar events",
         );
       }
-      if (parsed.recurring) {
-        throw new ApiError(
-          422,
-          "recurring_not_supported",
-          "this event is recurring; delete_event only deletes one-off events, so nothing was deleted",
-        );
-      }
       if (parsed.scheduling) {
         throw new ApiError(
           422,
           "scheduling_not_supported",
           "this event has an organizer or attendees; delete_event does not delete scheduling resources",
+        );
+      }
+      if (parsed.recurring && (!isSimpleSeries(parsed) || input.series !== true)) {
+        throw new ApiError(
+          422,
+          "recurring_not_supported",
+          "deleting a simple series requires series: true; complex series cannot be deleted",
         );
       }
 
@@ -672,7 +666,7 @@ export async function deleteEvent(
 function validateUpdatedEvent(
   ics: string,
   limits: CalendarLimits,
-  expected: { uid: string; summary: string | undefined; time: ResolvedEventTime | null },
+  expected: { uid: string; summary: string | undefined; time: ResolvedEventTime | null; recurring: boolean },
 ): ParsedResource {
   const parsed = parseResource(ics, icalCaps(limits));
   if (parsed.kind !== "VEVENT" || parsed.components.length !== 1) {
@@ -681,7 +675,7 @@ function validateUpdatedEvent(
   if (parsed.uid !== expected.uid) {
     throw new ApiError(500, "internal_error", "the updated resource changed the UID");
   }
-  if (parsed.recurring || parsed.scheduling) {
+  if (parsed.scheduling || parsed.recurring !== expected.recurring || (parsed.recurring && !isSimpleSeries(parsed))) {
     throw new ApiError(500, "internal_error", "the updated resource became recurring or scheduled");
   }
   if (expected.summary !== undefined && parsed.master.summary !== expected.summary) {

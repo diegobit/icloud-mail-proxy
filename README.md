@@ -635,7 +635,7 @@ the text as third-party content. A missing id returns `404 not_found`.
 ### `POST /v1/calendars/:calendar/events`, `PUT /v1/calendars/:calendar/events/:id` and `DELETE /v1/calendars/:calendar/events/:id`
 
 Create one event, change only the fields you pass on an existing one, or delete
-one non-recurring event. These routes exist only when `CALENDAR_WRITE=1`;
+one event or a whole simple series. These routes exist only when `CALENDAR_WRITE=1`;
 otherwise they answer `404 not_supported`. The event must be in a writable
 collection.
 
@@ -674,7 +674,7 @@ Unknown body keys are refused with `400 unsupported_field`; there is no way to
 pass arbitrary iCalendar properties.
 
 `PUT .../:id` takes `etag` plus any of `summary`, `start`, `end`, `timeZone`,
-`allDay`, `location`, `description`. It is a partial update: only the fields
+`allDay`, `location`, `description`, `alarms`. It is a partial update: only the fields
 present change. Pass `start` and `end` together. `location` or `description`
 `null` removes that property. The server re-reads the event, checks its
 current ETag and uses `If-Match`:
@@ -683,8 +683,8 @@ current ETag and uses `If-Match`:
   `*`, comma lists and malformed values are refused).
 - `409 conflict` — the event changed since it was read; call `get_event` and
   retry with the fresh ETag.
-- `422 recurring_not_supported` — the event has `RRULE`, `RDATE` or a
-  `RECURRENCE-ID` component; it cannot be changed or deleted through this API.
+- `422 recurring_not_supported` — the series is complex, a time change was requested,
+  or deletion of a simple series was requested without `series=true`.
 - `422 scheduling_not_supported` — the event carries `ORGANIZER` or
   `ATTENDEE`; it cannot be changed or deleted through this API.
 - `422 not_an_event` — the resource is a `VTODO`, not a calendar event.
@@ -696,7 +696,8 @@ current ETag and uses `If-Match`:
 
 `DELETE .../:id` takes no body. It requires the exact strong ETag in an
 `If-Match` header, re-reads the event, checks the ETag and sends a conditional
-DELETE. Recurring events, scheduling resources and non-events are refused.
+DELETE. Add `?series=true` to delete a simple series as a whole. Complex
+recurring events, scheduling resources and non-events are refused.
 Deletion is immediate; there is no trash.
 
 ```
@@ -970,21 +971,27 @@ floating time or an unresolved `TZID` names no instant, so it is excluded from
 range results rather than compared as if it were UTC; `get_event` still reports
 it in the master detail. Each occurrence carries `collectionId`, `resourceId`,
 `uid`, `recurrenceId` and `readOnlyReason`, so an agent never has to guess
-which instance it is looking at. Recurring resources and resources carrying
-`ORGANIZER`/`ATTENDEE` are readable but read-only in v1; `readOnlyReason` says
-which, and writes refuse them.
+which instance it is looking at. Complex recurring resources and resources carrying `ORGANIZER`/`ATTENDEE`
+are read-only; `readOnlyReason` identifies them. A simple series has a null
+reason and can be managed as described below.
 
 ### Writes
 
 Three tools write: `create_event` and `update_event` under `calendar:write`,
 and `delete_event` under the separate `calendar:delete` scope. Deletion is
-immediate: unlike mail there is no trash. Only one-off events can be deleted;
-recurring and scheduling (`ORGANIZER`/`ATTENDEE`) resources remain read-only.
+immediate: unlike mail there is no trash. Simple series can be deleted as a whole
+with `series: true` (REST: `?series=true`). Scheduling resources remain read-only.
 There is no recurrence editing, no invitations, free/busy, sharing or contacts.
 Events accept up to two display alarms, specified as minutes before the start
 (from 0 to 10080). An update that omits alarms preserves them; an array replaces
 supported display alarms while preserving other alarms. Events also accept
 summary, start/end, time zone, location and description.
+
+A manageable simple series has one RRULE with DAILY, WEEKLY or MONTHLY frequency,
+interval 1–12, exactly one of COUNT or UNTIL, and optional non-ordinal BYDAY
+only for WEEKLY. It has no RDATE, EXDATE, overrides, organizer or attendees.
+Only summary, location, description and alarms can be updated on its master;
+its times and rule cannot be changed. Creation of recurring events is not supported.
 
 Writes are structured and narrow:
 
@@ -994,14 +1001,15 @@ Writes are structured and narrow:
   writes a bare `TZID`, `RRULE`, `RDATE`, `EXDATE`, `ATTENDEE`, `ORGANIZER` or
   `VALARM` except for the optional display alarms described above. `end` is exclusive.
 - `update_event` requires exactly one strong, quoted ETag from `get_event`.
-  The server re-reads the resource, checks the ETag again, refuses a recurring
-  or scheduling resource, then PUTs with `If-Match`. A stale tag returns `409
+  The server re-reads the resource, checks the ETag again, refuses complex recurrence
+  and scheduling resources, then PUTs with `If-Match`. A stale tag returns `409
   conflict`; the caller must re-read. A PUT whose response never arrived
   returns `502 mutation_state_unknown`: it may have landed, so reconcile with
   `get_event`, never blind-retry.
 - `delete_event` also requires the exact strong ETag. The server re-reads the
-  event, checks the ETag, refuses a recurring, scheduling or non-VEVENT
-  resource, then sends `DELETE` with `If-Match`. Deletion is immediate and
+  event, checks the ETag, refuses complex recurrence, scheduling or non-VEVENT
+  resources, then sends `DELETE` with `If-Match`. A simple series requires
+  `series: true` (REST: `?series=true`). Deletion is immediate and
   there is no trash. A DELETE whose response never arrived, or that returned
   `202 Accepted`, another unexpected 2xx, or a 5xx, returns `502
   mutation_state_unknown`; reconcile with `get_event`, where `404` means the
@@ -1115,8 +1123,8 @@ set `"CONTACTS_ENABLED": "1"` in the deployment's vars and redeploy.
   holding `mail:send` can send, like the bearer; the audit trail records which
   principal performed each send or draft save.
 - **Calendar writes are opt-in and bounded.** The flag defaults to off. When
-  on, only allowlisted calendars are reachable, only one-off resources without
-  an organizer or attendees can be created, changed or deleted, every update
+  on, only allowlisted calendars are reachable; one-off events can be created,
+  and one-off events and simple series without scheduling can be managed. Every update
   and delete requires a strong ETag and a fresh read, a per-IP limiter allows
   30 writes per minute, and each attempt logs metadata only. Deletion needs the
   separate `calendar:delete` OAuth scope, so a pre-existing `calendar:write`

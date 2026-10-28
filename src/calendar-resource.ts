@@ -102,9 +102,24 @@ export function icalCaps(limits: CalendarLimits): IcalCaps {
   };
 }
 
+export function isSimpleSeries(parsed: ParsedResource): boolean {
+  const master = parsed.master;
+  const rule = master.rrule;
+  if (parsed.kind !== "VEVENT" || parsed.scheduling || !rule || parsed.overrides.length !== 0) return false;
+  // Check property presence as well as parsed values, including empty exception lists.
+  if (master.jcal[1].some((property) => property[0] === "rdate" || property[0] === "exdate" || property[0] === "exrule")) return false;
+  const keys = rule.text.split(";").map((part) => part.split("=")[0]);
+  if (keys.some((key) => !["FREQ", "INTERVAL", "BYDAY", "COUNT", "UNTIL"].includes(key))) return false;
+  return ["DAILY", "WEEKLY", "MONTHLY"].includes(rule.freq) &&
+    rule.interval >= 1 && rule.interval <= 12 &&
+    (rule.count !== null) !== (rule.until !== null) &&
+    (rule.freq === "WEEKLY" || rule.byDay.length === 0) &&
+    rule.byDay.every((day) => day.ordinal === null);
+}
+
 export function readOnlyReasonOf(parsed: ParsedResource): ReadOnlyReason | null {
-  if (parsed.recurring) return "recurring";
   if (parsed.scheduling) return "scheduling";
+  if (parsed.recurring && !isSimpleSeries(parsed)) return "recurring";
   return null;
 }
 

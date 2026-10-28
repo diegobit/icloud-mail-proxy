@@ -791,10 +791,48 @@ describe("updateEvent", () => {
     expect(calls).toHaveLength(0);
   });
 
-  it("refuses recurring and scheduling resources", async () => {
+  it("updates a simple series master and deletes it only with explicit series consent", async () => {
+    const calls = stubFetch({ multiget: multistatus("cal-lavoro", [
+      { id: "recurring", ics: RECURRING, etag: '"etag-recurring"' },
+    ]) });
+    await update(makeEnv(), { calendar: "Lavoro", id: "recurring", etag: '"etag-recurring"', summary: "Changed", location: "Room", description: "Notes", alarms: [{ minutesBefore: 15 }] });
+    const put = calls.find((call) => call.method === "PUT")!;
+    expect(put.body).toContain("RRULE:FREQ=WEEKLY;COUNT=2");
+    expect(put.body).toContain("DTSTART;TZID=Europe/Rome:20261022T100000");
+    expect(put.body).toContain("SUMMARY:Changed");
+    expect(put.body).toContain("LOCATION:Room");
+    expect(put.body).toContain("DESCRIPTION:Notes");
+    expect(put.body).toContain("TRIGGER:-PT15M");
+    await remove(makeEnv(), { calendar: "Lavoro", id: "recurring", etag: '"etag-recurring"', series: true });
+    expect(calls.some((call) => call.method === "DELETE")).toBe(true);
+  });
+
+  it("refuses series time changes and complex series without writes", async () => {
+    for (const ics of [RECURRING, RECURRING.replace("SUMMARY:Weekly", "EXDATE;TZID=Europe/Rome:20261029T100000\r\nSUMMARY:Weekly"), RECURRING.replace("RRULE:FREQ=WEEKLY;COUNT=2", "RRULE:FREQ=YEARLY;COUNT=2")]) {
+      clearCalDavDiscoveryCache();
+      const calls = stubFetch({ multiget: multistatus("cal-lavoro", [{ id: "recurring", ics, etag: '"etag-recurring"' }]) });
+      await expect(update(makeEnv(), { calendar: "Lavoro", id: "recurring", etag: '"etag-recurring"', start: "2026-10-22T11:00:00", end: "2026-10-22T12:00:00" })).rejects.toSatisfy((error: unknown) => errorCode(error) === "recurring_not_supported");
+      if (ics !== RECURRING) await expect(remove(makeEnv(), { calendar: "Lavoro", id: "recurring", etag: '"etag-recurring"', series: true })).rejects.toSatisfy((error: unknown) => errorCode(error) === "recurring_not_supported");
+      expect(calls.some((call) => call.method === "PUT" || call.method === "DELETE")).toBe(false);
+    }
+  });
+
+  it("refuses overrides, RDATE and scheduling on series without writes", async () => {
+    const override = RECURRING.replace("END:VCALENDAR", vevent("UID:plain", "RECURRENCE-ID;TZID=Europe/Rome:20261029T100000", "DTSTART;TZID=Europe/Rome:20261029T110000", "DTEND;TZID=Europe/Rome:20261029T120000") + "\r\nEND:VCALENDAR");
+    for (const [ics, code] of [[override, "recurring_not_supported"], [RECURRING.replace("SUMMARY:Weekly", "RDATE;TZID=Europe/Rome:20261105T100000\r\nSUMMARY:Weekly"), "recurring_not_supported"], [RECURRING.replace("SUMMARY:Weekly", "ATTENDEE:mailto:test@example.com\r\nSUMMARY:Weekly"), "scheduling_not_supported"]]) {
+      clearCalDavDiscoveryCache();
+      const calls = stubFetch({ multiget: multistatus("cal-lavoro", [{ id: "recurring", ics: ics!, etag: '"etag-recurring"' }]) });
+      for (const action of [() => update(makeEnv(), { calendar: "Lavoro", id: "recurring", etag: '"etag-recurring"', summary: "X" }), () => remove(makeEnv(), { calendar: "Lavoro", id: "recurring", etag: '"etag-recurring"', series: true })]) {
+        await expect(action()).rejects.toSatisfy((error: unknown) => errorCode(error) === code);
+      }
+      expect(calls.some((call) => call.method === "PUT" || call.method === "DELETE")).toBe(false);
+    }
+  });
+
+  it("refuses complex recurring and scheduling resources", async () => {
     const recurringCalls = stubFetch({
       multiget: multistatus("cal-lavoro", [
-        { id: "recurring", ics: RECURRING, etag: '"etag-recurring"' },
+        { id: "recurring", ics: RECURRING.replace("SUMMARY:Weekly", "EXDATE;TZID=Europe/Rome:20261029T100000\r\nSUMMARY:Weekly"), etag: '"etag-recurring"' },
       ]),
     });
     await expect(
@@ -1341,6 +1379,16 @@ describe("REST event writes", () => {
     });
     expect(stale.status).toBe(409);
     expect(stale.body.error.code).toBe("conflict");
+  });
+
+  it("requires the REST series flag and validates it", async () => {
+    const calls = stubFetch({ multiget: multistatus("cal-lavoro", [{ id: "recurring", ics: RECURRING, etag: '"etag-recurring"' }]) });
+    const headers = { "If-Match": '"etag-recurring"' };
+    expect((await rest("DELETE", "/v1/calendars/Lavoro/events/recurring?series=invalid", undefined, makeEnv(), headers)).status).toBe(400);
+    expect((await rest("DELETE", "/v1/calendars/Lavoro/events/recurring", undefined, makeEnv(), headers)).status).toBe(422);
+    expect(calls.some((call) => call.method === "DELETE")).toBe(false);
+    expect((await rest("DELETE", "/v1/calendars/Lavoro/events/recurring?series=true", undefined, makeEnv(), headers)).status).toBe(200);
+    expect(calls.some((call) => call.method === "DELETE")).toBe(true);
   });
 
   it("deletes through DELETE with If-Match", async () => {
