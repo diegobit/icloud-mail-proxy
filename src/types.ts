@@ -64,6 +64,7 @@ export interface Env {
   MAX_RDATE_EXDATE?: string;
   MAX_RECURRENCE_CANDIDATES_PER_RULE?: string;
   MAX_RECURRENCE_CANDIDATES_PER_REQUEST?: string;
+  MAX_RECURRENCE_COUNT?: string;
   // Contacts (plans/feature-gap-roadmap.md, unit 2): read-only CardDAV search,
   // off unless CONTACTS_ENABLED is "1". The limiter bounds lookups per IP and
   // fails closed when the binding is missing.

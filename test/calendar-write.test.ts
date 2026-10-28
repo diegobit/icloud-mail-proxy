@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { clearCalDavDiscoveryCache } from "../src/caldav";
+import { createRecurrenceBudget, expandResource, parseResource } from "../src/ical";
 import {
   createEvent,
   deleteEvent,
@@ -585,6 +586,168 @@ describe("createEvent", () => {
       return true;
     });
     expect(logs[0]).toContain('"outcome":"mutation_state_unknown"');
+  });
+});
+
+describe("createEvent recurrence", () => {
+  it("writes a weekly series anchored to a TZID and one RRULE", async () => {
+    const calls = stubFetch();
+    const result = await create(makeEnv(), {
+      ...createInput({ start: "2026-10-19T10:00:00", end: "2026-10-19T11:00:00" }),
+      recurrence: { freq: "WEEKLY", byDay: ["MO", "WE"], count: 5 },
+    });
+
+    expect(result.recurrenceRule).toBe("FREQ=WEEKLY;BYDAY=MO,WE;COUNT=5");
+    expect(result.start).toBe("2026-10-19T10:00:00+02:00");
+    const put = putCall(calls);
+    expect(put.body).toContain("DTSTART;TZID=Europe/Rome:20261019T100000");
+    expect(put.body).toContain("DTEND;TZID=Europe/Rome:20261019T110000");
+    expect(put.body).toContain("RRULE:FREQ=WEEKLY;BYDAY=MO,WE;COUNT=5");
+    // The probe on Scratch showed iCloud adds the VTIMEZONE itself.
+    expect(put.body).not.toContain("VTIMEZONE");
+    expect(put.body).not.toContain("RDATE");
+    expect(put.body).not.toContain("EXDATE");
+    expect(put.body).not.toContain("RECURRENCE-ID");
+  });
+
+  it("keeps the local clock across a DST change when read back", async () => {
+    const calls = stubFetch();
+    const result = await create(makeEnv(), {
+      ...createInput({ start: "2027-03-21T09:00:00", end: "2027-03-21T10:00:00" }),
+      recurrence: { freq: "WEEKLY", count: 3 },
+    });
+    const body = putCall(calls).body;
+
+    const parsed = parseResource(body);
+    const expansion = expandResource(parsed, {
+      from: Date.UTC(2027, 2, 1),
+      to: Date.UTC(2027, 3, 30),
+      budget: createRecurrenceBudget(1000),
+    });
+    expect(expansion.occurrences.map((occurrence) => occurrence.start.utc)).toEqual([
+      Date.UTC(2027, 2, 21, 8), // 09:00 CET
+      Date.UTC(2027, 2, 28, 7), // 09:00 CEST, the day the clocks move
+      Date.UTC(2027, 3, 4, 7),
+    ]);
+    expect(expansion.occurrences.map((occurrence) => occurrence.start.wall.hour)).toEqual([9, 9, 9]);
+    expect(result.recurrenceRule).toBe("FREQ=WEEKLY;COUNT=3");
+  });
+
+  it("accepts an until bound for a timed series and converts it to UTC", async () => {
+    const calls = stubFetch();
+    const result = await create(makeEnv(), {
+      ...createInput(),
+      recurrence: { freq: "MONTHLY", interval: 2, until: "2028-10-22T10:00:00" },
+    });
+    expect(result.recurrenceRule).toBe("FREQ=MONTHLY;INTERVAL=2;UNTIL=20281022T080000Z");
+    expect(putCall(calls).body).toContain("RRULE:FREQ=MONTHLY;INTERVAL=2;UNTIL=20281022T080000Z");
+  });
+
+  it("writes an all-day series with a DATE until and no TZID", async () => {
+    const calls = stubFetch();
+    const result = await create(makeEnv(), {
+      calendar: "Lavoro",
+      id: "series-day",
+      summary: "Rent",
+      start: "2026-10-01",
+      end: "2026-10-02",
+      recurrence: { freq: "MONTHLY", until: "2026-12-01" },
+    });
+    expect(result.recurrenceRule).toBe("FREQ=MONTHLY;UNTIL=20261201");
+    const put = putCall(calls);
+    expect(put.body).toContain("DTSTART;VALUE=DATE:20261001");
+    expect(put.body).toContain("RRULE:FREQ=MONTHLY;UNTIL=20261201");
+    expect(put.body).not.toContain("TZID");
+  });
+
+  it("leaves a one-off event without a rule", async () => {
+    stubFetch();
+    const result = await create(makeEnv(), createInput());
+    expect(result.recurrenceRule).toBeNull();
+  });
+
+  it("refuses an unsupported or unbounded rule before the network", async () => {
+    const cases: { recurrence: Record<string, unknown>; message: string }[] = [
+      { recurrence: { freq: "YEARLY", count: 2 }, message: "recurrence.freq" },
+      { recurrence: { freq: "WEEKLY" }, message: "exactly one of count and until" },
+      {
+        recurrence: { freq: "WEEKLY", count: 2, until: "2026-12-01T10:00:00" },
+        message: "count or until, not both",
+      },
+      { recurrence: { freq: "DAILY", count: 2, interval: 0 }, message: "recurrence.interval" },
+      { recurrence: { freq: "DAILY", count: 2, interval: 13 }, message: "recurrence.interval" },
+      { recurrence: { freq: "DAILY", count: 2, byDay: ["MO"] }, message: "only applies to a WEEKLY" },
+      { recurrence: { freq: "WEEKLY", count: 2, byDay: [] }, message: "at least one weekday" },
+      { recurrence: { freq: "WEEKLY", count: 2, byDay: ["XX"] }, message: "recurrence.byDay" },
+      { recurrence: { freq: "WEEKLY", count: 2, byDay: ["FR"] }, message: "start weekday TH" },
+      { recurrence: { freq: "WEEKLY", count: 0 }, message: "recurrence.count" },
+      { recurrence: { freq: "WEEKLY", count: 2.5 }, message: "recurrence.count" },
+      { recurrence: { freq: "WEEKLY", count: 101 }, message: "recurrence.count" },
+      { recurrence: { freq: "WEEKLY", until: "2026-10-01T10:00:00" }, message: "before start" },
+      { recurrence: { freq: "WEEKLY", until: "2028-10-23T10:00:00" }, message: "within 2 years" },
+      { recurrence: { freq: "WEEKLY", until: "2026-12-01" }, message: "wall clock" },
+    ];
+    for (const entry of cases) {
+      clearCalDavDiscoveryCache();
+      const calls = stubFetch();
+      await expect(
+        create(makeEnv(), { ...createInput(), recurrence: entry.recurrence as never }),
+      ).rejects.toSatisfy((error: unknown) => {
+        expect(errorCode(error)).toBe("invalid_request");
+        expect((error as Error).message).toContain(entry.message);
+        return true;
+      });
+      expect(calls).toHaveLength(0);
+    }
+  });
+
+  it("refuses a timed until on an all-day series", async () => {
+    const calls = stubFetch();
+    await expect(
+      create(makeEnv(), {
+        calendar: "Lavoro",
+        summary: "Rent",
+        start: "2026-10-01",
+        end: "2026-10-02",
+        recurrence: { freq: "MONTHLY", until: "2026-12-01T10:00:00" },
+      }),
+    ).rejects.toSatisfy((error: unknown) => errorCode(error) === "invalid_request");
+    expect(calls).toHaveLength(0);
+  });
+
+  it("lets the created series be updated and deleted through the same API", async () => {
+    const calls = stubFetch();
+    await create(makeEnv(), {
+      ...createInput({ start: "2026-10-19T10:00:00", end: "2026-10-19T11:00:00" }),
+      recurrence: { freq: "WEEKLY", count: 2 },
+    });
+    const created = putCall(calls).body;
+
+    clearCalDavDiscoveryCache();
+    const readBack = stubFetch({
+      multiget: multistatus("cal-lavoro", [
+        { id: "series", ics: created, etag: '"etag-series"' },
+      ]),
+    });
+    const updated = await update(makeEnv(), {
+      calendar: "Lavoro",
+      id: "series",
+      etag: '"etag-series"',
+      summary: "Renamed series",
+    });
+    expect(updated.recurrenceRule).toBe("FREQ=WEEKLY;COUNT=2");
+    const put = readBack.find((call) => call.method === "PUT")!;
+    expect(put.body).toContain("RRULE:FREQ=WEEKLY;COUNT=2");
+    expect(put.body).toContain("SUMMARY:Renamed series");
+    expect(put.body).toContain("DTSTART;TZID=Europe/Rome:20261019T100000");
+
+    await remove(makeEnv(), {
+      calendar: "Lavoro",
+      id: "series",
+      etag: '"etag-series"',
+      series: true,
+    });
+    expect(readBack.some((call) => call.method === "DELETE")).toBe(true);
   });
 });
 
@@ -1306,6 +1469,30 @@ describe("REST event writes", () => {
     expect(response.status).toBe(200);
     expect(response.body.summary).toBe("Rest rename");
     expect(response.body.start).toBe("2026-10-22T10:00:00+02:00");
+  });
+
+  it("accepts recurrence through POST and refuses an unknown recurrence field", async () => {
+    const calls = stubFetch();
+    const created = await rest("POST", "/v1/calendars/Lavoro/events", {
+      id: "rest-series",
+      summary: "Standing meeting",
+      start: "2026-10-19T10:00:00",
+      end: "2026-10-19T11:00:00",
+      recurrence: { freq: "WEEKLY", byDay: ["MO"], count: 4 },
+    });
+    expect(created.status).toBe(201);
+    expect(created.body.recurrenceRule).toBe("FREQ=WEEKLY;BYDAY=MO;COUNT=4");
+    expect(putCall(calls).body).toContain("RRULE:FREQ=WEEKLY;BYDAY=MO;COUNT=4");
+
+    const unknown = await rest("POST", "/v1/calendars/Lavoro/events", {
+      summary: "X",
+      start: "2026-10-19T10:00:00",
+      end: "2026-10-19T11:00:00",
+      recurrence: { freq: "WEEKLY", count: 2, rrule: "FREQ=DAILY" },
+    });
+    expect(unknown.status).toBe(400);
+    expect(unknown.body.error.code).toBe("invalid_request");
+    expect(calls.filter((call) => call.method === "PUT")).toHaveLength(1);
   });
 
   it("answers not_supported for both routes while writes are disabled", async () => {

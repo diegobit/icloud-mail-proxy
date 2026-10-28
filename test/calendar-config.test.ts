@@ -150,6 +150,7 @@ describe("calendarLimits", () => {
       maxRdateExdate: 500,
       maxRecurrenceCandidatesPerRule: 50000,
       maxRecurrenceCandidatesPerRequest: 200000,
+      maxRecurrenceCount: 100,
     });
     expect(DEFAULT_TIME_ZONE).toBe("Europe/Rome");
   });
@@ -159,6 +160,8 @@ describe("calendarLimits", () => {
     expect(calendarLimits(makeEnv({ MAX_CALENDAR_DAYS: "9999" })).maxCalendarDays).toBe(366);
     expect(calendarLimits(makeEnv({ MAX_EVENT_RESULTS: "1000" })).maxEventResults).toBe(200);
     expect(calendarLimits(makeEnv({ MAX_RDATE_EXDATE: "0" })).maxRdateExdate).toBe(0);
+    expect(calendarLimits(makeEnv({ MAX_RECURRENCE_COUNT: "25" })).maxRecurrenceCount).toBe(25);
+    expect(calendarLimits(makeEnv({ MAX_RECURRENCE_COUNT: "5000" })).maxRecurrenceCount).toBe(1000);
   });
 
   it("falls back for malformed, negative or too-small values", () => {

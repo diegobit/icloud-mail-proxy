@@ -53,6 +53,16 @@ const searchSchema = z
   })
   .strict();
 
+const recurrenceBodySchema = z
+  .object({
+    freq: z.enum(["DAILY", "WEEKLY", "MONTHLY"]),
+    interval: z.number().int().min(1).max(12).optional(),
+    byDay: z.array(z.enum(["MO", "TU", "WE", "TH", "FR", "SA", "SU"])).min(1).max(7).optional(),
+    count: z.number().int().min(1).optional(),
+    until: z.string().min(1).optional(),
+  })
+  .strict();
+
 const createEventBodySchema = z
   .object({
     id: z.string().min(1).optional(),
@@ -64,6 +74,7 @@ const createEventBodySchema = z
     location: z.string().nullable().optional(),
     description: z.string().nullable().optional(),
     alarms: z.array(z.object({ minutesBefore: z.number().int().min(0).max(10080) }).strict()).max(2).optional(),
+    recurrence: recurrenceBodySchema.optional(),
   })
   .strict();
 
@@ -91,6 +102,7 @@ const CREATE_EVENT_FIELDS = new Set([
   "location",
   "description",
   "alarms",
+  "recurrence",
 ]);
 const UPDATE_EVENT_FIELDS = new Set([
   "etag",

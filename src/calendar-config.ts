@@ -26,6 +26,8 @@ export interface CalendarLimits {
   maxRdateExdate: number;
   maxRecurrenceCandidatesPerRule: number;
   maxRecurrenceCandidatesPerRequest: number;
+  /** Largest COUNT a created series may carry. */
+  maxRecurrenceCount: number;
 }
 
 /** The zone used when a tool argument omits `timeZone`. */
@@ -114,6 +116,7 @@ export function calendarLimits(env: Env): CalendarLimits {
       1,
       2_000_000,
     ),
+    maxRecurrenceCount: positiveInt(env.MAX_RECURRENCE_COUNT, 100, 1, 1000),
   };
 }
 

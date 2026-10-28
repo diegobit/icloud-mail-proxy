@@ -657,7 +657,8 @@ curl -X POST -H "Authorization: Bearer $API_TOKEN" \
   "start": "2026-10-23T09:00:00+02:00",
   "end": "2026-10-23T10:00:00+02:00",
   "timeZone": "Europe/Rome",
-  "allDay": false
+  "allDay": false,
+  "recurrenceRule": null
 }
 ```
 
@@ -665,13 +666,31 @@ curl -X POST -H "Authorization: Bearer $API_TOKEN" \
 (default `Europe/Rome`), or `YYYY-MM-DD` for an all-day event. `end` is
 exclusive. `allDay` is inferred from the form of `start`/`end` when omitted; a
 value that contradicts the forms, a mixed timed/all-day pair, or a `timeZone`
-on an all-day event is refused. Timed values are stored as UTC; all-day values
-are stored as `DATE`. `summary` is at most 200 characters; `location` and
+on an all-day event is refused. A one-off timed event is stored as UTC and an
+all-day value as `DATE`. `summary` is at most 200 characters; `location` and
 `description` are at most 8 KB each. An optional `id` makes a retry
 idempotent: if the resource already exists the call returns `409
 already_exists`, so read and compare instead of creating a second copy.
 Unknown body keys are refused with `400 unsupported_field`; there is no way to
 pass arbitrary iCalendar properties.
+
+An optional `recurrence` writes one simple series:
+
+```json
+{"recurrence": {"freq": "WEEKLY", "byDay": ["MO", "WE"], "count": 5}}
+```
+
+`freq` is `DAILY`, `WEEKLY` or `MONTHLY`; `interval` is 1–12 (default 1);
+`byDay` is a list of weekday codes and only applies to `WEEKLY`, where it must
+include the start weekday; exactly one of
+`count` (up to `MAX_RECURRENCE_COUNT`, default 100) and `until` is required, so
+there is no open-ended series. `until` is a wall clock in the event's zone for
+a timed series and a date for an all-day one, and must fall between the start
+and two years out. The writer emits the single `RRULE` and nothing else about
+recurrence: no `RDATE`, `EXDATE` or override. A timed series is anchored with
+`DTSTART;TZID=<timeZone>` rather than UTC, so 09:00 stays 09:00 across a
+daylight-saving change; iCloud stores its own `VTIMEZONE` for it. The response
+echoes the rule as `recurrenceRule` (`null` for a one-off event).
 
 `PUT .../:id` takes `etag` plus any of `summary`, `start`, `end`, `timeZone`,
 `allDay`, `location`, `description`, `alarms`. It is a partial update: only the fields
@@ -991,15 +1010,19 @@ A manageable simple series has one RRULE with DAILY, WEEKLY or MONTHLY frequency
 interval 1–12, exactly one of COUNT or UNTIL, and optional non-ordinal BYDAY
 only for WEEKLY. It has no RDATE, EXDATE, overrides, organizer or attendees.
 Only summary, location, description and alarms can be updated on its master;
-its times and rule cannot be changed. Creation of recurring events is not supported.
+its times and rule cannot be changed. `create_event` accepts exactly that shape
+as `recurrence` and nothing more complex; changing the repeat of an existing
+series is not supported — delete it and create it again.
 
 Writes are structured and narrow:
 
 - `start` and `end` are wall clocks `YYYY-MM-DDTHH:MM:SS` read in an IANA
-  `timeZone` (default `Europe/Rome`), or `YYYY-MM-DD` for all-day values. The
-  server stores timed values as UTC and all-day values as `DATE`; it never
-  writes a bare `TZID`, `RRULE`, `RDATE`, `EXDATE`, `ATTENDEE`, `ORGANIZER` or
-  `VALARM` except for the optional display alarms described above. `end` is exclusive.
+  `timeZone` (default `Europe/Rome`), or `YYYY-MM-DD` for all-day values. A
+  one-off timed event is stored as UTC and an all-day value as `DATE`; a timed
+  series is stored as `DTSTART;TZID=<timeZone>` with a single `RRULE` so its
+  local time survives a DST change. The server never writes `RDATE`, `EXDATE`,
+  `RECURRENCE-ID`, `ATTENDEE`, `ORGANIZER` or `VALARM` beyond the optional
+  display alarms described above. `end` is exclusive.
 - `update_event` requires exactly one strong, quoted ETag from `get_event`.
   The server re-reads the resource, checks the ETag again, refuses complex recurrence
   and scheduling resources, then PUTs with `If-Match`. A stale tag returns `409
@@ -1173,7 +1196,8 @@ set `"CONTACTS_ENABLED": "1"` in the deployment's vars and redeploy.
   `src/send-policy.ts`; a `0` daily cap refuses every send. For calendars,
   `MAX_CALENDAR_DAYS`, `MAX_EVENT_RESULTS`, `MAX_RESOURCE_BYTES`,
   `MAX_RESOURCES_PER_QUERY`, `MAX_OCCURRENCES_PER_RESOURCE`,
-  `MAX_RDATE_EXDATE` and the two recurrence budgets bound reads;
+  `MAX_RDATE_EXDATE` and the two recurrence budgets bound reads, and
+  `MAX_RECURRENCE_COUNT` bounds the `count` a created series may carry;
   `MAX_RESPONSE_BYTES` bounds every CalDAV response. `ALLOWED_CALENDARS`
   selects what is reachable, and `CALENDAR_WRITE` gates all writes. Contact
   searches are capped by `MAX_CONTACT_RESULTS` and `CONTACTS_LIMITER`.

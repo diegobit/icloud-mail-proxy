@@ -1,12 +1,15 @@
 # Feature-gap roadmap
 
-**Status (2026-10-28):** specification; nothing implemented. Baseline is
-`origin/main` at `8d2d9b8`. Branch from it, not from an older docs branch: at
-that commit the Worker has 10 mail tools (`list_mailboxes`, `search_mail`,
-`get_mail_message`, `get_mail_attachment`, `read_mail`, `archive_mail`,
-`delete_mail`, `restore_mail`, `send_mail`, `save_draft`) and 6 calendar tools,
-16 in total. README still says eight mail tools and 14 in total; correct it the
-first time a unit touches the tool list.
+**Status (2026-10-28):** units 1–7 implemented locally on
+`t3/implement-feature-gap-roadmap`; unit 4b is blocked by its charset probe;
+units 6 and 7 have no live acceptance or device confirmation yet. Nothing is
+deployed. Baseline is `origin/main` at `8d2d9b8`. Branch from it, not from an
+older docs branch: at that commit the Worker has 10 mail tools
+(`list_mailboxes`, `search_mail`, `get_mail_message`, `get_mail_attachment`,
+`read_mail`, `archive_mail`, `delete_mail`, `restore_mail`, `send_mail`,
+`save_draft`) and 6 calendar tools, 16 in total. The implementation adds
+contacts, search filters, `set_mail_flag` and event reminders; README states
+the current tool set.
 
 **Why:** OpenAI shipped first-party iCloud Mail and iCloud Calendar plugins for
 ChatGPT (2026-10-27). Comparing their tool lists with this proxy showed that it
@@ -388,8 +391,25 @@ delete and master update on a simple series, refusal when overrides or
 unchanged refusal on an override or attendee series.
 
 **Effort:** M for creation, plus M for the series delete/update it needs.
-**Status:** ready, gated on the `Scratch` probe for the time-zone question.
-Do not release creation without the series update and delete.
+**Status:** creation implemented locally with series management (2026-10-28);
+not deployed and not accepted live.
+
+**Implementation (2026-10-28).** `src/calendar-recurrence.ts` validates the
+caller's repeat and renders the single RRULE value; `create_event` writes it
+and echoes it as `recurrenceRule`, while `update_event` returns the existing
+rule unchanged. The Scratch probe answered the time-zone question in favour of
+the optional block: iCloud accepted `DTSTART;TZID=Europe/Rome` without a
+`VTIMEZONE` and added one itself, so the writer emits the TZID and no
+`VTIMEZONE`; a local test expands a weekly Rome series across the 2027
+spring-forward and asserts 09:00 local at 08:00Z and 07:00Z. A one-off event
+keeps the UTC form. `MAX_RECURRENCE_COUNT` (default 100) bounds `count`, and
+`until` must be between the start and two years out; a WEEKLY `byDay` must
+include the start weekday, since RFC 5545 leaves an unsynchronised rule
+undefined. Both the MCP schema and
+the REST body accept the same shape and refuse an unknown key. The tests cover
+the serialisation, every refusal path without a network call, an all-day
+`UNTIL` as `DATE`, and create → update → delete of one series through the same
+API.
 
 ## Deployment and acceptance
 
@@ -447,3 +467,13 @@ Alarm input, output and selective replacement have been started, with a local
 parser/mutation test. Unit 6 still needs complete refusal and integration tests,
 live acceptance and a review. Unit 7 is not implemented. Neither unit is ready
 for release. Device notification delivery remains unverified.
+
+### Recurrence creation (2026-10-28)
+
+Unit 7's creation path is implemented and the local suite passes: `npm test`
+(873 tests), `npm run typecheck` and `npm run check:bundle`. The series
+update/delete it depends on was already committed. Not deployed, so there is no
+version id or live tool count, and no live acceptance has been run: creating a
+real series and reading it back on a device still needs the Scratch calendar,
+and device delivery of a display alarm remains unverified. Unit 6's alarm writer
+and device alert probe likewise still need live acceptance before release.

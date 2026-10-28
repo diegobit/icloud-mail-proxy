@@ -95,6 +95,9 @@
     "MAX_RDATE_EXDATE": "500",
     "MAX_RECURRENCE_CANDIDATES_PER_RULE": "50000",
     "MAX_RECURRENCE_CANDIDATES_PER_REQUEST": "200000",
+    // Largest COUNT create_event accepts; an until bound is separately capped
+    // at two years (plans/feature-gap-roadmap.md, unit 7).
+    "MAX_RECURRENCE_COUNT": "100",
     // Contacts (plans/feature-gap-roadmap.md, unit 2): read-only CardDAV
     // search. "0" registers no tools, no REST routes and no scope; "1" offers
     // contacts:read. MAX_CONTACT_RESULTS caps one search (hard maximum 50).

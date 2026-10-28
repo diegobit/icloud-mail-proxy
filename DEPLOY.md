@@ -129,7 +129,8 @@ The read bounds are base vars, not secrets: `MAX_CALENDAR_DAYS` (90),
 `MAX_EVENT_RESULTS` (50), `MAX_RESPONSE_BYTES` (4194304), `MAX_RESOURCE_BYTES`
 (262144), `MAX_RESOURCES_PER_QUERY` (300), `MAX_OCCURRENCES_PER_RESOURCE`
 (200), `MAX_RDATE_EXDATE` (500), `MAX_RECURRENCE_CANDIDATES_PER_RULE` (50000),
-`MAX_RECURRENCE_CANDIDATES_PER_REQUEST` (200000) and `CALDAV_TIMEOUT_MS`
+`MAX_RECURRENCE_CANDIDATES_PER_REQUEST` (200000), `MAX_RECURRENCE_COUNT` (100)
+and `CALDAV_TIMEOUT_MS`
 (15000). `CALENDAR_WRITE_LIMITER` is the per-IP rate limiter for writes (30 per
 minute); if the binding is missing while the write flag is on, writes fail
 closed instead of running unlimited.
