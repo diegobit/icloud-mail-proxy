@@ -364,8 +364,13 @@ export async function runSetup({
     defaultValue: prior.allowedMailboxes ?? baseVars.ALLOWED_MAILBOXES,
   });
 
+  const contactsEnabled = await prompts.confirm(
+    "Let connected agents search your contacts? Read-only: names, emails, phone numbers and companies",
+    { defaultValue: typeof prior.contactsEnabled === "boolean" ? prior.contactsEnabled : baseVars.CONTACTS_ENABLED === "1" },
+  );
+
   const setupConfigVars = () => {
-    const vars = { ALLOWED_MAILBOXES: allowedMailboxes };
+    const vars = { ALLOWED_MAILBOXES: allowedMailboxes, CONTACTS_ENABLED: contactsEnabled ? "1" : "0" };
     // An absent value inherits the base config. A persisted empty string means
     // the owner explicitly disabled the domain and must override a non-empty
     // base.
@@ -380,6 +385,7 @@ export async function runSetup({
   log(`  ${operationLabel} "${target.name}" in ${account.name} (${account.id})`);
   log(`  folders: ${allowedMailboxes}`);
   log(`  calendars: ${accessLabel(allowedCalendars ?? (baseCalendars.trim() ? baseCalendars : undefined))}`);
+  log(`  contacts: ${contactsEnabled ? "read-only search" : "disabled"}`);
   log(
     `  secrets: ${
       Object.keys(secretsToUpload).length === 0
@@ -418,6 +424,7 @@ export async function runSetup({
       workerName: target.name,
       allowedMailboxes,
       ...(allowedCalendars !== undefined ? { allowedCalendars } : {}),
+      contactsEnabled,
       url,
       configPath,
       stage,
@@ -510,6 +517,7 @@ export async function runSetup({
     mailbox: allowedMailboxes.split(",")[0],
     calendars: allowedCalendars ?? baseCalendars,
     calendarWrite: baseVars.CALENDAR_WRITE === "1",
+    contacts: contactsEnabled,
     calendar: preferredCalendarName,
   });
   log(describeChecks(result.checks));

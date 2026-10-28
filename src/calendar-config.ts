@@ -6,6 +6,7 @@
 // pattern. An empty value disables the domain: no tools, no routes, no scopes.
 // `*` must be alone: `*,Work` is a configuration error, not a superset.
 
+import { contactsEnabled } from "./contacts-core";
 import type { Env } from "./types";
 import type { ResourceScope, Scope } from "./scopes";
 
@@ -73,6 +74,7 @@ export function enabledResourceScopes(env: Env): ResourceScope[] {
     scopes.push("calendar:read");
     if (config.calendarWrite) scopes.push("calendar:write", "calendar:delete");
   }
+  if (contactsEnabled(env)) scopes.push("contacts:read");
   return scopes;
 }
 
@@ -88,6 +90,7 @@ export function supportedScopes(env: Env): Scope[] {
 export function requiredScopes(env: Env): ResourceScope[] {
   const scopes: ResourceScope[] = ["mail:read"];
   if (calendarsEnabled(env)) scopes.push("calendar:read");
+  if (contactsEnabled(env)) scopes.push("contacts:read");
   return scopes;
 }
 

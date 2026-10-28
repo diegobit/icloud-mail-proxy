@@ -59,6 +59,7 @@ const MAIL_TOOLS = [
 const MAIL_SCOPES = ["mail:read", "mail:modify", "mail:trash", "mail:send"];
 const CALENDAR_READ_TOOLS = ["list_calendars", "list_events", "get_event"];
 const CALENDAR_WRITE_TOOLS = ["create_event", "update_event", "delete_event"];
+const CONTACT_TOOLS = ["search_contacts", "get_contact"];
 const ATTEMPT_TIMEOUT_MESSAGE = "timed out waiting for the endpoint";
 
 const defaultSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -168,20 +169,22 @@ function calendarDomainEnabled(allowlist) {
 }
 
 /** The tools the configured deployment must expose. */
-export function expectedToolNames({ calendars = "", calendarWrite = false } = {}) {
+export function expectedToolNames({ calendars = "", calendarWrite = false, contacts = false } = {}) {
   const names = [...MAIL_TOOLS];
   if (calendarDomainEnabled(calendars)) {
     names.push(...CALENDAR_READ_TOOLS);
     if (calendarWrite) names.push(...CALENDAR_WRITE_TOOLS);
   }
+  if (contacts) names.push(...CONTACT_TOOLS);
   return names;
 }
 
 /** Tools that must not appear because their domain or write flag is off. */
-export function forbiddenToolNames({ calendars = "", calendarWrite = false } = {}) {
+export function forbiddenToolNames({ calendars = "", calendarWrite = false, contacts = false } = {}) {
   const names = [];
   if (!calendarDomainEnabled(calendars)) names.push(...CALENDAR_READ_TOOLS, ...CALENDAR_WRITE_TOOLS);
   else if (!calendarWrite) names.push(...CALENDAR_WRITE_TOOLS);
+  if (!contacts) names.push(...CONTACT_TOOLS);
   return names;
 }
 
@@ -261,6 +264,7 @@ export async function verifyDeployment({
   mailbox,
   calendars = "",
   calendarWrite = false,
+  contacts = false,
   calendar,
   fetchImpl = fetch,
   sleep = defaultSleep,
@@ -331,6 +335,7 @@ export async function verifyDeployment({
       deadlineMs,
       calendars: calendarAllowlist,
       calendarWrite,
+      contacts,
     }),
   );
 
@@ -565,6 +570,7 @@ async function checkMcp({
   deadlineMs,
   calendars = "",
   calendarWrite = false,
+  contacts = false,
 }) {
   const name = "MCP initialize and tools/list";
   const headers = {
@@ -619,9 +625,9 @@ async function checkMcp({
   }
 
   const actual = new Set(tools.map((tool) => tool.name));
-  const expected = expectedToolNames({ calendars, calendarWrite });
+  const expected = expectedToolNames({ calendars, calendarWrite, contacts });
   const expectedSet = new Set(expected);
-  const forbidden = forbiddenToolNames({ calendars, calendarWrite });
+  const forbidden = forbiddenToolNames({ calendars, calendarWrite, contacts });
   const forbiddenSet = new Set(forbidden);
   const missing = expected.filter((toolName) => !actual.has(toolName));
   const disabled = forbidden.filter((toolName) => actual.has(toolName));

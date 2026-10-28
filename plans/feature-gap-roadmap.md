@@ -158,7 +158,39 @@ discovery and shard redirect with a fake server, query below minimum length,
 result cap, disabled-domain 404, scope refusal, limiter fail-closed, audit line
 has no query.
 
-**Effort:** M. **Status:** ready, gated on the probe.
+**Effort:** M. **Status:** implemented (unit 2 commit), not deployed.
+
+**Probe (2026-10-28, `scripts/probe-carddav.mjs`, read-only):**
+
+- Discovery works with the app-specific password: `PROPFIND` on
+  `https://contacts.icloud.com/` and on the principal both answer 207; no 401.
+- Principal `https://contacts.icloud.com/<dsid>/principal/`,
+  `addressbook-home-set` `https://pNN-contacts.icloud.com/<dsid>/carddavhome/`,
+  one address book at `/<dsid>/carddavhome/card/` (no display name).
+- 385 cards, all vCard 3.0, every line ending encoded as `&#13;` in the XML
+  (the shared XML parser leaves numeric references undecoded, so the contacts
+  code decodes them before parsing). 169 cards use `itemN.` group prefixes,
+  181 have folded lines, 166 carry a `PHOTO`, 71 a `NOTE`.
+- `addressbook-query` with `text-match` works server-side: `EMAIL contains "@"`
+  returns exactly the 122 cards with an email, a nonsense `FN` returns 0, `a`
+  and `A` return the same 333 cards (case-insensitive), and `test="anyof"` over
+  `FN` and `EMAIL` works. `<limit><nresults>` and per-property
+  `<address-data><prop/>` selection are ignored: every match comes back whole,
+  photos included (the whole book is about 338 KB). So no list-and-filter
+  fallback and no `MAX_CONTACT_RESOURCES` was needed; the Worker caps the list
+  and strips fields itself, and `MAX_RESPONSE_BYTES` bounds the response.
+- ETags are strong and quoted; hrefs are `<uuid>.vcf` (214) or another
+  `[A-Za-z0-9._-]` name (171), so the resource name is used as the contact id.
+  `GET` on a card answers `text/plain`; `addressbook-multiget` works.
+- `OPTIONS` advertises `addressbook, sync-collection` and allows writes; the
+  Worker's CardDAV service allows only `PROPFIND` and `REPORT`.
+
+Design notes: the CardDAV client reuses the CalDAV transport through a
+`DavService` (bootstrap host, shard pattern, exact home directory, allowed
+methods), so pinning, redirects, size and timeout rules are shared. The search
+matches `FN`, `NICKNAME`, `EMAIL` and `ORG`. `get_contact` is also limited and
+audited (`contact_read`). The REST search takes `q` in the URL as specified;
+unlike mail search terms it can therefore appear in access logs.
 
 ## 3. Search events across calendars, notes included
 

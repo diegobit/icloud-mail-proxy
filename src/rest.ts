@@ -5,6 +5,7 @@
 import { z } from "zod";
 import { CalDavError } from "./caldav";
 import { calendarWritesEnabled, calendarsEnabled } from "./calendar-config";
+import { contactsEnabled, getContact, searchContacts } from "./contacts-core";
 import { listCalendars } from "./calendar-core";
 import { getEvent, listEvents } from "./calendar-events";
 import { createEvent, deleteEvent, updateEvent } from "./calendar-write";
@@ -453,6 +454,33 @@ async function handleDeleteEvent(
  * gets its own 503 body instead of the generic 502/504 mapError would give;
  * anything else (ApiError, unexpected errors) still goes through mapError.
  */
+function contactsDisabled(env: Env): Response | null {
+  if (contactsEnabled(env)) return null;
+  return errorBody("not_supported", "contacts are disabled: CONTACTS_ENABLED is not 1", 404);
+}
+
+async function handleSearchContacts(request: Request, url: URL, env: Env): Promise<Response> {
+  const off = contactsDisabled(env);
+  if (off) return off;
+  const result = await searchContacts(
+    env,
+    { query: url.searchParams.get("q") ?? "", limit: queryLimit(url) },
+    { principal: "bearer", rateLimitKey: request.headers.get("CF-Connecting-IP") ?? "unknown" },
+  );
+  return json(result);
+}
+
+async function handleGetContact(request: Request, idSegment: string, env: Env): Promise<Response> {
+  const off = contactsDisabled(env);
+  if (off) return off;
+  const contact = await getContact(
+    env,
+    { id: decodeSegment(idSegment, "contact id") },
+    { principal: "bearer", rateLimitKey: request.headers.get("CF-Connecting-IP") ?? "unknown" },
+  );
+  return json(contact);
+}
+
 async function handleHealthz(env: Env): Promise<Response> {
   try {
     const result = await healthCheck(env);
@@ -548,6 +576,26 @@ export async function handleRest(request: Request, env: Env): Promise<Response> 
       segments[3] === "events"
     ) {
       return await handleDeleteEvent(request, segments[2], segments[4], env);
+    }
+
+    // GET /v1/contacts?q=
+    if (
+      request.method === "GET" &&
+      segments.length === 2 &&
+      segments[0] === "v1" &&
+      segments[1] === "contacts"
+    ) {
+      return await handleSearchContacts(request, url, env);
+    }
+
+    // GET /v1/contacts/:id
+    if (
+      request.method === "GET" &&
+      segments.length === 3 &&
+      segments[0] === "v1" &&
+      segments[1] === "contacts"
+    ) {
+      return await handleGetContact(request, segments[2], env);
     }
 
     // POST /v1/search

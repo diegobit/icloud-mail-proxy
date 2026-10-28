@@ -26,7 +26,7 @@ const ledger = { get: vi.fn(), idFromName: vi.fn(), send: vi.fn(), saveDraft: vi
 const limiter = { limit: vi.fn() };
 const fetchSpy = vi.fn();
 
-function makeEnv(): Env {
+function makeEnv(overrides: Partial<Env> = {}): Env {
   ledger.idFromName.mockReturnValue("ledger-id");
   ledger.get.mockReturnValue({ send: ledger.send, saveDraft: ledger.saveDraft });
   ledger.send.mockResolvedValue({ ok: false, code: "quota_exceeded", message: "test ledger" });
@@ -50,7 +50,19 @@ function makeEnv(): Env {
     CALENDAR_WRITE: "1",
     SEND_LEDGER: { get: ledger.get, idFromName: ledger.idFromName },
     CALENDAR_WRITE_LIMITER: limiter,
+    CONTACTS_ENABLED: "1",
+    CONTACTS_LIMITER: limiter,
+    ...overrides,
   } as unknown as Env;
+}
+
+async function connect(authority: Authority, env: Env) {
+  const server = buildServer(env, "oauth:test-client", authority, "203.0.113.7");
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  await server.connect(serverTransport);
+  const client = new Client({ name: "scope-test", version: "1.0.0" });
+  await client.connect(clientTransport);
+  return client;
 }
 
 async function callTool(authority: Authority, name: string, args: Record<string, unknown>) {
@@ -96,6 +108,7 @@ const ALL_SCOPES = [
   "calendar:read",
   "calendar:write",
   "calendar:delete",
+  "contacts:read",
 ];
 
 /** Scopes that satisfy `scope`: itself, plus the write scopes implying a read. */
@@ -208,5 +221,54 @@ describe("calendar tool scopes", () => {
     const result = await callTool(oauth("calendar:read", "calendar:write", "calendar:delete"), "list_mailboxes", {});
     expect(result.text).toContain("requires the mail:read scope");
     expectNoNetwork();
+  });
+});
+
+describe("contact tool scopes", () => {
+  for (const [tool, args] of [
+    ["search_contacts", { query: "Rossi" }],
+    ["get_contact", { id: "anna-bianchi" }],
+  ] as const) {
+    for (const held of ALL_SCOPES.filter((scope) => scope !== "contacts:read")) {
+      it(`${tool} refuses a grant holding only ${held} before any network call`, async () => {
+        const result = await callTool(oauth(held), tool, args);
+        expect(result.text).toBe(
+          "insufficient_scope: this operation requires the contacts:read scope; reconnect and approve it",
+        );
+        expectNoNetwork();
+      });
+    }
+  }
+
+  it("passes the guard with contacts:read and reaches the limiter", async () => {
+    const result = await callTool(oauth("contacts:read"), "search_contacts", { query: "Rossi" });
+    expect(result.text).toContain("rate_limited");
+    expect(limiter.limit).toHaveBeenCalledWith({ key: "203.0.113.7" });
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("does not let contacts:read reach mail", async () => {
+    const result = await callTool(oauth("contacts:read"), "list_mailboxes", {});
+    expect(result.text).toContain("requires the mail:read scope");
+  });
+
+  it("registers the contact tools only when contacts are enabled", async () => {
+    const on = await connect(bearer, makeEnv());
+    const off = await connect(bearer, makeEnv({ CONTACTS_ENABLED: "0" }));
+    try {
+      const onNames = (await on.listTools()).tools.map((tool) => tool.name);
+      const offNames = (await off.listTools()).tools.map((tool) => tool.name);
+      expect(onNames).toEqual(expect.arrayContaining(["search_contacts", "get_contact"]));
+      expect(onNames).toHaveLength(18);
+      expect(offNames).not.toContain("search_contacts");
+      expect(offNames).not.toContain("get_contact");
+      expect(offNames).toHaveLength(16);
+      const search = (await on.listTools()).tools.find((tool) => tool.name === "search_contacts");
+      expect(search?.annotations).toMatchObject({ readOnlyHint: true });
+      expect(search?.description).toContain("untrusted");
+    } finally {
+      await on.close();
+      await off.close();
+    }
   });
 });

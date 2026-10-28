@@ -30,7 +30,9 @@
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["SendLedger"] }],
   // Per-IP rate limiters: /oauth/register and /oauth/token are unauthenticated
   // and write to OAUTH_KV (free tier: 1,000 writes/day); CALENDAR_WRITE_LIMITER
-  // bounds CalDAV PUTs to 30 per minute per connecting IP.
+  // bounds CalDAV PUTs to 30 per minute per connecting IP; CONTACTS_LIMITER
+  // bounds contact searches and lookups the same way, so an injected agent
+  // cannot harvest the address book quickly.
   "ratelimits": [
     {
       "name": "OAUTH_REGISTER_LIMITER",
@@ -45,6 +47,11 @@
     {
       "name": "CALENDAR_WRITE_LIMITER",
       "namespace_id": "1003",
+      "simple": { "limit": 30, "period": 60 }
+    },
+    {
+      "name": "CONTACTS_LIMITER",
+      "namespace_id": "1004",
       "simple": { "limit": 30, "period": 60 }
     }
   ],
@@ -87,6 +94,11 @@
     "MAX_OCCURRENCES_PER_RESOURCE": "200",
     "MAX_RDATE_EXDATE": "500",
     "MAX_RECURRENCE_CANDIDATES_PER_RULE": "50000",
-    "MAX_RECURRENCE_CANDIDATES_PER_REQUEST": "200000"
+    "MAX_RECURRENCE_CANDIDATES_PER_REQUEST": "200000",
+    // Contacts (plans/feature-gap-roadmap.md, unit 2): read-only CardDAV
+    // search. "0" registers no tools, no REST routes and no scope; "1" offers
+    // contacts:read. MAX_CONTACT_RESULTS caps one search (hard maximum 50).
+    "CONTACTS_ENABLED": "0",
+    "MAX_CONTACT_RESULTS": "10"
   }
 }

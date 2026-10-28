@@ -293,6 +293,34 @@ describe("POST /authorize", () => {
     expect(body).toContain("Delete events (calendar:delete)");
   });
 
+  it("offers contacts:read only when contacts are enabled, and refuses it otherwise", async () => {
+    const enabled = await handleAuthorize(
+      postForm("/authorize", { authQuery: AUTH_QUERY, token: TOKEN }),
+      fakeEnv(fakeHelpers(), TOKEN, { CONTACTS_ENABLED: "1" }),
+    );
+    const enabledBody = await enabled.text();
+    expect(enabledBody).toContain('name="scope" value="contacts:read"');
+    expect(enabledBody).toContain("Search contacts (contacts:read)");
+
+    const disabled = await handleAuthorize(
+      postForm("/authorize", { authQuery: AUTH_QUERY, token: TOKEN }),
+      fakeEnv(fakeHelpers(), TOKEN),
+    );
+    expect(await disabled.text()).not.toContain('value="contacts:read"');
+
+    const helpers = fakeHelpers();
+    const forged = await handleAuthorize(
+      postForm(
+        "/authorize/consent",
+        { handle: "handle-1", action: "approve", epoch: await grantEpoch(TOKEN), scope: ["mail:read", "contacts:read"] },
+        true,
+      ),
+      fakeEnv(helpers),
+    );
+    expect(forged.status).toBe(400);
+    expect(helpers.approveConsent).not.toHaveBeenCalled();
+  });
+
   it("rejects a token submission without an S256 challenge before consent", async () => {
     const helpers = fakeHelpers();
     helpers.parseAuthRequest.mockResolvedValueOnce({ ...AUTH_REQUEST, codeChallenge: undefined });

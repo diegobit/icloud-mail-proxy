@@ -53,6 +53,12 @@ const SCOPE_COPY: Record<ResourceScope, { label: string; detail: string }> = {
     label: "Create and update events",
     detail: "Add events and change existing ones. Deleting is not included.",
   },
+  "contacts:read": {
+    label: "Search contacts",
+    detail:
+      "Look up contacts by name, email or company and read their names, email addresses, phone " +
+      "numbers and company. Notes, addresses and birthdays are never shared; contacts cannot be changed.",
+  },
   "calendar:delete": {
     label: "Delete events",
     detail:

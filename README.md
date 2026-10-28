@@ -10,7 +10,9 @@ a message or move it to iCloud's trash, one message at a time.
 
 When calendars are enabled, the same Worker, token and MCP connector also read
 and write iCloud calendar events over CalDAV — no second deployment, no second
-connector. Calendars are opt-in; see [Calendars](#calendars).
+connector. Calendars are opt-in; see [Calendars](#calendars). So is a
+read-only contacts search, for resolving "write to Marco" to an address; see
+[Contacts](#contacts).
 
 One deployment serves one iCloud account and lives in its owner's Cloudflare
 account. The examples in this README use the author's instance at
@@ -241,7 +243,9 @@ shard (`pNN-caldav.icloud.com`). The same Apple app-specific password
 authenticates it. Reads are bounded `calendar-query` / `calendar-multiget`
 REPORTs; writes are single-resource PUTs with `If-None-Match: *` or `If-Match`.
 Calendars are opt-in through `ALLOWED_CALENDARS`, and writes have their own
-flag; see [Calendars](#calendars).
+flag; see [Calendars](#calendars). Contacts use the same transport against
+`contacts.icloud.com` and its `pNN-contacts` shard, with only `PROPFIND` and
+`REPORT` allowed; see [Contacts](#contacts).
 
 The OAuth layer (`src/index.ts`, `src/oauth-authorize.ts`,
 `src/oauth-pages.ts`) rides on `@cloudflare/workers-oauth-provider`: it serves
@@ -702,6 +706,46 @@ the body shown above; delete returns the confirmation shape. `etag` may be
 `null` when iCloud omits it from the PUT response; call `get_event` before the
 next update or delete.
 
+### `GET /v1/contacts?q=` and `GET /v1/contacts/:id`
+
+Search the address book, or read one contact by the `id` a search returned.
+These routes exist only when `CONTACTS_ENABLED=1`; otherwise they answer `404
+not_supported`. `q` is mandatory and must be at least 2 characters after
+trimming (`400 query_too_short`): there is no way to list every contact. It is
+matched case-insensitively as a substring of the name, nickname, email
+addresses and company. `limit` is optional and capped by `MAX_CONTACT_RESULTS`
+(default 10).
+
+```
+curl -H "Authorization: Bearer $API_TOKEN" \
+  "https://icloud-mail.diegobit.com/v1/contacts?q=rossi"
+```
+
+```json
+{
+  "contacts": [
+    {
+      "id": "A1B2C3D4-0000-0000-0000-000000000001",
+      "untrustedContactContent": {
+        "name": "Marco Rossi",
+        "emails": ["marco@example.org"],
+        "phones": ["+39 333 1234567"],
+        "organization": "Studio Rossi"
+      }
+    }
+  ],
+  "total": 1,
+  "truncated": false
+}
+```
+
+Results are sorted by name. `total` counts every match; `truncated` is true
+when more matched than were returned, so narrow the query. Only these fields
+exist: notes, postal addresses, birthdays, photos and related names are never
+read out of the card. `GET /v1/contacts/:id` returns one entry of the same
+shape, or `404 not_found`. More than 30 lookups per minute from one IP return
+`429 rate_limited`.
+
 ## MCP
 
 A stateless Streamable HTTP MCP server is served at `/mcp`. It exposes ten
@@ -714,7 +758,8 @@ message read, and two sending tools: `send_mail` (a new
 message, a reply or a forward, submitted immediately) and `save_draft` (the same
 message put into iCloud's `Drafts` folder, to be finished from any mail app).
 When calendars are enabled it adds up to six more: three read tools and three
-write tools. Write tools appear only when `CALENDAR_WRITE=1`. A fresh
+write tools. Write tools appear only when `CALENDAR_WRITE=1`. When contacts are
+enabled it adds `search_contacts` and `get_contact`. A fresh
 `McpServer` is built per request; no session state is held between calls.
 
 `/mcp` accepts two credentials: the static bearer token (Claude Code, opencode,
@@ -724,7 +769,7 @@ The server publishes its OAuth metadata under `/.well-known/`; the consent flow
 asks for the API token once per connector and binds the grant to it. The
 consent page offers the scopes this deployment has enabled — `mail:read`,
 `mail:modify`, `mail:trash` and `mail:send`, plus `calendar:read`,
-`calendar:write` and `calendar:delete` — preselected with what the client
+`calendar:write`, `calendar:delete` and `contacts:read` — preselected with what the client
 requested, and the owner may deselect. The stored grant can only narrow that
 offer. Each scope reaches only its own tools (see the table under
 [Calendars](#calendars)): `mail:read` only reads; `mail:modify` marks read,
@@ -872,7 +917,7 @@ redeploy:
   ```
 
 The MCP surface adds up to six tools; with the ten mail tools that is 16 in
-a deployment with calendars and writes on:
+a deployment with calendars and writes on, and 18 with contacts enabled too:
 
 | Tool | Scope | Enabled by |
 | --- | --- | --- |
@@ -883,6 +928,7 @@ a deployment with calendars and writes on:
 | `list_calendars`, `list_events`, `get_event` | `calendar:read` | `ALLOWED_CALENDARS` |
 | `create_event`, `update_event` | `calendar:write` (implies `calendar:read`) | `ALLOWED_CALENDARS` + `CALENDAR_WRITE=1` |
 | `delete_event` | `calendar:delete` (implies `calendar:read`) | `ALLOWED_CALENDARS` + `CALENDAR_WRITE=1` |
+| `search_contacts`, `get_contact` | `contacts:read` | `CONTACTS_ENABLED=1` |
 
 The static bearer token reaches every enabled tool. OAuth connectors get the
 scopes selected on the consent page, which is why an older grant holding only
@@ -972,6 +1018,32 @@ lists, so the former reminder tools, routes, scopes and configuration were
 removed. A future reminder integration needs a different design (for example an
 EventKit companion on a Mac); it is not part of this Worker.
 
+## Contacts
+
+A read-only search over the iCloud address book (CardDAV), so an agent can
+resolve a person the user names to an address without hunting through old
+mail. It is off by default: with `CONTACTS_ENABLED` at `0` the Worker registers
+no contact tools, the REST routes answer `404 not_supported` and the
+`contacts:read` scope is not offered. Setup asks whether to enable it; by hand,
+set `"CONTACTS_ENABLED": "1"` in the deployment's vars and redeploy.
+
+- **No dump.** `search_contacts` needs a query of at least 2 characters and
+  returns at most `MAX_CONTACT_RESULTS` (default 10, hard maximum 50) contacts;
+  there is no list-everything call. iCloud filters server-side with a
+  case-insensitive `text-match` on name, nickname, email and company.
+- **Few fields.** Each contact is `{ id, untrustedContactContent: { name,
+  emails, phones, organization } }`, from search and `get_contact` alike.
+  Notes, postal addresses, birthdays, photos and related names are skipped by
+  the parser and never returned.
+- **Untrusted.** Contact text is third-party content (anyone who sent you a
+  vCard wrote it); the tool descriptions and server instructions say so.
+- **Bounded and audited.** `CONTACTS_LIMITER` allows 30 lookups per minute per
+  connecting IP and fails closed when the binding is missing. Each call logs one
+  `contact_search` or `contact_read` line with the principal, result count and
+  outcome — never the query or any contact field.
+- **Read-only.** The CardDAV client has no write method, and its transport
+  refuses every verb except `PROPFIND` and `REPORT`.
+
 ## Security model
 
 - **Reads are read-only; writes are narrow.** Reading sends `EXAMINE` (the
@@ -1049,6 +1121,12 @@ EventKit companion on a Mac); it is not part of this Worker.
   send caps bound the volume, the mutation destinations are fixed, and the
   audit output shows what happened, but nothing else stands in the way (see
   [Sending mail](#sending-mail) and [Filing, restoring and deleting](#filing-restoring-and-deleting)).
+- **Contacts are opt-in, read-only and narrow.** With `CONTACTS_ENABLED=1` a
+  `contacts:read` grant can search the address book: a 2-character minimum
+  query, at most 10 results, a 30-per-minute per-IP limit and only names,
+  emails, phones and companies. A connector holding the scope could still
+  enumerate much of the book over time with many short queries; the limit and
+  the audit line are what bound that. The CardDAV client cannot write.
 - **Calendar text is untrusted input.** Event summaries, descriptions and
   locations are third-party content. `get_event` labels them under
   `untrustedCalendarContent`, and the MCP tool descriptions and server
@@ -1072,7 +1150,8 @@ EventKit companion on a Mac); it is not part of this Worker.
   `MAX_RESOURCES_PER_QUERY`, `MAX_OCCURRENCES_PER_RESOURCE`,
   `MAX_RDATE_EXDATE` and the two recurrence budgets bound reads;
   `MAX_RESPONSE_BYTES` bounds every CalDAV response. `ALLOWED_CALENDARS`
-  selects what is reachable, and `CALENDAR_WRITE` gates all writes.
+  selects what is reachable, and `CALENDAR_WRITE` gates all writes. Contact
+  searches are capped by `MAX_CONTACT_RESULTS` and `CONTACTS_LIMITER`.
 - **Attachment content is untrusted, and served defensively.** Attachment
   bytes are third-party content; the download endpoint sets
   `X-Content-Type-Options: nosniff`, sanitizes the `Content-Disposition`

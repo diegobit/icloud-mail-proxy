@@ -100,6 +100,7 @@ describe("first guided setup, end to end", () => {
       ["iCloud email address", "me@icloud.com"],
       ["app-specific password", PASSWORD],
       ["Folders the proxy may read", "INBOX, Archive"],
+      ["search your contacts", false],
       ["Proceed?", true],
       ["Show it once now", false],
     ]);

@@ -134,6 +134,18 @@ The read bounds are base vars, not secrets: `MAX_CALENDAR_DAYS` (90),
 minute); if the binding is missing while the write flag is on, writes fail
 closed instead of running unlimited.
 
+### Contacts (opt-in)
+
+`CONTACTS_ENABLED` (`"0"` in the tracked defaults) enables a read-only contacts
+search over CardDAV: `search_contacts`, `get_contact`, the `/v1/contacts`
+routes and the `contacts:read` OAuth scope. Setup asks about it and records the
+answer; a profile sets `"CONTACTS_ENABLED": "1"` in its vars. The
+`CONTACTS_LIMITER` binding (30 lookups per minute per IP) is part of
+`wrangler.base.jsonc`; without it every contact call fails closed.
+`MAX_CONTACT_RESULTS` (default 10, hard maximum 50) caps one search. After
+enabling contacts, OAuth connectors must reconnect and the owner must tick
+`contacts:read` before the tools work for them.
+
 ## Migrating the production deployment
 
 The tracked config no longer carries the `icloud-mail.diegobit.com` route: it
@@ -342,6 +354,20 @@ generate a new token, because that would break every existing client.
   `calendar:write` still cannot delete. Reconnect the connector and select
   `calendar:delete` on the consent page; until then `delete_event` returns
   `insufficient_scope`. Deletion is immediate and has no trash.
+
+## Contact operations
+
+- **Inspect what happened:** `wrangler tail` shows one `contact_search` or
+  `contact_read` line per call — principal, result count, outcome; never the
+  query or any contact field.
+- **"query_too_short":** a search needs at least 2 characters. There is no way
+  to list the whole address book.
+- **"rate_limited":** more than 30 contact lookups per minute from one IP.
+- **"configuration_error":** the `CONTACTS_LIMITER` binding is missing from the
+  deployed config; contacts stay disabled until it is deployed.
+- **"upstream_unauthorized":** iCloud refused the app-specific password for
+  CardDAV. Discovery worked with an app-specific password when probed on
+  2026-10-28; if it stops, check the password at appleid.apple.com.
 
 ## Recovering an interrupted setup
 

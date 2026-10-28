@@ -24,6 +24,7 @@ export const SCOPES = [
   "calendar:read",
   "calendar:write",
   "calendar:delete",
+  "contacts:read",
   "offline_access",
 ] as const;
 

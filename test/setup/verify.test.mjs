@@ -615,6 +615,43 @@ describe("calendar verification", () => {
     expect(mcp.detail).toContain("delete_event");
   });
 
+  it("expects the contact tools only when contacts are enabled", async () => {
+    const tools = [...MAIL_TOOLS, ...CALENDAR_READ_TOOLS, "search_contacts", "get_contact"];
+    const enabled = await verifyDeployment({
+      url: ORIGIN,
+      token: TOKEN,
+      calendars: "*",
+      contacts: true,
+      fetchImpl: calendarEndpoint({ tools }),
+      sleep: noSleep,
+    });
+    expect(enabled.ok).toBe(true);
+
+    const disabled = await verifyDeployment({
+      url: ORIGIN,
+      token: TOKEN,
+      calendars: "*",
+      fetchImpl: calendarEndpoint({ tools }),
+      sleep: noSleep,
+    });
+    expect(disabled.ok).toBe(false);
+    const mcp = disabled.checks.find((check) => check.name === "MCP initialize and tools/list");
+    expect(mcp.detail).toContain("present but disabled: search_contacts, get_contact");
+
+    const missing = await verifyDeployment({
+      url: ORIGIN,
+      token: TOKEN,
+      calendars: "*",
+      contacts: true,
+      fetchImpl: calendarEndpoint({ tools: [...MAIL_TOOLS, ...CALENDAR_READ_TOOLS] }),
+      sleep: noSleep,
+    });
+    expect(missing.ok).toBe(false);
+    expect(missing.checks.find((check) => check.name === "MCP initialize and tools/list").detail).toContain(
+      "missing search_contacts, get_contact",
+    );
+  });
+
   it("fails containment when a write tool appears while its flag is off", async () => {
     const tools = [...MAIL_TOOLS, ...CALENDAR_READ_TOOLS, "create_event"];
     const fetchImpl = calendarEndpoint({ tools });

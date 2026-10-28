@@ -109,6 +109,19 @@ describe("scopes", () => {
     expect(enabledResourceScopes(makeEnv({ CALENDAR_WRITE: "1" }))).toEqual(["mail:read", "mail:modify", "mail:trash", "mail:send"]);
   });
 
+  it("offers contacts:read only when contacts are enabled", () => {
+    expect(enabledResourceScopes(makeEnv({ CONTACTS_ENABLED: "1" }))).toEqual([
+      "mail:read",
+      "mail:modify",
+      "mail:trash",
+      "mail:send",
+      "contacts:read",
+    ]);
+    expect(requiredScopes(makeEnv({ CONTACTS_ENABLED: "1" }))).toEqual(["mail:read", "contacts:read"]);
+    expect(enabledResourceScopes(makeEnv({ CONTACTS_ENABLED: "0" }))).not.toContain("contacts:read");
+    expect(enabledResourceScopes(makeEnv({ CONTACTS_ENABLED: "true" }))).not.toContain("contacts:read");
+  });
+
   it("keeps requiredScopes free of write scopes, mail included", () => {
     const env = makeEnv({ ALLOWED_CALENDARS: "*", CALENDAR_WRITE: "1" });
     expect(requiredScopes(env)).toEqual(["mail:read", "calendar:read"]);
