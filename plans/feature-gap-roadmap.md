@@ -578,5 +578,11 @@ Deployed from `t3/implement-feature-gap-roadmap` with
 - **Connectors:** every ChatGPT and claude.ai connector has to be reconnected
   once to approve the new scopes. A grant that holds only `mail:read` keeps
   reading and receives `insufficient_scope` on the write tools until then.
+- **Coding agents need no reconnection.** They authenticate with the static
+  `API_TOKEN`, not an OAuth grant, so the scope split does not apply to them.
+  Checked on 2026-10-29: `opencode mcp list` reports `icloud-mail connected`,
+  `claude mcp list` reports `✔ Connected` for the project-scoped server, and
+  Codex keeps `icloud_mail` enabled with `ICLOUD_MAIL_TOKEN`; the token file
+  matched the deployment's `API_TOKEN` and all three read the same 17 tools.
 - **Still open:** independent review of units 4–7, device delivery of a display
   alarm (verified in the resource only), and the owner's decision on unit 4b.
