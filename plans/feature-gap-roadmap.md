@@ -418,10 +418,9 @@ API.
 
 ## Deployment and acceptance
 
-Nothing deployed yet. Units 1–3 are committed but have not had a complete
-independent review or live acceptance in this continuation. Units 4–7 remain
-incomplete; the Scratch probes for units 6 and 7 have not been run. Record
-here per unit: version id, `verifyDeployment` tool count, and live acceptance.
+Deployed 2026-10-29 (record below). The paragraphs that follow are the earlier
+per-unit notes; read them as history. Record here per unit: version id, the
+tool count, and the live acceptance that was run.
 
 
 ### Continuation results (2026-10-28)
@@ -552,3 +551,32 @@ listed `%40` href and `get_event` by the decoded id.
 A related worry, that iCloud's `&#13;` line-ending encoding could leak into
 calendar text, did not reproduce: descriptions read back with real newlines and
 empty lines.
+
+### Deployment (2026-10-29)
+
+Deployed from `t3/implement-feature-gap-roadmap` with
+`npm run deploy -- --profile production`.
+
+- **Version:** `eed81254-0cd2-41d8-b92e-90311b465793`, Worker
+  `icloud-mail-proxy`, custom domain `icloud-mail.diegobit.com`.
+- **Tools:** 17 on `/mcp` — 11 mail (`list_mailboxes`, `search_mail`,
+  `get_mail_message`, `get_mail_attachment`, `read_mail`, `set_mail_flag`,
+  `archive_mail`, `delete_mail`, `restore_mail`, `send_mail`, `save_draft`)
+  and 6 calendar (`list_calendars`, `list_events`, `get_event`, `create_event`,
+  `update_event`, `delete_event`). Contacts are off, so `search_contacts` and
+  `get_contact` are absent, as unit 2 specifies for `CONTACTS_ENABLED=0`.
+- **Scopes:** the authorization-server metadata advertises `mail:read`,
+  `mail:modify`, `mail:trash`, `mail:send`, `calendar:read`, `calendar:write`,
+  `calendar:delete` and `offline_access`; the protected-resource metadata keeps
+  naming only `mail:read` and `calendar:read`, which is the advertised minimum,
+  not the enforced set.
+- **Live checks through the deployment:** `GET /healthz` answered 200 with the
+  static bearer; `list_mailboxes` returned `INBOX`, `Archive`,
+  `Sent Messages`; `list_calendars` returned the five calendars; the deployed
+  `create_event` schema carries `recurrence`. The existing secrets survived the
+  deploy, so IMAP, CalDAV and the bearer work.
+- **Connectors:** every ChatGPT and claude.ai connector has to be reconnected
+  once to approve the new scopes. A grant that holds only `mail:read` keeps
+  reading and receives `insufficient_scope` on the write tools until then.
+- **Still open:** independent review of units 4–7, device delivery of a display
+  alarm (verified in the resource only), and the owner's decision on unit 4b.
