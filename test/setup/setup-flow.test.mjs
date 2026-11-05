@@ -53,6 +53,7 @@ describe("first deployment", () => {
       ["iCloud email address", "me@icloud.com"],
       ["app-specific password", PASSWORD],
       ["Folders the proxy may read", ""],
+      ["search your contacts", false],
       ["Proceed?", true],
       ["Show it once now", true],
       ["Press Enter", ""],
@@ -101,6 +102,7 @@ describe("first deployment", () => {
       ["iCloud email address", "me@icloud.com"],
       ["app-specific password", PASSWORD],
       ["Folders the proxy may read", ""],
+      ["search your contacts", false],
       ["Proceed?", true],
       ["Show it once now", true],
       ["Press Enter", ""],
@@ -122,6 +124,7 @@ describe("first deployment", () => {
       ["iCloud email address", "me@icloud.com"],
       ["app-specific password", PASSWORD],
       ["Folders the proxy may read", "INBOX, Archive ,, "],
+      ["search your contacts", false],
       ["Proceed?", true],
       ["Show it once now", false],
     ]);
@@ -145,6 +148,7 @@ describe("existing Worker at the chosen name", () => {
       ["iCloud email address", "me@icloud.com"],
       ["app-specific password", PASSWORD],
       ["Folders the proxy may read", ""],
+      ["search your contacts", false],
       ["Proceed?", true],
       ["Show it once now", false],
     ]);
@@ -170,6 +174,7 @@ describe("existing Worker at the chosen name", () => {
       ["Rotate the API bearer token?", false],
       ["Paste the current API token", "live-token"],
       ["Folders the proxy may read", ""],
+      ["search your contacts", false],
       ["Proceed?", true],
     ]);
     const wrangler = fakeWrangler({
@@ -204,6 +209,7 @@ describe("reruns", () => {
       ["Rotate the API bearer token?", false],
       ["Paste the current API token", "live-token"],
       ["Folders the proxy may read", ""],
+      ["search your contacts", false],
       ["Proceed?", true],
     ]);
     const h = harness({ prompts, wrangler: fakeWrangler(configured), store: memoryStore(priorState) });
@@ -224,6 +230,7 @@ describe("reruns", () => {
       ["Rotate the API bearer token?", false],
       ["Paste the current API token", ""],
       ["Folders the proxy may read", ""],
+      ["search your contacts", false],
       ["Proceed?", true],
     ]);
     const verify = fakeVerify({
@@ -248,6 +255,7 @@ describe("reruns", () => {
       ["Replace the stored iCloud", false],
       ["Rotate the API bearer token?", true],
       ["Folders the proxy may read", ""],
+      ["search your contacts", false],
       ["Proceed?", true],
       ["Show it once now", true],
       ["Press Enter", ""],
@@ -271,6 +279,7 @@ describe("reruns", () => {
       ["Replace the stored iCloud", false],
       ["Rotate the API bearer token?", true],
       ["Folders the proxy may read", ""],
+      ["search your contacts", false],
       ["Proceed?", true],
     ]);
     const wrangler = fakeWrangler(configured);
@@ -292,6 +301,7 @@ describe("interrupted operations", () => {
       ["iCloud email address", "me@icloud.com"],
       ["app-specific password", PASSWORD],
       ["Folders the proxy may read", ""],
+      ["search your contacts", false],
       ["Proceed?", true],
       ["Show it once now", false],
     ]);
@@ -316,6 +326,7 @@ describe("interrupted operations", () => {
       ["Rotate the API bearer token?", false],
       ["Paste the current API token", "live-token"],
       ["Folders the proxy may read", ""],
+      ["search your contacts", false],
       ["Proceed?", true],
     ]);
     const resumed = harness({ prompts: second, wrangler: fakeWrangler(wrangler.state), store });
@@ -332,6 +343,7 @@ describe("interrupted operations", () => {
       ["iCloud email address", "me@icloud.com"],
       ["app-specific password", PASSWORD],
       ["Folders the proxy may read", ""],
+      ["search your contacts", false],
       [
         "Proceed?",
         () => {
@@ -354,6 +366,7 @@ describe("interrupted operations", () => {
       ["iCloud email address", "me@icloud.com"],
       ["app-specific password", PASSWORD],
       ["Folders the proxy may read", ""],
+      ["search your contacts", false],
       ["Proceed?", false],
     ]);
     const wrangler = fakeWrangler();
@@ -385,6 +398,7 @@ describe("preflight and login", () => {
       ["iCloud email address", "me@icloud.com"],
       ["app-specific password", PASSWORD],
       ["Folders the proxy may read", ""],
+      ["search your contacts", false],
       ["Proceed?", true],
       ["Show it once now", false],
     ]);
@@ -416,6 +430,7 @@ describe("verification outcomes", () => {
       ["iCloud email address", "me@icloud.com"],
       ["app-specific password", PASSWORD],
       ["Folders the proxy may read", ""],
+      ["search your contacts", false],
       ["Proceed?", true],
       ["Show it once now", false],
     ]);
@@ -443,6 +458,7 @@ describe("verification outcomes", () => {
       ["iCloud email address", "me@icloud.com"],
       ["app-specific password", PASSWORD],
       ["Folders the proxy may read", ""],
+      ["search your contacts", false],
       ["Proceed?", true],
       ["Show it once now", false],
     ]);
@@ -469,6 +485,7 @@ describe("verification outcomes", () => {
       ["iCloud email address", "me@icloud.com"],
       ["app-specific password", PASSWORD],
       ["Folders the proxy may read", ""],
+      ["search your contacts", false],
       ["Proceed?", true],
       ["Show it once now", false],
     ]);
@@ -494,6 +511,7 @@ describe("verification outcomes", () => {
       ["iCloud email address", "me@icloud.com"],
       ["app-specific password", PASSWORD],
       ["Folders the proxy may read", ""],
+      ["search your contacts", false],
       ["Proceed?", true],
       ["Show it once now", false],
     ]);
@@ -531,6 +549,7 @@ describe("calendar discovery", () => {
       ["iCloud email address", "me@icloud.com"],
       ["app-specific password", PASSWORD],
       ["Folders the proxy may read", ""],
+      ["search your contacts", false],
       ["Proceed?", true],
       ["Show it once now", false],
       ["Calendars the proxy may use", ""],
@@ -544,7 +563,7 @@ describe("calendar discovery", () => {
     expect(result.code).toBe(0);
     expect(wrangler.calls.filter((call) => call.command === "deploy")).toHaveLength(2);
     expect(h.configs).toHaveLength(2);
-    expect(h.configs[0].vars).toEqual({ ALLOWED_MAILBOXES: "INBOX,Archive,Sent Messages" });
+    expect(h.configs[0].vars).toEqual({ ALLOWED_MAILBOXES: "INBOX,Archive,Sent Messages", CONTACTS_ENABLED: "0" });
     expect(h.configs[1].vars).toMatchObject({
       ALLOWED_MAILBOXES: "INBOX,Archive,Sent Messages",
       ALLOWED_CALENDARS: "*",
@@ -560,12 +579,60 @@ describe("calendar discovery", () => {
     expect(prompts.output()).toContain("Casa (calendar, read-only)");
   });
 
+  it("asks about contacts, deploys the choice, persists it and verifies the contact tools", async () => {
+    const prompts = fakePrompts([
+      ["Worker name", ""],
+      ["iCloud email address", "me@icloud.com"],
+      ["app-specific password", PASSWORD],
+      ["Folders the proxy may read", ""],
+      ["search your contacts", true],
+      ["Proceed?", true],
+      ["Show it once now", false],
+      ["Calendars the proxy may use", ""],
+    ]);
+    const h = harness({ prompts, wrangler: fakeWrangler(), discover: fakeDiscover(discovered) });
+
+    const result = await h.run();
+
+    expect(result.code).toBe(0);
+    for (const config of h.configs) expect(config.vars.CONTACTS_ENABLED).toBe("1");
+    expect(h.store.history.at(-1)).toMatchObject({ contactsEnabled: true });
+    expect(h.verify.calls[0]).toMatchObject({ contacts: true });
+    expect(prompts.output()).toContain("contacts: read-only search");
+  });
+
+  it("defaults the contacts question to the recorded choice on a rerun", async () => {
+    const store = memoryStore();
+    let offered;
+    const prompts = fakePrompts([
+      ["Worker name", ""],
+      ["iCloud email address", "me@icloud.com"],
+      ["app-specific password", PASSWORD],
+      ["Folders the proxy may read", ""],
+      ["search your contacts", (options) => {
+        offered = options.defaultValue;
+        return undefined;
+      }],
+      ["Proceed?", true],
+      ["Show it once now", false],
+      ["Calendars the proxy may use", ""],
+    ]);
+    store.write({ contactsEnabled: true });
+    const h = harness({ prompts, wrangler: fakeWrangler(), discover: fakeDiscover(discovered), store });
+
+    await h.run();
+
+    expect(offered).toBe(true);
+    expect(h.configs.at(-1).vars.CONTACTS_ENABLED).toBe("1");
+  });
+
   it("persists named allowlists and gives the first allowed calendar to verification", async () => {
     const prompts = fakePrompts([
       ["Worker name", ""],
       ["iCloud email address", "me@icloud.com"],
       ["app-specific password", PASSWORD],
       ["Folders the proxy may read", ""],
+      ["search your contacts", false],
       ["Proceed?", true],
       ["Show it once now", false],
       ["Calendars the proxy may use", "Casa,Lavoro"],
@@ -594,6 +661,7 @@ describe("calendar discovery", () => {
       ["Rotate the API bearer token?", false],
       ["Paste the current API token", "live-token"],
       ["Folders the proxy may read", ""],
+      ["search your contacts", false],
       ["Proceed?", true],
       ["Calendars the proxy may use", ""],
     ]);
@@ -628,6 +696,7 @@ describe("calendar discovery", () => {
       ["Rotate the API bearer token?", false],
       ["Paste the current API token", ""],
       ["Folders the proxy may read", ""],
+      ["search your contacts", false],
       ["Proceed?", true],
     ]);
     const wrangler = fakeWrangler({
@@ -666,6 +735,7 @@ describe("calendar discovery", () => {
       ["Rotate the API bearer token?", false],
       ["Paste the current API token", "live-token"],
       ["Folders the proxy may read", ""],
+      ["search your contacts", false],
       ["Proceed?", true],
     ]);
     const discover = fakeDiscover(() => {
@@ -694,6 +764,7 @@ describe("calendar discovery", () => {
       ["iCloud email address", "me@icloud.com"],
       ["app-specific password", PASSWORD],
       ["Folders the proxy may read", ""],
+      ["search your contacts", false],
       ["Proceed?", true],
       ["Show it once now", false],
       ["Calendars the proxy may use", "none"],
@@ -713,6 +784,7 @@ describe("calendar discovery", () => {
       ["iCloud email address", "me@icloud.com"],
       ["app-specific password", PASSWORD],
       ["Folders the proxy may read", ""],
+      ["search your contacts", false],
       ["Proceed?", true],
       ["Show it once now", false],
       ["Calendars the proxy may use", ["*,Lavoro", "*"]],
@@ -731,6 +803,7 @@ describe("calendar discovery", () => {
       ["iCloud email address", "me@icloud.com"],
       ["app-specific password", PASSWORD],
       ["Folders the proxy may read", ""],
+      ["search your contacts", false],
       ["Proceed?", true],
       ["Show it once now", false],
       ["Calendars the proxy may use", ""],

@@ -138,6 +138,15 @@ export function assertZone(zone: string, label = "timeZone"): string {
   return zone;
 }
 
+/** iCalendar local DATE-TIME, e.g. 20261022T090000, for a TZID value. */
+export function icsLocalDateTime(wall: WallClock): string {
+  const pad = (value: number, width: number) => String(value).padStart(width, "0");
+  return (
+    `${pad(wall.year, 4)}${pad(wall.month, 2)}${pad(wall.day, 2)}` +
+    `T${pad(wall.hour, 2)}${pad(wall.minute, 2)}${pad(wall.second, 2)}`
+  );
+}
+
 /** iCalendar DATE value, e.g. 20261022. */
 export function icsDate(date: DateParts): string {
   const pad = (value: number, width: number) => String(value).padStart(width, "0");

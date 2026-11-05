@@ -1,0 +1,588 @@
+# Feature-gap roadmap
+
+**Status (2026-10-28):** units 1–7 implemented locally on
+`t3/implement-feature-gap-roadmap`; unit 4b is blocked by its charset probe;
+units 6 and 7 have no live acceptance or device confirmation yet. Nothing is
+deployed. Baseline is `origin/main` at `8d2d9b8`. Branch from it, not from an
+older docs branch: at that commit the Worker has 10 mail tools
+(`list_mailboxes`, `search_mail`, `get_mail_message`, `get_mail_attachment`,
+`read_mail`, `archive_mail`, `delete_mail`, `restore_mail`, `send_mail`,
+`save_draft`) and 6 calendar tools, 16 in total. The implementation adds
+contacts, search filters, `set_mail_flag` and event reminders; README states
+the current tool set.
+
+**Why:** OpenAI shipped first-party iCloud Mail and iCloud Calendar plugins for
+ChatGPT (2026-10-27). Comparing their tool lists with this proxy showed that it
+loses mostly on *finding* things (a person, an event, a message), not on acting.
+Opus 5.5 and GPT Astra were asked independently which functions to add; this
+plan is the owner's decision after reading both. What was left out is in
+[feature-gap-not-planned.md](feature-gap-not-planned.md).
+
+**Principle:** keep the proxy narrow. A unit may add reads freely, may add
+writes only when they are reversible or confined to the owner's own calendar,
+and must keep the existing style: separate scope, hard caps, ETag or fixed
+destination, one audit line with metadata only, untrusted-content labelling.
+The static bearer stays the owner and holds every scope.
+
+## Decisions taken
+
+| Item | Decision |
+| --- | --- |
+| Split `mail:read` into finer scopes | Yes, first (unit 1) |
+| Contacts (CardDAV, read-only) | Yes (unit 2) |
+| Multi-calendar search including notes | Yes (unit 3) |
+| Richer mail search, then UTF-8 | Yes (unit 4) |
+| Unread and flag/unflag, one message per call | Yes (unit 5) |
+| Event reminders (`VALARM`) | Yes (unit 6) |
+| Basic recurrence on create | Yes (unit 7), shipped together with whole-series update and delete so a created series can always be fixed or removed |
+| `save_draft` scope | `mail:modify` (owner delegated the choice, 2026-10-28) |
+| Time zones for recurring events | Write `TZID` with `VTIMEZONE` (owner agreed, 2026-10-28) |
+| Bulk operations on several messages | Not now |
+| Outgoing attachments, forward with attachments | Not now |
+
+## Order and dependencies
+
+1. Scope split. Everything below registers its tools against the new scopes.
+2. Contacts, 3. calendar search, 4. mail search, 5. flags, 6. alarms,
+   7. recurrence. After unit 1 they are independent; this order is by value for
+   the least risk. Units 2, 4b, 6 and 7 start with a read-only probe whose result
+   can change the design, so run the probe before writing code.
+
+Every unit is done when all of this holds:
+
+- `npm test`, typecheck and bundle validation pass, with tests for each
+  refusal path (no network call made when a request is refused).
+- `scripts/lib/verify.mjs` expects the exact new tool set and the tests that
+  cover it are updated.
+- README (API, MCP, Security model), the MCP server instructions and the tool
+  descriptions agree with the behaviour. The tool-count sentences are right.
+- A review pass found nothing open. Calendar writes and contacts are also
+  accepted live against the `Scratch` calendar or a disposable record, and the
+  result is recorded under "Deployment and acceptance" in this file, in the
+  style of [calendar-delete-event.md](calendar-delete-event.md).
+
+## 1. Split the mail scope
+
+**What:** `mail:read` is today the umbrella for all ten mail tools, so a
+connector granted "read my mail" can also send, archive and trash. Split it.
+
+| Scope | Tools | Implies |
+| --- | --- | --- |
+| `mail:read` | `list_mailboxes`, `search_mail`, `get_mail_message`, `get_mail_attachment` | |
+| `mail:modify` | `read_mail`, `archive_mail`, `restore_mail`, `save_draft`, and unit 5's flag tool | `mail:read` |
+| `mail:trash` | `delete_mail` | `mail:read` |
+| `mail:send` | `send_mail` | `mail:read` (replies read the parent) |
+
+`save_draft` sits in `mail:modify` because it only appends to Drafts and sends
+nothing. This is decided; a separate drafts scope is not planned.
+
+**Migration** follows the `calendar:delete` precedent
+([calendar-delete-event.md](calendar-delete-event.md)): a grant that holds only
+`mail:read` keeps reading and gets `insufficient_scope` on the write tools until
+it reconnects and the owner approves them. Every ChatGPT and claude.ai
+connector must be reconnected once after deploy. Say so in the deploy notes.
+
+**Implementation:**
+
+- `src/scopes.ts`: add the three scopes to `SCOPES`; generalise the implication
+  in `hasScope` (today only the two calendar scopes imply a read scope).
+- `src/mcp.ts`: change the `guard(authority, "mail:read", ...)` calls per the
+  table above.
+- `src/oauth-pages.ts` and the authorize flow: offer the new scopes on the
+  consent page with the same preselection rule; update the copy so
+  `mail:read` no longer claims to include sending.
+- `scripts/lib/verify.mjs`: the deployment check that the challenge names
+  `mail:read` keeps working; the metadata check expects the new scope list.
+- README MCP and Security sections: replace "`mail:read` is the umbrella".
+
+**Tests:** per tool, a grant holding only the wrong scope gets
+`insufficient_scope` and the underlying call is never made; implied-read
+behaviour; the bearer reaches everything; an old `mail:read`-only grant keeps
+reading (extend `test/scopes.test.ts`, `test/oauth.integration.test.mjs`,
+`test/oauth-pages.test.ts`).
+
+**Effort:** M. **Status:** implemented (unit 1 commit). `requiredScopes` (the
+401 challenge and the protected-resource metadata) still names only
+`mail:read` (plus `calendar:read`), so new connectors preselect read only and
+the owner ticks the write scopes on the consent page. `scripts/lib/verify.mjs`
+now also expects `read_mail` and `restore_mail` (they were missing from its
+exact tool list) and fails a deployment whose authorization-server metadata
+lacks any of the four mail scopes. Not yet deployed.
+
+## 2. Contacts, read-only
+
+**What:** `search_contacts` and `get_contact` over CardDAV, plus REST
+`GET /v1/contacts?q=` and `GET /v1/contacts/:id`. Purpose: resolve "write to
+Marco" without hunting for the address in old mail.
+
+**First, probe.** Add a read-only `scripts/probe-carddav.mjs` in the style of
+`scripts/probe-caldav.mjs` (only PROPFIND, REPORT, OPTIONS, GET). It must answer:
+
+- Does discovery work with the app-specific password? An Apple developer-forum
+  thread reports 401s during CardDAV discovery; if it fails for this account
+  the unit stops here and is recorded as blocked.
+- Principal, `addressbook-home-set`, the per-user shard host (expected
+  `pNN-contacts.icloud.com`), the address-book collections.
+- Does `addressbook-query` with a `text-match` on `FN`/`EMAIL` work, or must
+  the Worker list the book and filter locally? vCard version returned (expected
+  3.0), ETag and href shape, response size for the whole book.
+
+**Contract:**
+
+- New opt-in `CONTACTS_ENABLED` (tracked default `"0"`), mirroring how calendars
+  are opt-in. When off, no tools are registered, REST answers `404
+  not_supported`, and no scope is offered.
+- New scope `contacts:read`, offered on the consent page only when enabled.
+- `query` is mandatory, at least 2 characters after trimming: there is no
+  "list everything" and no dump. At most `MAX_CONTACT_RESULTS` (default 10).
+- Returned fields only: `id`, `name`, `emails[]`, `phones[]`, `organization`.
+  Never notes, addresses, birthdays, photos or related names. `get_contact`
+  returns the same fields.
+- Contact text is third-party content: label it `untrustedContactContent`, like
+  `untrustedEmailContent`, and say so in the tool description.
+- If the probe shows server-side filtering is unsupported, list the book with a
+  hard `MAX_CONTACT_RESOURCES` cap and fail closed with `too_many_resources`
+  above it instead of filtering a truncated list.
+- Audit: one `contact_search` line with principal and result count; never the
+  query or any field. A per-IP limiter (30 per minute, fails closed when the
+  binding is missing) follows `CALENDAR_WRITE_LIMITER`, so an injected agent
+  cannot harvest the address book quickly.
+- Nothing writes: no `PUT`, `DELETE` or `PROPPATCH` exists in the contacts
+  client.
+
+**Implementation:** `src/carddav.ts` (reuse the DAV helpers in `src/caldav.ts`:
+PROPFIND/multistatus parsing, auth, shard following), `src/vcard.ts` (line
+unfolding, `N`/`FN`/`EMAIL`/`TEL`/`ORG`, escaped commas), a `contacts-core.ts`
+and the registration in `src/mcp.ts` and `src/rest.ts`; `wrangler.base.jsonc`
+vars and binding; setup asks whether to enable contacts.
+
+**Tests:** vCard parser fixtures (folded lines, escapes, multiple emails),
+discovery and shard redirect with a fake server, query below minimum length,
+result cap, disabled-domain 404, scope refusal, limiter fail-closed, audit line
+has no query.
+
+**Effort:** M. **Status:** implemented (unit 2 commit), not deployed.
+
+**Probe (2026-10-28, `scripts/probe-carddav.mjs`, read-only):**
+
+- Discovery works with the app-specific password: `PROPFIND` on
+  `https://contacts.icloud.com/` and on the principal both answer 207; no 401.
+- Principal `https://contacts.icloud.com/<dsid>/principal/`,
+  `addressbook-home-set` `https://pNN-contacts.icloud.com/<dsid>/carddavhome/`,
+  one address book at `/<dsid>/carddavhome/card/` (no display name).
+- 385 cards, all vCard 3.0, every line ending encoded as `&#13;` in the XML
+  (the shared XML parser leaves numeric references undecoded, so the contacts
+  code decodes them before parsing). 169 cards use `itemN.` group prefixes,
+  181 have folded lines, 166 carry a `PHOTO`, 71 a `NOTE`.
+- `addressbook-query` with `text-match` works server-side: `EMAIL contains "@"`
+  returns exactly the 122 cards with an email, a nonsense `FN` returns 0, `a`
+  and `A` return the same 333 cards (case-insensitive), and `test="anyof"` over
+  `FN` and `EMAIL` works. `<limit><nresults>` and per-property
+  `<address-data><prop/>` selection are ignored: every match comes back whole,
+  photos included (the whole book is about 338 KB). So no list-and-filter
+  fallback and no `MAX_CONTACT_RESOURCES` was needed; the Worker caps the list
+  and strips fields itself, and `MAX_RESPONSE_BYTES` bounds the response.
+- ETags are strong and quoted; hrefs are `<uuid>.vcf` (214) or another
+  `[A-Za-z0-9._-]` name (171), so the resource name is used as the contact id.
+  `GET` on a card answers `text/plain`; `addressbook-multiget` works.
+- `OPTIONS` advertises `addressbook, sync-collection` and allows writes; the
+  Worker's CardDAV service allows only `PROPFIND` and `REPORT`.
+
+Design notes: the CardDAV client reuses the CalDAV transport through a
+`DavService` (bootstrap host, shard pattern, exact home directory, allowed
+methods), so pinning, redirects, size and timeout rules are shared. The search
+matches `FN`, `NICKNAME`, `EMAIL` and `ORG`. `get_contact` is also limited and
+audited (`contact_read`). The REST search takes `q` in the URL as specified;
+unlike mail search terms it can therefore appear in access logs.
+
+## 3. Search events across calendars, notes included
+
+**What:** `list_events` today needs one calendar and filters `text` over summary
+and location only (`matchesText` in `src/calendar-events.ts`). Make `calendar`
+optional and match the description too, so "find the accountant appointment"
+works without knowing the calendar.
+
+**Contract:**
+
+- `calendar` omitted means every allowlisted calendar. Naming one behaves
+  exactly as today, so existing callers are unaffected.
+- `text` also matches the description. The parsed component already carries it
+  (`get_event` returns it under `untrustedCalendarContent`); list results do not
+  gain a `description` field. They gain `matchedIn: ("summary" | "location" |
+  "description")[]` so the caller can see why an event matched without receiving
+  the note.
+- Each result names its calendar. Results are merged and sorted by start, with
+  the same `MAX_EVENT_RESULTS` cap.
+- The window stays at most `MAX_CALENDAR_DAYS` (90). The resource and recurrence
+  budgets (`MAX_RESOURCES_PER_QUERY`, the two recurrence budgets) are
+  request-wide, shared by all calendars, not multiplied per calendar. If the
+  shared budget is exceeded, refuse the whole request and name the calendar that
+  tipped it; never return a partial merge that looks complete.
+- Config errors keep failing closed (`configured_calendar_missing`,
+  `ambiguous_calendar_name`).
+
+**Implementation:** `src/calendar-events.ts` (iterate the allowlist, shared
+budget object, `matchesText` over the description), `src/mcp.ts` and
+`src/rest.ts` input schemas and descriptions.
+
+**Tests:** all-calendars merge order, one calendar unchanged, description-only
+match with `matchedIn`, shared budget exceeded, a calendar error fails the
+request, truncation flags.
+
+**Effort:** S. **Status:** implemented (unit 3 commit). REST gained `GET
+/v1/events` for the all-calendars form (the per-calendar route is unchanged).
+Each listed event now carries `calendar` and `matchedIn` (empty without a
+filter); the result carries `calendar` (null when merged) and `calendars`.
+Reading all calendars refuses duplicate display names with
+`ambiguous_calendar_name`, since each result is identified by name. A
+`recurrence_budget` truncation in merged mode is refused as
+`recurrence_too_complex`; the per-resource `occurrence_cap` stays a truncation
+flag, as in single-calendar mode.
+
+## 4. Richer mail search
+
+**What:** structured filters in `search_mail` and `GET /v1/search`.
+
+**4a. Filters.** Add to `SearchParams` (`src/types.ts`):
+
+- `to`, `cc` substring filters, like `from`.
+- `flagged: boolean`, next to `unseen`.
+- `from`, `subject`, `text` accept a string or an array of strings; an array
+  means OR within that one field.
+- `not: { from?, subject?, text? }` exclusions.
+- A single builder produces the IMAP criteria from this closed shape. The agent
+  never supplies a raw SEARCH string or a free boolean tree: that would be
+  injection into the protocol. Cap the array length (4) and the total number of
+  criteria. Unknown keys stay rejected.
+- `hasAttachment` is not an IMAP SEARCH key; the proxy derives
+  `hasAttachments` from `BODYSTRUCTURE` after the fetch. Add it only as a
+  post-filter inside the existing `MAX_RESULTS` and `MAX_SEARCH_DAYS` bounds and
+  state in the description that it can return fewer than `limit` per page;
+  otherwise leave it out.
+
+**4b. UTF-8.** Implement [utf8-search.md](utf8-search.md): IMAP literals with
+`+` continuation handling and `SEARCH CHARSET UTF-8`, removing the ASCII-only
+`invalid_criteria`. Probe first whether `imap.mail.me.com` accepts the `UTF-8`
+charset and advertises `UTF8=ACCEPT`; if not, stop and record the finding in
+that plan rather than guessing. When this lands, update the status line of
+`utf8-search.md` to point here.
+
+**Tests:** criteria builder snapshots (OR, NOT, nesting refused, over-long
+arrays refused), `invalid_criteria` for unknown keys, literal framing in
+`test/imap-parse.test.ts`, fake-server integration for 4b.
+
+**Effort:** 4a S, 4b M. **Status:** 4a implemented; 4b unbuilt and waiting on
+the owner's decision. On 2026-10-28 the read-only IMAP probe showed
+`imap.mail.me.com` accepts `SEARCH CHARSET UTF-8` with UTF-8 literals and
+returns matches, although it advertises neither `UTF8=ACCEPT` nor `LITERAL+`
+and matches words and word prefixes rather than substrings. The roadmap's gate
+named the advertisement, not the behaviour, so the result is recorded and the
+decision is Diego's: accept the probe and implement the literal framing, or
+keep search ASCII-only. See [utf8-search.md](utf8-search.md). Nothing is
+implemented for 4b.
+
+## 5. Mark unread and flag
+
+**What:** `read_mail` only sets `\Seen`. Add one tool that sets or clears
+exactly two flags on one message:
+`set_mail_flag({ mailbox, uidValidity, uid, flag: "seen" | "flagged", value })`.
+`seen: false` is "mark unread". Keep `read_mail` unchanged for compatibility.
+
+**Contract:**
+
+- Scope `mail:modify`. Idempotent; safe to repeat after a timeout, like
+  `read_mail`.
+- The command is built by a function beside `buildStoreSeen` in
+  `src/imap-mutations.ts`: `UID STORE <uid> +FLAGS.SILENT (\Seen)` or
+  `-FLAGS.SILENT (\Flagged)`, with the flag taken from a two-value whitelist.
+  No other flag, no bare `STORE`, no `EXPUNGE`.
+- One message per call, source mailbox must be in `ALLOWED_MAILBOXES`,
+  `uidValidity` checked, missing message gives `message_not_found`.
+- Audit: a `mail_mutation` line with action `flag`, mailbox, uid, flag and
+  value. No subject, no body.
+- Residual risk, to state in README: an injected instruction can mark messages
+  read or unread or flag them, which can hide a message. It is reversible and
+  audited; bulk is deliberately absent (see not-planned).
+
+**Tests:** both flags both directions, other flags preserved, whitelist refusal,
+`uidvalidity_mismatch`, `message_not_found`, scope refusal, no command is sent
+for an invalid flag.
+
+**Effort:** S. **Status:** implemented (`set_mail_flag`), not deployed.
+
+## 6. Event reminders (`VALARM`)
+
+**What:** let `create_event` and `update_event` set up to 2 display alarms, and
+let `get_event` show an event's alarms. Today a created event never carries a
+`VALARM` and an update preserves existing ones
+([calendar-reminders.md](calendar-reminders.md) records why a naive overwrite
+destroys them). These are the alarms of an event, not the Reminders app, which
+lives in CloudKit and stays out of scope.
+
+**Probe first** on `Scratch` with a disposable event: write one `VALARM`
+(`ACTION:DISPLAY`, `DESCRIPTION`, `TRIGGER:-PT30M`), read it back, and confirm
+iCloud keeps it unchanged, does not add or rewrite alarms of its own, and the
+alert actually appears on a device. Do not rely on RFC 5545 alone.
+
+**Contract:**
+
+- Input `alarms: [{ minutesBefore }]`, at most 2, `minutesBefore` an integer
+  from 0 to 10080 (one week). Written as `ACTION:DISPLAY`, a fixed
+  `DESCRIPTION`, relative `TRIGGER` before the start.
+- `update_event`: `alarms` omitted preserves every existing alarm, as today. An
+  array replaces only the alarms this tool can describe (display, relative,
+  before start); any other alarm (audio, absolute, location-based, Apple `X-`
+  alarms) is preserved untouched. `alarms: []` removes only the describable
+  ones.
+- `get_event` returns each alarm as `{ minutesBefore }` when representable,
+  else `{ kind: "other" }`.
+- Same `calendar:write` scope, ETag rules, limiter and audit line; the alarm
+  text and minutes are not logged.
+
+**Implementation:** `src/calendar-write.ts` (the guard at the
+`unsupported_field` refusal for `VALARM` is replaced by this path),
+`src/ical.ts` (alarm parsing exists around the `alarmComponents` read),
+`src/mcp.ts` and `src/rest.ts` schemas, README Writes section ("never writes ...
+VALARM").
+
+**Tests:** create with 0, 1, 2 alarms; 3 refused; range refusal; update
+preserves an Apple `X-` alarm and an audio alarm; `[]` removes only describable
+alarms; `get_event` shape.
+
+**Effort:** M. **Status:** implemented; the stored alarm reads back as written,
+device delivery unconfirmed (see "Device alert check" below).
+
+## 7. Basic recurrence on create
+
+**What:** `create_event` accepts a simple repeat. Editing an occurrence and
+"this and following" stay out (see not-planned).
+
+**Contract:**
+
+- `recurrence: { freq: "DAILY" | "WEEKLY" | "MONTHLY", interval?, byDay?,
+  count? | until }`. Exactly one of `count` and `until` is required: no open-ended
+  series. `interval` 1 to 12; `byDay` only with `WEEKLY`; caps
+  `MAX_RECURRENCE_COUNT` (default 100) and an `until` at most two years out.
+- Writes `RRULE` and nothing else about recurrence: no `RDATE`, `EXDATE`,
+  `RECURRENCE-ID`.
+
+**Two design problems this unit must solve (the owner wants recurrence
+creation; the probe and tests decide how, not whether):**
+
+1. **Time zones.** The writer stores timed values as UTC and never writes a
+   `TZID` (README, Writes). A weekly 09:00 Rome series stored as UTC drifts an
+   hour at each daylight-saving change. A recurring event is therefore written
+   as `DTSTART;TZID=<iana>` with a `VTIMEZONE` (decided), and `src/tz.ts`
+   deliberately does not depend on a `VTIMEZONE` block today. Probe on `Scratch`
+   whether iCloud also accepts an IANA `TZID` without a `VTIMEZONE` (then the
+   block is optional) and how it expands the series across a DST boundary.
+   Otherwise generate the block from the zone's rules and test the transitions
+   explicitly. One-off events keep the current UTC behaviour.
+2. **Orphan series.** Recurring resources are read-only for `update_event` and
+   `delete_event` today, so an agent could create a series it can never fix or
+   remove. Creation therefore ships together with whole-series management, in
+   the same release: `delete_event` gains `series: true` (scope
+   `calendar:delete`, strong ETag, same refusals) and `update_event` is allowed
+   on the master for non-recurrence fields (summary, location, description,
+   alarms). Both apply only to a resource whose recurrence is a single simple
+   `RRULE` with no `EXDATE`, `RDATE`, override or attendee; anything else stays
+   read-only with `readOnlyReason`. Changing the recurrence itself on an
+   existing series is not part of this unit (delete and recreate instead).
+
+**Tests:** RRULE serialisation, cap refusals, `count`/`until` exclusivity, DST
+boundary expansion read back through the existing recurrence cursor, series
+delete and master update on a simple series, refusal when overrides or
+`EXDATE` exist, `delete_event` with `series: true` on a simple series and the
+unchanged refusal on an override or attendee series.
+
+**Effort:** M for creation, plus M for the series delete/update it needs.
+**Status:** creation implemented locally with series management (2026-10-28);
+not deployed and not accepted live.
+
+**Implementation (2026-10-28).** `src/calendar-recurrence.ts` validates the
+caller's repeat and renders the single RRULE value; `create_event` writes it
+and echoes it as `recurrenceRule`, while `update_event` returns the existing
+rule unchanged. The Scratch probe answered the time-zone question in favour of
+the optional block: iCloud accepted `DTSTART;TZID=Europe/Rome` without a
+`VTIMEZONE` and added one itself, so the writer emits the TZID and no
+`VTIMEZONE`; a local test expands a weekly Rome series across the 2027
+spring-forward and asserts 09:00 local at 08:00Z and 07:00Z. A one-off event
+keeps the UTC form. `MAX_RECURRENCE_COUNT` (default 100) bounds `count`, and
+`until` must be between the start and two years out; a WEEKLY `byDay` must
+include the start weekday, since RFC 5545 leaves an unsynchronised rule
+undefined. Both the MCP schema and
+the REST body accept the same shape and refuse an unknown key. The tests cover
+the serialisation, every refusal path without a network call, an all-day
+`UNTIL` as `DATE`, and create → update → delete of one series through the same
+API.
+
+## Deployment and acceptance
+
+Deployed 2026-10-29 (record below). The paragraphs that follow are the earlier
+per-unit notes; read them as history. Record here per unit: version id, the
+tool count, and the live acceptance that was run.
+
+
+### Continuation results (2026-10-28)
+
+No deployment or live acceptance was performed. A read-only CalDAV discovery
+using the local account succeeded, but found no calendar named `Scratch`.
+No events were created or removed. Consequently the required disposable-event
+probes, device alert confirmation, and live acceptance for units 6 and 7 could
+not be performed. These units remain unimplemented and require a Scratch
+calendar before their probe gates can be satisfied. Unit 4b remains blocked as
+recorded above.
+
+Units 4a and 5 have implementation and test changes in this continuation,
+including the search builder, flag tool and updated tool verification. They
+still need a complete independent review and acceptance against the full unit
+contracts before being considered ready to deploy. Units 1–3 passed the local
+suite but have not received the requested independent review or live acceptance
+in this continuation. No deployment version or live tool count exists.
+
+### Scratch probe (2026-10-28)
+
+Scratch was discovered with the local account. Two pairs of disposable events
+were created and read back, then all four were deleted with their strong ETags;
+each subsequent GET returned 404. No deployment was performed.
+
+- A DISPLAY alarm with `DESCRIPTION:Reminder` and `TRIGGER:-PT30M` was
+  preserved on GET; exactly one VALARM was present. Device delivery has not
+  been verified.
+- A weekly series starting 2027-03-21 at 09:00 Europe/Rome, with COUNT=3 and
+  TZID but no VTIMEZONE in the PUT, was accepted. GET retained the TZID and
+  RRULE and iCloud added a VTIMEZONE. A calendar-query with `expand` returned
+  the master rather than expanded occurrences, so server-side expansion and
+  device display across the DST transition remain unverified. The local
+  recurrence cursor must still be tested against the transition.
+
+To verify delivery, on a device signed into this iCloud account, enable
+Calendar notifications and ensure the Scratch calendar is visible. Create a
+Scratch event a few minutes in the future with a display alert one minute
+before it, wait for the notification, report whether it appeared and at what
+time, then delete the event. This checks device delivery; it does not replace
+live acceptance of the proxy's alarm writer once implemented.
+
+Units 6 and 7 remain unimplemented and must not be released as complete.
+
+### Partial implementation continuation
+
+Alarm input, output and selective replacement have been started, with a local
+parser/mutation test. Unit 6 still needs complete refusal and integration tests,
+live acceptance and a review. Unit 7 is not implemented. Neither unit is ready
+for release. Device notification delivery remains unverified.
+
+### Recurrence creation (2026-10-28)
+
+Unit 7's creation path is implemented and the local suite passes: `npm test`
+(873 tests), `npm run typecheck` and `npm run check:bundle`. The series
+update/delete it depends on was already committed. Not deployed, so there is no
+version id or live tool count.
+
+Live acceptance was run on the same day against `Scratch` with a local
+`wrangler dev` Worker (`ALLOWED_CALENDARS=Scratch`, `CALENDAR_WRITE=1`), not a
+deployment:
+
+- `POST /v1/calendars/Scratch/events` created `accept-series-20261028`, weekly
+  from 2026-10-29 09:00 `Europe/Rome`, `COUNT=3`, one 10-minute alarm. The
+  response carried `recurrenceRule: "FREQ=WEEKLY;COUNT=3"` and a strong ETag.
+- `GET` returned `recurring: true`, `readOnlyReason: null`,
+  `recurrenceRule: "FREQ=WEEKLY;COUNT=3"` and three occurrences (29 October,
+  5 and 12 November, 09:00 +01:00), with the alarm preserved. iCloud accepted
+  the `TZID` anchor and stored its own `VTIMEZONE`.
+- The master was renamed through `PUT` with `If-Match`, and the whole series
+  removed with `DELETE ?series=true`; a following `GET` returned 404.
+- The three audit lines carried principal, action, calendar id, resource id and
+  outcome only.
+
+Device display of a series and delivery of a display alarm remain unverified.
+The 21:00 event the owner was checking turned out to be dated 2026-10-01, a
+month earlier, so it could not have alerted; a corrected future-dated check is
+recorded below.
+
+### iPhone alarm shape and classifier fix (2026-10-28)
+
+An event created on iPhone OS 27 (`X-APPLE-CREATOR-IDENTITY:com.apple.mobilecal`)
+with one 5-minute alert stores two `VALARM`s in the resource:
+
+- `ACTION:DISPLAY`, `DESCRIPTION:Reminder`, `TRIGGER:-PT5M`, plus `UID` and
+  `X-WR-ALARMUID`.
+- `ACTION:NONE` with `TRIGGER;VALUE=DATE-TIME:19760401T005545Z`, Apple's
+  "no second alert" sentinel.
+
+`get_event` reported both as `{ kind: "other" }` because `describeAlarm`
+refused any property beyond `ACTION`, `DESCRIPTION` and `TRIGGER`. `UID` and
+`X-WR-ALARMUID` identify an alarm without changing when it fires, so they are
+now treated as identity: the display reminder reads as `{ minutesBefore: 5 }`
+and an `alarms` array replaces it, while Apple's sentinel stays "other" and is
+preserved. Any other extra property or parameter still makes an alarm "other".
+The live resource also showed the earlier delivery test could not have fired:
+the event was dated 2026-10-01, a month before the 21:00 check, so the missing
+notification was a wrong event date, not a delivery failure.
+
+### Device alert check (2026-10-28, no notification)
+
+With a local Worker on `Scratch`, `create_event` wrote "Prova avviso" for 21:25
+`Europe/Rome` with `alarms: [{ minutesBefore: 1 }]`; `get_event` read back that
+one minute before the start, so the resource was correct. No notification
+appeared on the device at 21:24. The event was then deleted (204, and a
+following GET returned 404).
+
+Serialisation and reading are therefore not the failure: the candidates are the
+device's notification permission for Calendar, a Focus mode, or `Scratch` not
+enabled in the phone's calendar list. The owner asked to stop investigating for
+now, so device delivery stays unconfirmed: unit 6's writer must not be
+described as device-verified, and a release note should say the alarm has only
+been verified in the stored resource.
+
+### Imported resources with percent-encoded ids (2026-10-28)
+
+Two events in `Personale` come from an imported Google Calendar and keep an
+address-like id (`6hhmcdb…@google.com`). iCloud stores the `@` percent-encoded
+in the href. The read path decoded the segment and then rejected `@` in the id,
+so a 61-day query failed with `malformed` ("an href outside the selected
+collection") and `get_event` could not read those events at all. Both id
+validators now accept `@`, and `resourcePath` already re-encodes it to `%40`
+for a multiget, update or delete. Verified live: the 61-day `Personale` query
+returns 12 occurrences, and `get_event` reads one imported event (it reports
+`readOnlyReason: scheduling` because Google wrote an organizer). Tests cover a
+listed `%40` href and `get_event` by the decoded id.
+
+A related worry, that iCloud's `&#13;` line-ending encoding could leak into
+calendar text, did not reproduce: descriptions read back with real newlines and
+empty lines.
+
+### Deployment (2026-10-29)
+
+Deployed from `t3/implement-feature-gap-roadmap` with
+`npm run deploy -- --profile production`.
+
+- **Version:** `eed81254-0cd2-41d8-b92e-90311b465793`, Worker
+  `icloud-mail-proxy`, custom domain `icloud-mail.diegobit.com`.
+- **Tools:** 17 on `/mcp` — 11 mail (`list_mailboxes`, `search_mail`,
+  `get_mail_message`, `get_mail_attachment`, `read_mail`, `set_mail_flag`,
+  `archive_mail`, `delete_mail`, `restore_mail`, `send_mail`, `save_draft`)
+  and 6 calendar (`list_calendars`, `list_events`, `get_event`, `create_event`,
+  `update_event`, `delete_event`). Contacts are off, so `search_contacts` and
+  `get_contact` are absent, as unit 2 specifies for `CONTACTS_ENABLED=0`.
+- **Scopes:** the authorization-server metadata advertises `mail:read`,
+  `mail:modify`, `mail:trash`, `mail:send`, `calendar:read`, `calendar:write`,
+  `calendar:delete` and `offline_access`; the protected-resource metadata keeps
+  naming only `mail:read` and `calendar:read`, which is the advertised minimum,
+  not the enforced set.
+- **Live checks through the deployment:** `GET /healthz` answered 200 with the
+  static bearer; `list_mailboxes` returned `INBOX`, `Archive`,
+  `Sent Messages`; `list_calendars` returned the five calendars; the deployed
+  `create_event` schema carries `recurrence`. The existing secrets survived the
+  deploy, so IMAP, CalDAV and the bearer work.
+- **Connectors:** every ChatGPT and claude.ai connector has to be reconnected
+  once to approve the new scopes. A grant that holds only `mail:read` keeps
+  reading and receives `insufficient_scope` on the write tools until then.
+- **Coding agents need no reconnection.** They authenticate with the static
+  `API_TOKEN`, not an OAuth grant, so the scope split does not apply to them.
+  Checked on 2026-10-29: `opencode mcp list` reports `icloud-mail connected`,
+  `claude mcp list` reports `✔ Connected` for the project-scoped server, and
+  Codex keeps `icloud_mail` enabled with `ICLOUD_MAIL_TOKEN`; the token file
+  matched the deployment's `API_TOKEN` and all three read the same 17 tools.
+- **Still open:** independent review of units 4–7, device delivery of a display
+  alarm (verified in the resource only), and the owner's decision on unit 4b.

@@ -44,6 +44,7 @@ export function stateFragment(state) {
   // Present (including as "") means the owner made an explicit choice; absent
   // inherits the tracked default.
   if (typeof state.allowedCalendars === "string") vars.ALLOWED_CALENDARS = state.allowedCalendars;
+  if (typeof state.contactsEnabled === "boolean") vars.CONTACTS_ENABLED = state.contactsEnabled ? "1" : "0";
   return {
     label: "local",
     description: `guided setup (${state.workerName} in account ${state.accountId})`,

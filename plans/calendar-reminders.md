@@ -197,7 +197,10 @@ An older grant holding only `mail:read` must reconnect before using calendars.
   with `If-Match`. Deletion is immediate; there is no trash.
 - Serialization is UTC or `DATE` only. No `TZID`, `RRULE`, `RDATE`, `EXDATE`,
   `ATTENDEE`, `ORGANIZER` or `VALARM` is ever written. An existing `VALARM` is
-  preserved by read-modify-write.
+  preserved by read-modify-write. (Superseded for alarms by unit 6 and for
+  recurrence by unit 7 of [feature-gap-roadmap.md](feature-gap-roadmap.md):
+  display alarms are written, and a created series writes one `RRULE` with a
+  `TZID` anchor.)
 - A PUT or DELETE whose response never arrived returns
   `mutation_state_unknown`; the caller must reconcile with `get_event`, never
   blind-retry.

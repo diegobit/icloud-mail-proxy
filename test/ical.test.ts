@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { CalDavError } from "../src/caldav";
 import {
   createRecurrenceBudget,
+  eventAlarms,
   expandResource,
   mutateResource,
   parseResource,
@@ -953,5 +954,70 @@ describe("ical.js types that must stay out of the request path", () => {
         });
       }
     }
+  });
+});
+
+
+describe("event alarm editing", () => {
+  it("preserves display alarms with vendor parameters", () => {
+    const source = calendar(["BEGIN:VEVENT", "UID:vendor-alarm", "DTSTAMP:20260101T000000Z", "DTSTART:20270101T090000Z", "BEGIN:VALARM", "ACTION;X-APPLE-FOO=TRUE:DISPLAY", "DESCRIPTION:Reminder", "TRIGGER:-PT30M", "END:VALARM", "END:VEVENT"].join("\r\n"));
+    const output = mutateResource(source, "vendor-alarm", (editor) => editor.setAlarms([]));
+    expect(eventAlarms(parseResource(output).master)).toEqual([{ kind: "other" }]);
+    expect(output).toContain("X-APPLE-FOO=TRUE");
+  });
+  it("replaces display reminders but preserves audio and Apple alarms", () => {
+    const source = calendar(["BEGIN:VEVENT", "UID:alarm-test", "DTSTAMP:20260101T000000Z", "DTSTART:20270101T090000Z", "DTEND:20270101T100000Z", "BEGIN:VALARM", "ACTION:DISPLAY", "DESCRIPTION:Reminder", "TRIGGER:-PT30M", "END:VALARM", "BEGIN:VALARM", "ACTION:AUDIO", "TRIGGER:-PT5M", "END:VALARM", "BEGIN:VALARM", "ACTION:DISPLAY", "DESCRIPTION:Apple", "TRIGGER:-PT10M", "X-APPLE-DEFAULT-ALARM:TRUE", "END:VALARM", "END:VEVENT"].join("\r\n"));
+    expect(eventAlarms(parseResource(source).master)).toEqual([{ minutesBefore: 30 }, { kind: "other" }, { kind: "other" }]);
+    const updated = mutateResource(source, "alarm-test", (editor) => editor.setAlarms([{ minutesBefore: 0 }, { minutesBefore: 60 }]));
+    expect(eventAlarms(parseResource(updated).master)).toEqual([{ kind: "other" }, { kind: "other" }, { minutesBefore: 0 }, { minutesBefore: 60 }]);
+    const removed = mutateResource(updated, "alarm-test", (editor) => editor.setAlarms([]));
+    expect(eventAlarms(parseResource(removed).master)).toEqual([{ kind: "other" }, { kind: "other" }]);
+  });
+  it("describes an iPhone alarm that carries only its identity properties", () => {
+    // Shape written by iPhone OS 27: the user's 5-minute display alert, the
+    // X-WR-ALARMUID identity, and Apple's "no second alert" sentinel.
+    const source = calendar([
+      "BEGIN:VEVENT",
+      "UID:phone-alarm",
+      "DTSTAMP:20261028T193049Z",
+      "DTSTART;TZID=Europe/Rome:20261029T210000",
+      "DTEND;TZID=Europe/Rome:20261029T220000",
+      "BEGIN:VALARM",
+      "ACTION:DISPLAY",
+      "DESCRIPTION:Reminder",
+      "TRIGGER:-PT5M",
+      "UID:E5F71DD3-5539-43FB-AACB-6984BEFCEE37",
+      "X-WR-ALARMUID:E5F71DD3-5539-43FB-AACB-6984BEFCEE37",
+      "END:VALARM",
+      "BEGIN:VALARM",
+      "ACTION:NONE",
+      "TRIGGER;VALUE=DATE-TIME:19760401T005545Z",
+      "END:VALARM",
+      "END:VEVENT",
+    ].join("\r\n"));
+    expect(eventAlarms(parseResource(source).master)).toEqual([{ minutesBefore: 5 }, { kind: "other" }]);
+
+    const replaced = mutateResource(source, "phone-alarm", (editor) => editor.setAlarms([{ minutesBefore: 15 }]));
+    expect(eventAlarms(parseResource(replaced).master)).toEqual([{ kind: "other" }, { minutesBefore: 15 }]);
+
+    const cleared = mutateResource(source, "phone-alarm", (editor) => editor.setAlarms([]));
+    expect(eventAlarms(parseResource(cleared).master)).toEqual([{ kind: "other" }]);
+  });
+  it("still treats an alarm with an extra vendor property as other", () => {
+    const source = calendar([
+      "BEGIN:VEVENT",
+      "UID:vendor-extra",
+      "DTSTAMP:20260101T000000Z",
+      "DTSTART:20270101T090000Z",
+      "BEGIN:VALARM",
+      "ACTION:DISPLAY",
+      "DESCRIPTION:Reminder",
+      "TRIGGER:-PT30M",
+      "UID:vendor-uid",
+      "X-VENDOR-MODE:1",
+      "END:VALARM",
+      "END:VEVENT",
+    ].join("\r\n"));
+    expect(eventAlarms(parseResource(source).master)).toEqual([{ kind: "other" }]);
   });
 });

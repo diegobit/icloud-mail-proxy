@@ -9,6 +9,9 @@ describe("authorityOf", () => {
     expect(hasScope(authority, "mail:read")).toBe(true);
     expect(hasScope(authority, "calendar:write")).toBe(true);
     expect(hasScope(authority, "calendar:delete")).toBe(true);
+    expect(hasScope(authority, "mail:modify")).toBe(true);
+    expect(hasScope(authority, "mail:trash")).toBe(true);
+    expect(hasScope(authority, "mail:send")).toBe(true);
   });
 
   it("reads the approved scopes of an OAuth grant", () => {
@@ -52,6 +55,31 @@ describe("hasScope", () => {
     expect(hasScope(oauth(["calendar:read"]), "calendar:delete")).toBe(false);
     expect(hasScope(oauth(["calendar:write"]), "calendar:delete")).toBe(false);
     expect(hasScope(oauth(["calendar:delete"]), "calendar:write")).toBe(false);
+  });
+
+  it("lets each mail write scope read, without granting another write", () => {
+    for (const held of ["mail:modify", "mail:trash", "mail:send"]) {
+      expect(hasScope(oauth([held]), "mail:read")).toBe(true);
+    }
+    expect(hasScope(oauth(["mail:modify"]), "mail:trash")).toBe(false);
+    expect(hasScope(oauth(["mail:modify"]), "mail:send")).toBe(false);
+    expect(hasScope(oauth(["mail:trash"]), "mail:modify")).toBe(false);
+    expect(hasScope(oauth(["mail:trash"]), "mail:send")).toBe(false);
+    expect(hasScope(oauth(["mail:send"]), "mail:modify")).toBe(false);
+    expect(hasScope(oauth(["mail:send"]), "mail:trash")).toBe(false);
+  });
+
+  it("no longer lets mail:read write: a grant from before the split only reads", () => {
+    const legacy = oauth(["mail:read"]);
+    expect(hasScope(legacy, "mail:read")).toBe(true);
+    expect(hasScope(legacy, "mail:modify")).toBe(false);
+    expect(hasScope(legacy, "mail:trash")).toBe(false);
+    expect(hasScope(legacy, "mail:send")).toBe(false);
+  });
+
+  it("does not cross domains through an implication", () => {
+    expect(hasScope(oauth(["mail:send", "mail:modify", "mail:trash"]), "calendar:read")).toBe(false);
+    expect(hasScope(oauth(["calendar:write", "calendar:delete"]), "mail:read")).toBe(false);
   });
 
   it("does not let mail:read open the calendar domain", () => {

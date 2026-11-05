@@ -13,13 +13,13 @@ import { ImapParseError } from "./imap-parse";
 import { htmlToText } from "./html-text";
 import { splitReferences } from "./mime-build";
 import { selectPage } from "./paging";
+import { buildSearchCriteria } from "./search-criteria";
 import {
   isAttachmentPart,
   listAttachments,
   parseBodyStructure,
   parseImapList,
   quoteImapString,
-  toImapDate,
   type AttachmentPart,
   type BodyPart,
   type BodyPartLeaf,
@@ -216,23 +216,24 @@ export async function searchMail(env: Env, params: SearchParams): Promise<Search
       : minAfter;
   const beforeDate = params.before ? parseYmd(params.before) : null;
 
-  const criteriaParts: string[] = [`SINCE ${toImapDate(effectiveAfter)}`];
-  if (beforeDate) criteriaParts.push(`BEFORE ${toImapDate(beforeDate)}`);
-  // UNSEEN is a fixed IMAP keyword, never built from user input.
-  if (params.unseen === true) criteriaParts.push("UNSEEN");
-  try {
-    if (params.from) criteriaParts.push(`FROM ${quoteImapString(params.from)}`);
-    if (params.subject) criteriaParts.push(`SUBJECT ${quoteImapString(params.subject)}`);
-    if (params.text) criteriaParts.push(`TEXT ${quoteImapString(params.text)}`);
-  } catch {
-    // quoteImapString rejects non-ASCII / control chars.
-    throw new ApiError(
-      400,
-      "invalid_criteria",
-      "search terms must be printable ASCII (non-ASCII search is unsupported in v1)",
-    );
+  // Every criterion comes from the one builder over the closed shape: the
+  // caller never supplies SEARCH text (src/search-criteria.ts).
+  const criteria = buildSearchCriteria(
+    { since: effectiveAfter, before: beforeDate },
+    {
+      from: params.from,
+      to: params.to,
+      cc: params.cc,
+      subject: params.subject,
+      text: params.text,
+      not: params.not,
+      unseen: params.unseen,
+      flagged: params.flagged,
+    },
+  );
+  if (params.hasAttachment !== undefined && typeof params.hasAttachment !== "boolean") {
+    throw new ApiError(400, "invalid_criteria", "hasAttachment must be a boolean");
   }
-  const criteria = criteriaParts.join(" ");
 
   return withRetryOnce(async () => {
     const session = await ImapSession.open(env.ICLOUD_USER, env.ICLOUD_APP_PASSWORD);
@@ -248,6 +249,14 @@ export async function searchMail(env: Env, params: SearchParams): Promise<Search
       const envelopes = await session.fetchEnvelopes(selected);
       const messages: MessageSummary[] = [];
       for (const env0 of envelopes) {
+        // hasAttachment is not an IMAP SEARCH key: it filters the fetched
+        // page, so a page can hold fewer than `limit` messages.
+        if (
+          params.hasAttachment !== undefined &&
+          hasAttachmentsFromBodyStructure(env0.bodyStructure) !== params.hasAttachment
+        ) {
+          continue;
+        }
         const parsed = await parseEmail(ensureHeaderTerminator(env0.headerBytes));
         const flags = env0.flags.map((f) => f.toLowerCase());
         messages.push({
@@ -606,6 +615,31 @@ export async function markMessageRead(
     } finally {
       await session.logout();
     }
+  });
+}
+
+export async function setMailFlag(
+  env: Env, mailbox: string, uidValidity: number, uid: number,
+  flag: "seen" | "flagged", value: boolean, options: { principal?: string } = {},
+) {
+  assertMailboxAllowed(env, mailbox);
+  if (flag !== "seen" && flag !== "flagged" || typeof value !== "boolean") throw new ApiError(400, "invalid_flag", "unsupported flag or value");
+  if (!Number.isSafeInteger(uidValidity) || uidValidity <= 0) throw new ApiError(400, "invalid_uidvalidity", "uidValidity must be a positive integer");
+  if (!Number.isSafeInteger(uid) || uid <= 0) throw new ApiError(400, "invalid_uid", "uid must be a positive integer");
+  return withRetryOnce(async () => {
+    const session = await ImapSession.open(env.ICLOUD_USER, env.ICLOUD_APP_PASSWORD);
+    try {
+      const selected = await session.select(mailbox);
+      if (selected.uidValidity !== uidValidity) throw new ApiError(409, "uidvalidity_mismatch", "UIDVALIDITY changed; re-run the search");
+      try { await session.fetchSize(uid); }
+      catch (e) {
+        if (e instanceof ImapError && (e.code === "PARSE" || e.code === "NO")) throw new ApiError(404, "message_not_found", `no message with uid ${uid}`);
+        throw e;
+      }
+      await session.uidSetFlag(uid, flag, value);
+      console.log("mail_mutation", JSON.stringify({ principal: options.principal ?? "unknown", action: "flag", mailbox, uid, flag, value }));
+      return { ok: true as const, action: "flag" as const, mailbox, uid, flag, value };
+    } finally { await session.logout(); }
   });
 }
 

@@ -265,8 +265,14 @@ describe("POST /authorize", () => {
     const body = await response.text();
     expect(body).toContain('name="handle" value="handle-1"');
     expect(body).toContain(`name="epoch" value="${await grantEpoch(TOKEN)}"`);
-    expect(body).toContain("Read and manage mail (mail:read)");
+    expect(body).toContain("Read mail (mail:read)");
     expect(body).toContain('name="scope" value="mail:read" checked');
+    // The mail write scopes are offered but not preselected for a client that
+    // asked for mail:read only (every connector minted before the split).
+    for (const scope of ["mail:modify", "mail:trash", "mail:send"]) {
+      expect(body).toContain(`name="scope" value="${scope}"`);
+      expect(body).not.toContain(`name="scope" value="${scope}" checked`);
+    }
     expect(body).not.toContain('name="scope" value="calendar:read"');
     expect(body).not.toContain('name="scope" value="calendar:delete"');
   });
@@ -285,6 +291,34 @@ describe("POST /authorize", () => {
     expect(body).toContain('name="scope" value="calendar:delete"');
     expect(body).toContain("Create and update events (calendar:write)");
     expect(body).toContain("Delete events (calendar:delete)");
+  });
+
+  it("offers contacts:read only when contacts are enabled, and refuses it otherwise", async () => {
+    const enabled = await handleAuthorize(
+      postForm("/authorize", { authQuery: AUTH_QUERY, token: TOKEN }),
+      fakeEnv(fakeHelpers(), TOKEN, { CONTACTS_ENABLED: "1" }),
+    );
+    const enabledBody = await enabled.text();
+    expect(enabledBody).toContain('name="scope" value="contacts:read"');
+    expect(enabledBody).toContain("Search contacts (contacts:read)");
+
+    const disabled = await handleAuthorize(
+      postForm("/authorize", { authQuery: AUTH_QUERY, token: TOKEN }),
+      fakeEnv(fakeHelpers(), TOKEN),
+    );
+    expect(await disabled.text()).not.toContain('value="contacts:read"');
+
+    const helpers = fakeHelpers();
+    const forged = await handleAuthorize(
+      postForm(
+        "/authorize/consent",
+        { handle: "handle-1", action: "approve", epoch: await grantEpoch(TOKEN), scope: ["mail:read", "contacts:read"] },
+        true,
+      ),
+      fakeEnv(helpers),
+    );
+    expect(forged.status).toBe(400);
+    expect(helpers.approveConsent).not.toHaveBeenCalled();
   });
 
   it("rejects a token submission without an S256 challenge before consent", async () => {
@@ -437,6 +471,7 @@ describe("POST /authorize/consent", () => {
     });
     const selected = [
       "mail:read",
+      "mail:send",
       "calendar:read",
       "calendar:write",
       "calendar:delete",
@@ -452,7 +487,7 @@ describe("POST /authorize/consent", () => {
     );
 
     expect(response.status).toBe(302);
-    const expected = ["mail:read", "calendar:read", "calendar:write", "calendar:delete"];
+    const expected = ["mail:read", "mail:send", "calendar:read", "calendar:write", "calendar:delete"];
     const [, , approveOptions] = helpers.approveConsent.mock.calls[0]!;
     expect(approveOptions?.scope).toEqual(expected);
     const [authOptions] = helpers.completeAuthorization.mock.calls[0]!;

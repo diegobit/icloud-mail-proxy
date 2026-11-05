@@ -129,10 +129,23 @@ The read bounds are base vars, not secrets: `MAX_CALENDAR_DAYS` (90),
 `MAX_EVENT_RESULTS` (50), `MAX_RESPONSE_BYTES` (4194304), `MAX_RESOURCE_BYTES`
 (262144), `MAX_RESOURCES_PER_QUERY` (300), `MAX_OCCURRENCES_PER_RESOURCE`
 (200), `MAX_RDATE_EXDATE` (500), `MAX_RECURRENCE_CANDIDATES_PER_RULE` (50000),
-`MAX_RECURRENCE_CANDIDATES_PER_REQUEST` (200000) and `CALDAV_TIMEOUT_MS`
+`MAX_RECURRENCE_CANDIDATES_PER_REQUEST` (200000), `MAX_RECURRENCE_COUNT` (100)
+and `CALDAV_TIMEOUT_MS`
 (15000). `CALENDAR_WRITE_LIMITER` is the per-IP rate limiter for writes (30 per
 minute); if the binding is missing while the write flag is on, writes fail
 closed instead of running unlimited.
+
+### Contacts (opt-in)
+
+`CONTACTS_ENABLED` (`"0"` in the tracked defaults) enables a read-only contacts
+search over CardDAV: `search_contacts`, `get_contact`, the `/v1/contacts`
+routes and the `contacts:read` OAuth scope. Setup asks about it and records the
+answer; a profile sets `"CONTACTS_ENABLED": "1"` in its vars. The
+`CONTACTS_LIMITER` binding (30 lookups per minute per IP) is part of
+`wrangler.base.jsonc`; without it every contact call fails closed.
+`MAX_CONTACT_RESULTS` (default 10, hard maximum 50) caps one search. After
+enabling contacts, OAuth connectors must reconnect and the owner must tick
+`contacts:read` before the tools work for them.
 
 ## Migrating the production deployment
 
@@ -239,6 +252,13 @@ generate a new token, because that would break every existing client.
   connector reconnects once through the sign-in page. A consent page left open
   across the upgrade is refused at approval. Nothing to do by hand; this is
   the same path as a rotation.
+- **Upgrade across the mail scope split:** `mail:read` used to cover every
+  mail tool; it now covers only reading. Marking read, archiving, restoring and
+  saving drafts need `mail:modify`, `delete_mail` needs `mail:trash` and
+  `send_mail` needs `mail:send`. An existing grant keeps reading and answers
+  `insufficient_scope` on those tools, so **reconnect every ChatGPT and
+  claude.ai connector once after deploying** and tick the mail scopes it should
+  have on the consent page. The static bearer is the owner and is unaffected.
 - **Replace the Apple app-specific password:** revoke it at appleid.apple.com
   → Sign-In and Security → App-Specific Passwords, create a new one, then run
   `npm run setup` and answer yes to replacing the credentials. Do this
@@ -253,8 +273,9 @@ generate a new token, because that would break every existing client.
 - **Kill switch:** set `SEND_MAX_PER_DAY=0` in `wrangler.base.jsonc` and
   deploy. Every `send_mail` is then refused with `daily_limit_reached`, while
   reading and `save_draft` keep working.
-- **Revoke a connector's ability to send:** rotate `API_TOKEN`; the connector
-  must reconnect before it can send again.
+- **Revoke a connector's ability to send:** reconnect it and leave `mail:send`
+  unticked on the consent page, or rotate `API_TOKEN`, which cuts every grant;
+  the connector must reconnect before it can send again.
 - **Inspect what happened:** `wrangler tail` shows one `send_event` line per
   attempt — principal, event, recipient count and domains, SMTP code,
   duration; never the subject, the body or address local parts. The Durable
@@ -289,8 +310,9 @@ generate a new token, because that would break every existing client.
   a second copy would be filed. Check both mailboxes first.
 - **"uidvalidity_mismatch":** the mailbox was reorganized; re-run the search
   and use the fresh ids. Nothing was moved.
-- **Restoring mail:** move the message back from `Archive` or the trash in a
-  mail client. This proxy has no restore tool and never empties the trash.
+- **Restoring mail:** `restore_mail` moves one message from `Archive` or the
+  trash back into `INBOX`; a mail client works too. This proxy never empties
+  the trash.
 
 ## Calendar operations
 
@@ -310,18 +332,17 @@ generate a new token, because that would break every existing client.
   Read it and compare instead of creating a second copy with a new id.
 - **"not_an_event":** the resource is a `VTODO`, not a calendar event; it
   cannot be updated or deleted through this proxy.
-- **"recurring_not_supported" / "scheduling_not_supported":** recurring events
-  and events with an organizer or attendees cannot be changed or deleted
+- **"recurring_not_supported" / "scheduling_not_supported":** complex recurring events, series time changes, series deletion without explicit
+  consent, and events with an organizer or attendees cannot be changed or deleted
   through this proxy. Edit them in Apple Calendar. Retrying will not help.
 - **"read_only_collection":** iCloud's privileges say the calendar is not
   writable for this account, even though the write flag is on. Pick another
   calendar or change the sharing/ownership in Apple Calendar.
 - **"rate_limited":** more than 30 writes per minute came from the same
   connecting IP. Wait a minute.
-- **Delete only one-off events; no invitations:** `delete_event` removes one
-  non-recurring event after an ETag check, but CalDAV deletion is immediate
-  and there is no trash. Recurring and scheduling resources stay read-only and
-  must be edited in Apple Calendar. There is no recurrence editor, no
+- **Event deletion and invitations:** `delete_event` removes a one-off event or,
+  with `series: true`, a simple series after an ETag check. Deletion is immediate
+  and there is no trash. Complex recurring and scheduling resources stay read-only. There is no recurrence editor, no
   attendee/organizer editing and no free/busy, sharing or contacts.
 - **Choosing or re-checking calendars:** `GET /v1/calendars?all=1` with the
   bearer token lists every calendar before allowlist filtering, even while the
@@ -333,6 +354,20 @@ generate a new token, because that would break every existing client.
   `calendar:write` still cannot delete. Reconnect the connector and select
   `calendar:delete` on the consent page; until then `delete_event` returns
   `insufficient_scope`. Deletion is immediate and has no trash.
+
+## Contact operations
+
+- **Inspect what happened:** `wrangler tail` shows one `contact_search` or
+  `contact_read` line per call — principal, result count, outcome; never the
+  query or any contact field.
+- **"query_too_short":** a search needs at least 2 characters. There is no way
+  to list the whole address book.
+- **"rate_limited":** more than 30 contact lookups per minute from one IP.
+- **"configuration_error":** the `CONTACTS_LIMITER` binding is missing from the
+  deployed config; contacts stay disabled until it is deployed.
+- **"upstream_unauthorized":** iCloud refused the app-specific password for
+  CardDAV. Discovery worked with an app-specific password when probed on
+  2026-10-28; if it stops, check the password at appleid.apple.com.
 
 ## Recovering an interrupted setup
 

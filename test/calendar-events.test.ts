@@ -108,6 +108,8 @@ function multistatus(collectionId: string, resources: Resource[]): string {
 
 interface StubOptions {
   query?: string;
+  /** Per-collection calendar-query answers, keyed by collection id. */
+  queries?: Record<string, string | (() => Response)>;
   multiget?: string;
   /** Called with each REPORT body; useful for asserting the request. */
   onReport?: (body: string) => void;
@@ -133,6 +135,11 @@ function stubFetch(options: StubOptions = {}): Array<{ method: string; url: stri
       }
       if (method === "REPORT") {
         options.onReport?.(body);
+        const collection = /\/calendars\/([^/]+)\/$/.exec(new URL(url).pathname)?.[1];
+        const perCollection = collection === undefined ? undefined : options.queries?.[collection];
+        if (perCollection !== undefined) {
+          return typeof perCollection === "function" ? perCollection() : new Response(perCollection, { status: 207 });
+        }
         return new Response(
           body.includes("calendar-multiget") ? options.multiget ?? "" : options.query ?? "",
           { status: 207 },
@@ -458,7 +465,7 @@ describe("listEvents", () => {
     }
   });
 
-  it("filters case-insensitively over summary and location only", async () => {
+  it("filters case-insensitively over summary, location and description, reporting matchedIn", async () => {
     stubFetch({
       query: multistatus("cal-lavoro", [
         {
@@ -496,7 +503,12 @@ describe("listEvents", () => {
       to: "2026-10-24",
       text: "ROMA",
     });
-    expect(roma.events.map((entry) => entry.resourceId)).toEqual(["dentist"]);
+    expect(roma.events.map((entry) => [entry.resourceId, entry.matchedIn])).toEqual([
+      ["dentist", ["location"]],
+      ["market", ["description"]],
+    ]);
+    // A description match never puts the description into the list result.
+    expect(JSON.stringify(roma)).not.toContain("is not the location");
 
     const dent = await list(env, {
       calendar: "Lavoro",
@@ -512,7 +524,15 @@ describe("listEvents", () => {
       to: "2026-10-24",
       text: "is not the location",
     });
-    expect(descriptionOnly.events).toEqual([]);
+    expect(descriptionOnly.events.map((entry) => [entry.resourceId, entry.matchedIn])).toEqual([
+      ["market", ["description"]],
+    ]);
+
+    const unfiltered = await list(env, { calendar: "Lavoro", from: "2026-10-21", to: "2026-10-24" });
+    expect(unfiltered.events.every((entry) => entry.matchedIn.length === 0)).toBe(true);
+    expect(unfiltered.calendar).toBe("Lavoro");
+    expect(unfiltered.calendars).toEqual(["Lavoro"]);
+    expect(unfiltered.events.every((entry) => entry.calendar === "Lavoro")).toBe(true);
   });
 
   it("caps at limit, reports the pre-cap total, and clamps to MAX_EVENT_RESULTS", async () => {
@@ -753,6 +773,22 @@ describe("listEvents", () => {
     }
   });
 
+  it("reads a resource whose id iCloud percent-encodes", async () => {
+    // An imported Google Calendar event: iCloud keeps the address-like id and
+    // percent-encodes the @ in the href.
+    const encoded = "6hhmcdb16gsmabb66csj6b9k70p36b9p68sm6b9jckr3gdj1c8sm2dpg6c%40google.com";
+    const decoded = "6hhmcdb16gsmabb66csj6b9k70p36b9p68sm6b9jckr3gdj1c8sm2dpg6c@google.com";
+    stubFetch({
+      query: multistatus("cal-lavoro", [
+        { id: encoded, ics: calendar(event(decoded, "DTSTART:20261022T080000Z")) },
+      ]),
+    });
+
+    const result = await list(makeEnv(), { calendar: "Lavoro", from: "2026-10-21", to: "2026-10-24" });
+
+    expect(result.events.map((entry) => entry.resourceId)).toEqual([decoded]);
+  });
+
   it("fails closed when calendars are disabled, before any network call", async () => {
     const calls = stubFetch();
     try {
@@ -770,6 +806,158 @@ describe("listEvents", () => {
   });
 });
 
+describe("listEvents across calendars", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const lavoro = multistatus("cal-lavoro", [
+    {
+      id: "standup",
+      ics: calendar(event("standup", "DTSTART:20261022T070000Z", "DTEND:20261022T073000Z", "SUMMARY:Standup")),
+    },
+    {
+      id: "review",
+      ics: calendar(event("review", "DTSTART:20261023T090000Z", "DTEND:20261023T100000Z", "SUMMARY:Review")),
+    },
+  ]);
+  const casa = multistatus("cal-casa", [
+    {
+      id: "accountant",
+      ics: calendar(
+        event(
+          "accountant",
+          "DTSTART:20261022T150000Z",
+          "DTEND:20261022T160000Z",
+          "SUMMARY:Appointment",
+          "DESCRIPTION:Bring the tax papers to the accountant",
+        ),
+      ),
+    },
+  ]);
+
+  it("merges every allowed calendar by start and names each result's calendar", async () => {
+    const calls = stubFetch({ queries: { "cal-lavoro": lavoro, "cal-casa": casa } });
+    const result = await list(makeEnv(), { from: "2026-10-21", to: "2026-10-24" });
+    expect(result.calendar).toBeNull();
+    expect(result.calendars).toEqual(["Casa SP", "Lavoro"]);
+    expect(result.events.map((entry) => [entry.calendar, entry.resourceId])).toEqual([
+      ["Lavoro", "standup"],
+      ["Casa SP", "accountant"],
+      ["Lavoro", "review"],
+    ]);
+    expect(result).toMatchObject({ total: 3, truncated: false, truncatedReason: null });
+    // The VTODO-only collection is never queried.
+    expect(calls.filter((call) => call.method === "REPORT").map((call) => new URL(call.url).pathname)).toEqual([
+      `/${DSID}/calendars/cal-casa/`,
+      `/${DSID}/calendars/cal-lavoro/`,
+    ]);
+  });
+
+  it("finds an event by its description alone without knowing the calendar", async () => {
+    stubFetch({ queries: { "cal-lavoro": lavoro, "cal-casa": casa } });
+    const result = await list(makeEnv(), { from: "2026-10-21", to: "2026-10-24", text: "accountant" });
+    expect(result.events.map((entry) => [entry.calendar, entry.resourceId, entry.matchedIn])).toEqual([
+      ["Casa SP", "accountant", ["description"]],
+    ]);
+    expect(JSON.stringify(result)).not.toContain("tax papers");
+  });
+
+  it("applies the limit to the merged list and flags the truncation", async () => {
+    stubFetch({ queries: { "cal-lavoro": lavoro, "cal-casa": casa } });
+    const result = await list(makeEnv(), { from: "2026-10-21", to: "2026-10-24", limit: 2 });
+    expect(result.events.map((entry) => entry.resourceId)).toEqual(["standup", "accountant"]);
+    expect(result).toMatchObject({ total: 3, truncated: true, truncatedReason: "limit" });
+  });
+
+  it("reads only the allowlisted calendars", async () => {
+    const calls = stubFetch({ queries: { "cal-lavoro": lavoro, "cal-casa": casa } });
+    const result = await list(makeEnv({ ALLOWED_CALENDARS: "Lavoro" }), { from: "2026-10-21", to: "2026-10-24" });
+    expect(result.calendars).toEqual(["Lavoro"]);
+    expect(calls.filter((call) => call.method === "REPORT")).toHaveLength(1);
+  });
+
+  it("shares MAX_RESOURCES_PER_QUERY across calendars and names the calendar that tipped it", async () => {
+    stubFetch({ queries: { "cal-lavoro": lavoro, "cal-casa": casa } });
+    const env = makeEnv({ MAX_RESOURCES_PER_QUERY: "2" });
+    await expect(list(env, { from: "2026-10-21", to: "2026-10-24" })).rejects.toMatchObject({
+      code: "too_many_resources",
+      message: expect.stringContaining('"Lavoro"'),
+    });
+    // Each calendar alone fits the budget.
+    vi.unstubAllGlobals();
+    clearCalDavDiscoveryCache();
+    stubFetch({ queries: { "cal-lavoro": lavoro, "cal-casa": casa } });
+    expect((await list(env, { calendar: "Lavoro", from: "2026-10-21", to: "2026-10-24" })).total).toBe(2);
+  });
+
+  it("refuses the whole request when the shared recurrence budget runs out", async () => {
+    const daily = (uid: string) =>
+      calendar(event(uid, "DTSTART:20261001T080000Z", "DTEND:20261001T083000Z", "RRULE:FREQ=DAILY", "SUMMARY:Daily"));
+    stubFetch({
+      queries: {
+        "cal-casa": multistatus("cal-casa", [{ id: "a", ics: daily("a") }]),
+        "cal-lavoro": multistatus("cal-lavoro", [{ id: "b", ics: daily("b") }]),
+      },
+    });
+    const env = makeEnv({ MAX_RECURRENCE_CANDIDATES_PER_REQUEST: "10" });
+    await expect(list(env, { from: "2026-10-21", to: "2026-10-24" })).rejects.toMatchObject({
+      code: "recurrence_too_complex",
+      message: expect.stringContaining('"Lavoro"'),
+    });
+    // One calendar alone fits the same budget and is complete.
+    const single = await list(env, { calendar: "Lavoro", from: "2026-10-21", to: "2026-10-24" });
+    expect(single).toMatchObject({ truncated: false, total: 3 });
+  });
+
+  it("fails the request when one calendar fails, instead of merging the rest", async () => {
+    stubFetch({
+      queries: { "cal-casa": casa, "cal-lavoro": () => new Response("boom", { status: 500 }) },
+    });
+    await expect(list(makeEnv(), { from: "2026-10-21", to: "2026-10-24" })).rejects.toBeInstanceOf(CalDavError);
+  });
+
+  it("keeps failing closed on a configured calendar that does not exist", async () => {
+    stubFetch({ queries: { "cal-lavoro": lavoro, "cal-casa": casa } });
+    await expect(
+      list(makeEnv({ ALLOWED_CALENDARS: "Lavoro,Missing" }), { from: "2026-10-21", to: "2026-10-24" }),
+    ).rejects.toMatchObject({ code: "configured_calendar_missing" });
+  });
+
+  it("refuses duplicate calendar names when reading every calendar", async () => {
+    const duplicate = COLLECTIONS.replace("<D:displayname>Casa SP</D:displayname>", "<D:displayname>Lavoro</D:displayname>");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+        const url = String(input);
+        if (url === "https://caldav.icloud.com/") return new Response(ROOT, { status: 207 });
+        if (url.endsWith("/principal/")) return new Response(PRINCIPAL, { status: 207 });
+        if (url === HOME && init?.method === "PROPFIND") return new Response(duplicate, { status: 207 });
+        throw new Error(`unexpected request: ${url}`);
+      }),
+    );
+    await expect(list(makeEnv(), { from: "2026-10-21", to: "2026-10-24" })).rejects.toMatchObject({
+      code: "ambiguous_calendar_name",
+    });
+  });
+
+  it("serves GET /v1/events for every calendar", async () => {
+    stubFetch({ queries: { "cal-lavoro": lavoro, "cal-casa": casa } });
+    const response = await handleRest(
+      new Request("https://mail.example.com/v1/events?from=2026-10-21&to=2026-10-24&text=review", {
+        headers: { Authorization: "Bearer token" },
+      }),
+      makeEnv(),
+    );
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as EventListResult;
+    expect(body.calendar).toBeNull();
+    expect(body.events.map((entry) => [entry.calendar, entry.resourceId, entry.matchedIn])).toEqual([
+      ["Lavoro", "review", ["summary"]],
+    ]);
+  });
+});
+
 describe("getEvent", () => {
   const recurring = calendar(
     event(
@@ -782,6 +970,24 @@ describe("getEvent", () => {
       "LOCATION:Office",
     ),
   );
+
+  it("reads an id that iCloud stores percent-encoded", async () => {
+    const calls = stubFetch({
+      multiget: multistatus("cal-lavoro", [
+        {
+          id: "abc%40google.com",
+          ics: calendar(event("abc@google.com", "DTSTART:20261022T080000Z")),
+          etag: '"etag-enc"',
+        },
+      ]),
+    });
+
+    const result = await detail(makeEnv(), { calendar: "Lavoro", id: "abc@google.com" });
+
+    expect(result.resourceId).toBe("abc@google.com");
+    expect(result.etag).toBe('"etag-enc"');
+    expect(calls.find((call) => call.method === "REPORT")?.body).toContain("abc%40google.com.ics");
+  });
 
   it("reads one resource with its ETag and next occurrences", async () => {
     const calls = stubFetch({
@@ -798,7 +1004,7 @@ describe("getEvent", () => {
       etag: '"etag-1"',
       recurring: true,
       scheduling: false,
-      readOnlyReason: "recurring",
+      readOnlyReason: null,
       recurrenceRule: "FREQ=WEEKLY;COUNT=3",
       allDay: false,
       start: "2026-10-21T09:00:00+02:00",

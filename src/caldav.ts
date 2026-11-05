@@ -1,4 +1,5 @@
-// CalDAV transport for iCloud calendars.
+// CalDAV transport for iCloud calendars, shared with the read-only CardDAV
+// client (src/carddav.ts) through DavService.
 //
 // Two trust boundaries live here, and both must hold before the Basic
 // credential is attached to a request:
@@ -84,10 +85,7 @@ export interface CalendarQueryInput {
   timeRange?: { start: string; end: string };
 }
 
-const BOOTSTRAP_ORIGIN = "https://caldav.icloud.com";
-const BOOTSTRAP_ROOT = `${BOOTSTRAP_ORIGIN}/`;
 const PRINCIPAL_PATH = /^\/(\d{6,})\/principal\/?$/;
-const SHARD_HOST = /^p\d+-caldav\.icloud\.com$/;
 const ENCODED_SEPARATOR = /%(?:2e|2f|5c)/i;
 const CONTROL_OR_BACKSLASH = /[\u0000-\u001f\u007f\\]/;
 const REDIRECTS = new Set([301, 302, 303, 307, 308]);
@@ -99,7 +97,7 @@ const MIN_RESPONSE_BYTES = 64 * 1024;
 const MAX_RESPONSE_BYTES = 16 * 1024 * 1024;
 const DISCOVERY_TTL_MS = 10 * 60_000;
 const DISCOVERY_CACHE_LIMIT = 8;
-const ID = /^[A-Za-z0-9._-]{1,128}$/;
+const ID = /^[A-Za-z0-9._@-]{1,128}$/;
 const ETAG = /^(?:W\/)?"[\x21\x23-\x7e]*"$/;
 const STRONG_ETAG = /^"[\x21\x23-\x7e]*"$/;
 const TIME_RANGE = /^\d{8}T\d{6}Z$/;
@@ -314,20 +312,73 @@ interface CacheEntry extends CalDavDiscovery {
   expiresAt: number;
 }
 
-const discoveryCache = new Map<string, CacheEntry>();
+/**
+ * One iCloud DAV service: where discovery starts, which shard hosts and home
+ * directory are trusted, and which methods the client may ever send. CalDAV
+ * and the read-only CardDAV client (src/carddav.ts) share the transport below,
+ * so both get the same pinning, redirect, size and timeout rules.
+ */
+export interface DavService {
+  label: string;
+  bootstrapOrigin: string;
+  shardHost: RegExp;
+  /** PROPFIND body asking the principal for its home set. */
+  homeSetBody: string;
+  homeSetProperty: string;
+  /** The home is exactly /<dsid>/<homeDirectory>/ on a shard. */
+  homeDirectory: string;
+  homeLabel: string;
+  accept: string;
+  methods: ReadonlySet<string>;
+  cache: Map<string, CacheEntry>;
+}
+
+const CALDAV: DavService = {
+  label: "CalDAV",
+  bootstrapOrigin: "https://caldav.icloud.com",
+  shardHost: /^p\d+-caldav\.icloud\.com$/,
+  homeSetBody: propfind(["C:calendar-home-set"]),
+  homeSetProperty: "calendar-home-set",
+  homeDirectory: "calendars",
+  homeLabel: "calendar home",
+  accept: "text/calendar",
+  methods: new Set(["PROPFIND", "REPORT", "GET", "PUT", "DELETE"]),
+  cache: new Map(),
+};
 
 /** Clears the per-isolate discovery memo; tests call it between cases. */
 export function clearCalDavDiscoveryCache(user?: string): void {
-  if (user === undefined) discoveryCache.clear();
-  else discoveryCache.delete(user);
+  clearDiscoveryCache(CALDAV, user);
+}
+
+export function clearDiscoveryCache(service: DavService, user?: string): void {
+  if (user === undefined) service.cache.clear();
+  else service.cache.delete(user);
 }
 
 export function createCalDav(env: Env, options: CalDavOptions = {}): CalDav {
+  return createDavTransport(env, CALDAV, options);
+}
+
+/**
+ * The transport for one service. Callers that must not write (CardDAV) expose
+ * only the read methods, and the service's method set refuses any other verb
+ * before a request is built.
+ */
+export function createDavTransport(env: Env, service: DavService, options: CalDavOptions = {}): CalDav {
   const user = env.ICLOUD_USER;
   const password = env.ICLOUD_APP_PASSWORD;
   if (!user || !password) {
-    throw new CalDavError("upstream_error", 0, "ICLOUD_USER and ICLOUD_APP_PASSWORD are required for CalDAV");
+    throw new CalDavError(
+      "upstream_error",
+      0,
+      `ICLOUD_USER and ICLOUD_APP_PASSWORD are required for ${service.label}`,
+    );
   }
+  const label = service.label;
+  const discoveryCache = service.cache;
+  const bootstrapOrigin = service.bootstrapOrigin;
+  const bootstrapRoot = `${bootstrapOrigin}/`;
 
   const fetchImpl = options.fetchImpl ?? fetch;
   const timeoutMs = clamp(
@@ -372,6 +423,9 @@ export function createCalDav(env: Env, options: CalDavOptions = {}): CalDav {
     body?: string;
     mutation?: boolean;
   }): Promise<CalDavResponse> {
+    if (!service.methods.has(init.method)) {
+      throw new CalDavError("invalid_argument", 0, `refusing ${init.method}: not allowed for ${label}`);
+    }
     let response: Response;
     try {
       response = await fetchImpl(init.url, {
@@ -382,7 +436,7 @@ export function createCalDav(env: Env, options: CalDavOptions = {}): CalDav {
         signal: AbortSignal.timeout(timeoutMs),
       });
     } catch (error) {
-      const detail = describeFetchError(error, timeoutMs);
+      const detail = describeFetchError(error, timeoutMs, label);
       if (init.mutation) {
         throw new CalDavError(
           "mutation_state_unknown",
@@ -427,7 +481,7 @@ export function createCalDav(env: Env, options: CalDavOptions = {}): CalDav {
         throw new CalDavError(
           "upstream_error",
           response.status,
-          `the CalDAV response declares ${length} bytes, over the ${limit} byte limit`,
+          `the ${label} response declares ${length} bytes, over the ${limit} byte limit`,
         );
       }
     }
@@ -446,14 +500,14 @@ export function createCalDav(env: Env, options: CalDavOptions = {}): CalDav {
           throw new CalDavError(
             "upstream_error",
             response.status,
-            `the CalDAV response is over the ${limit} byte limit`,
+            `the ${label} response is over the ${limit} byte limit`,
           );
         }
         chunks.push(value);
       }
     } catch (error) {
       if (error instanceof CalDavError) throw error;
-      throw new CalDavError("upstream_error", response.status, `reading the CalDAV response failed: ${messageOf(error)}`);
+      throw new CalDavError("upstream_error", response.status, `reading the ${label} response failed: ${messageOf(error)}`);
     }
 
     const bytes = new Uint8Array(total);
@@ -471,15 +525,15 @@ export function createCalDav(env: Env, options: CalDavOptions = {}): CalDav {
   }
 
   function resolveBootstrapHref(href: string): string {
-    const url = parseHref(href, BOOTSTRAP_ROOT, "principal");
-    if (url.origin !== BOOTSTRAP_ORIGIN) {
+    const url = parseHref(href, bootstrapRoot, "principal");
+    if (url.origin !== bootstrapOrigin) {
       throw new CalDavError("malformed", 0, `refusing a principal on ${url.host}`);
     }
     const match = PRINCIPAL_PATH.exec(url.pathname);
     if (!match) {
       throw new CalDavError("malformed", 0, `unexpected iCloud principal path ${url.pathname}`);
     }
-    return `${BOOTSTRAP_ORIGIN}/${match[1]}/principal/`;
+    return `${bootstrapOrigin}/${match[1]}/principal/`;
   }
 
   function validateHome(principalUrl: string, href: string): string {
@@ -487,19 +541,20 @@ export function createCalDav(env: Env, options: CalDavOptions = {}): CalDav {
     const account = PRINCIPAL_PATH.exec(principal.pathname);
     if (!account) throw new CalDavError("malformed", 0, `unexpected iCloud principal path ${principal.pathname}`);
 
-    const home = parseHref(href, principalUrl, "calendar home");
-    if (home.origin === BOOTSTRAP_ORIGIN) {
-      throw new CalDavError("malformed", 0, "the calendar home is on the bootstrap host, not a shard");
+    const what = service.homeLabel;
+    const home = parseHref(href, principalUrl, what);
+    if (home.origin === bootstrapOrigin) {
+      throw new CalDavError("malformed", 0, `the ${what} is on the bootstrap host, not a shard`);
     }
-    if (!SHARD_HOST.test(home.hostname)) {
-      throw new CalDavError("malformed", 0, `the calendar home is not an Apple shard: ${home.hostname}`);
+    if (!service.shardHost.test(home.hostname)) {
+      throw new CalDavError("malformed", 0, `the ${what} is not an Apple shard: ${home.hostname}`);
     }
-    const expected = `/${account[1]}/calendars/`;
+    const expected = `/${account[1]}/${service.homeDirectory}/`;
     if (home.pathname !== expected) {
       throw new CalDavError(
         "malformed",
         0,
-        `the calendar home ${home.pathname} is not the principal's ${expected}`,
+        `the ${what} ${home.pathname} is not the principal's ${expected}`,
       );
     }
     return `${home.origin}${home.pathname}`;
@@ -538,14 +593,14 @@ export function createCalDav(env: Env, options: CalDavOptions = {}): CalDav {
 
   function resolvePinned(pinned: Pinned, href: string): string {
     if (href === "" || CONTROL_OR_BACKSLASH.test(href)) {
-      throw new CalDavError("invalid_argument", 0, "the CalDAV path is empty or contains a control character");
+      throw new CalDavError("invalid_argument", 0, `the ${label} path is empty or contains a control character`);
     }
-    const url = parseHref(href, `${pinned.origin}${pinned.homePath}`, "calendar");
+    const url = parseHref(href, `${pinned.origin}${pinned.homePath}`, service.homeLabel);
     if (url.origin !== pinned.origin) {
       throw new CalDavError("invalid_argument", 0, `refusing a request to ${url.host}`);
     }
     if (!url.pathname.startsWith(pinned.homePath)) {
-      throw new CalDavError("invalid_argument", 0, `refusing a path outside the calendar home: ${url.pathname}`);
+      throw new CalDavError("invalid_argument", 0, `refusing a path outside the ${service.homeLabel}: ${url.pathname}`);
     }
     return url.toString();
   }
@@ -556,7 +611,7 @@ export function createCalDav(env: Env, options: CalDavOptions = {}): CalDav {
 
     const root = await send({
       method: "PROPFIND",
-      url: BOOTSTRAP_ROOT,
+      url: bootstrapRoot,
       headers: xmlHeaders(0),
       body: propfind(["D:current-user-principal"]),
     });
@@ -571,12 +626,12 @@ export function createCalDav(env: Env, options: CalDavOptions = {}): CalDav {
       method: "PROPFIND",
       url: principalUrl,
       headers: xmlHeaders(0),
-      body: propfind(["C:calendar-home-set"]),
+      body: service.homeSetBody,
     });
     assertStatus(principal, [200, 207]);
-    const homeHref = firstPropHref(parseMultistatus(principal.body), "calendar-home-set");
+    const homeHref = firstPropHref(parseMultistatus(principal.body), service.homeSetProperty);
     if (homeHref === null) {
-      throw new CalDavError("malformed", principal.status, "iCloud returned no calendar-home-set");
+      throw new CalDavError("malformed", principal.status, `iCloud returned no ${service.homeSetProperty}`);
     }
     const homeUrl = validateHome(principalUrl, homeHref);
 
@@ -593,11 +648,11 @@ export function createCalDav(env: Env, options: CalDavOptions = {}): CalDav {
     let response = await callback(resolvePinned(pin(discovery), href));
     if (!REDIRECTS.has(response.status)) return response;
 
-    clearCalDavDiscoveryCache(user);
+    clearDiscoveryCache(service, user);
     discovery = await discover();
     response = await callback(resolvePinned(pin(discovery), href));
     if (REDIRECTS.has(response.status)) {
-      throw new CalDavError("upstream_error", response.status, "iCloud kept redirecting the CalDAV request");
+      throw new CalDavError("upstream_error", response.status, `iCloud kept redirecting the ${label} request`);
     }
     return response;
   }
@@ -623,7 +678,7 @@ export function createCalDav(env: Env, options: CalDavOptions = {}): CalDav {
 
     async get(href) {
       const response = await pinnedCall(href, (url) =>
-        send({ method: "GET", url, headers: { Accept: "text/calendar" } }),
+        send({ method: "GET", url, headers: { Accept: service.accept } }),
       );
       assertStatus(response, [200]);
       return response;
@@ -718,7 +773,7 @@ function encodeId(kind: string, value: string): string {
   return encodeURIComponent(value);
 }
 
-function escapeXml(text: string): string {
+export function escapeXml(text: string): string {
   return text
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")
@@ -784,12 +839,12 @@ function httpError(status: number): CalDavError {
   }
 }
 
-function describeFetchError(error: unknown, timeoutMs: number): string {
+function describeFetchError(error: unknown, timeoutMs: number, label: string): string {
   const name = error instanceof Error ? error.name : "";
   if (name === "TimeoutError" || name === "AbortError") {
-    return `the CalDAV request timed out after ${timeoutMs}ms`;
+    return `the ${label} request timed out after ${timeoutMs}ms`;
   }
-  return `the CalDAV request failed: ${messageOf(error)}`;
+  return `the ${label} request failed: ${messageOf(error)}`;
 }
 
 function messageOf(error: unknown): string {

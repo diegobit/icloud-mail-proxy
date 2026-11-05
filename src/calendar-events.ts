@@ -10,6 +10,7 @@
 // href and gives both the ETag and the data in the same round trip. All
 // expansion is client-side because iCloud ignores C:expand.
 
+import { eventAlarms, type EventAlarm } from "./ical";
 import {
   CalDavError,
   calendarQuery,
@@ -23,7 +24,7 @@ import {
   calendarsEnabled,
   type CalendarLimits,
 } from "./calendar-config";
-import { resolveCalendar, type CollectionInfo } from "./calendar-core";
+import { listCalendars, resolveCalendar, type CollectionInfo } from "./calendar-core";
 import {
   byteLength,
   calendarData,
@@ -62,16 +63,19 @@ export type EventTruncation = ExpansionTruncation | "limit";
 export type { ReadOnlyReason };
 
 export interface ListEventsInput {
-  calendar: string;
+  /** One calendar name; omitted means every allowlisted calendar. */
+  calendar?: string;
   /** Inclusive start: YYYY-MM-DD or an ISO 8601 date-time. Defaults to today. */
   from?: string;
   /** Exclusive end: YYYY-MM-DD or an ISO 8601 date-time. Defaults to 7 days after from. */
   to?: string;
   /** Maximum returned occurrences; capped at MAX_EVENT_RESULTS. */
   limit?: number;
-  /** Case-insensitive substring filter over summary and location. */
+  /** Case-insensitive substring filter over summary, location and description. */
   text?: string;
 }
+
+export type MatchedField = "summary" | "location" | "description";
 
 export interface GetEventInput {
   calendar: string;
@@ -89,6 +93,8 @@ export interface CalendarReadOptions {
 }
 
 export interface ListedEvent {
+  /** Name of the calendar the occurrence belongs to. */
+  calendar: string;
   collectionId: string;
   resourceId: string;
   uid: string;
@@ -107,6 +113,11 @@ export interface ListedEvent {
   isOverride: boolean;
   unsupportedRange: boolean;
   readOnlyReason: ReadOnlyReason | null;
+  /**
+   * The fields `text` matched; empty without a filter. A description match is
+   * reported here, but the description itself is only returned by get_event.
+   */
+  matchedIn: MatchedField[];
 }
 
 export interface EventOccurrence {
@@ -125,7 +136,10 @@ export interface EventOccurrence {
 }
 
 export interface EventListResult {
-  calendar: string;
+  /** The calendar named in the request, or null when every allowed calendar was read. */
+  calendar: string | null;
+  /** The calendars actually read, in reading order. */
+  calendars: string[];
   from: string;
   to: string;
   events: ListedEvent[];
@@ -147,6 +161,7 @@ export interface EventDetail {
   scheduling: boolean;
   readOnlyReason: ReadOnlyReason | null;
   recurrenceRule: string | null;
+  alarms: EventAlarm[];
   /** RFC 5545 STATUS of the master component. */
   status: string | null;
   allDay: boolean;
@@ -221,8 +236,10 @@ function listedEvent(
   resourceId: string,
   parsed: ParsedResource,
   occurrence: ExpandedOccurrence,
+  matchedIn: MatchedField[],
 ): ListedEvent {
   return {
+    calendar: collection.name,
     collectionId: collection.id,
     resourceId,
     uid: parsed.uid,
@@ -239,6 +256,7 @@ function listedEvent(
     isOverride: occurrence.override,
     unsupportedRange: parsed.unsupportedRange,
     readOnlyReason: readOnlyReasonOf(parsed),
+    matchedIn,
   };
 }
 
@@ -261,13 +279,21 @@ function occurrenceDetail(
   };
 }
 
-function matchesText(event: ListedEvent, text: string | undefined): boolean {
-  if (text === undefined || text.trim() === "") return true;
+/**
+ * The fields of one occurrence that contain `text`, case-insensitively; null
+ * when there is a filter and nothing matched. No filter matches everything
+ * with an empty list.
+ */
+function matchText(
+  component: { summary: string | null; location: string | null; description: string | null },
+  text: string | undefined,
+): MatchedField[] | null {
+  if (text === undefined || text.trim() === "") return [];
   const needle = text.trim().toLowerCase();
-  return (
-    (event.summary ?? "").toLowerCase().includes(needle) ||
-    (event.location ?? "").toLowerCase().includes(needle)
+  const matched = (["summary", "location", "description"] as const).filter((field) =>
+    (component[field] ?? "").toLowerCase().includes(needle),
   );
+  return matched.length > 0 ? matched : null;
 }
 
 function sortKey(occurrence: ExpandedOccurrence): number {
@@ -280,6 +306,9 @@ function compareEvents(
   b: { event: ListedEvent; start: number },
 ): number {
   if (a.start !== b.start) return a.start - b.start;
+  if (a.event.collectionId !== b.event.collectionId) {
+    return a.event.collectionId < b.event.collectionId ? -1 : 1;
+  }
   if (a.event.resourceId !== b.event.resourceId) {
     return a.event.resourceId < b.event.resourceId ? -1 : 1;
   }
@@ -302,10 +331,41 @@ function validateLimit(limit: number | undefined, limits: CalendarLimits): numbe
 }
 
 /**
- * List occurrences in [from, to). The server narrows the resources with a
- * time-range filter; the client then parses, expands and re-checks overlap.
- * Floating and unresolved-TZID times are excluded from range results because
- * they name no instant.
+ * The calendars a request reads: the named one, or every allowlisted calendar.
+ * Reading all of them refuses duplicate names, because each result names its
+ * calendar and a duplicate would make that name ambiguous.
+ */
+async function calendarsToRead(
+  env: Env,
+  name: string | undefined,
+  options: CalendarReadOptions,
+): Promise<CollectionInfo[]> {
+  if (name !== undefined) return [await resolveCalendar(env, name, { fetchImpl: options.fetchImpl })];
+  const calendars = await listCalendars(env, { fetchImpl: options.fetchImpl });
+  const seen = new Set<string>();
+  for (const calendar of calendars) {
+    if (seen.has(calendar.name)) {
+      throw new ApiError(
+        409,
+        "ambiguous_calendar_name",
+        `more than one calendar is named ${JSON.stringify(calendar.name)}; name one calendar per request`,
+      );
+    }
+    seen.add(calendar.name);
+  }
+  return calendars;
+}
+
+/**
+ * List occurrences in [from, to), in one calendar or in every allowlisted
+ * one. The server narrows the resources with a time-range filter; the client
+ * then parses, expands and re-checks overlap. Floating and unresolved-TZID
+ * times are excluded from range results because they name no instant.
+ *
+ * The resource and recurrence budgets are request-wide: reading several
+ * calendars shares them instead of multiplying them. When a shared budget
+ * runs out while several calendars are read, the whole request is refused and
+ * names the calendar that tipped it, so a partial merge never looks complete.
  */
 export async function listEvents(
   env: Env,
@@ -318,71 +378,93 @@ export async function listEvents(
   const limit = validateLimit(input.limit, limits);
   const caps = icalCaps(limits);
 
-  const collection = await resolveCalendar(env, input.calendar, {
-    fetchImpl: options.fetchImpl,
-  });
+  const collections = await calendarsToRead(env, input.calendar, options);
+  const merged = input.calendar === undefined;
   const caldav = createCalDav(env, { fetchImpl: options.fetchImpl });
-  const response = await caldav.report(
-    collectionPath(collection.id),
-    calendarQuery({
-      component: "VEVENT",
-      timeRange: { start: icsUtc(window.from), end: icsUtc(window.to) },
-    }),
-    1,
-  );
-  const entries = parseMultistatus(response.body);
-  if (entries.length > limits.maxResourcesPerQuery) {
-    throw new ApiError(
-      422,
-      "too_many_resources",
-      `the query matched ${entries.length} resources; MAX_RESOURCES_PER_QUERY is ` +
-        `${limits.maxResourcesPerQuery}. Narrow the date range.`,
-    );
-  }
+  const query = calendarQuery({
+    component: "VEVENT",
+    timeRange: { start: icsUtc(window.from), end: icsUtc(window.to) },
+  });
 
   const budget = createRecurrenceBudget(limits.maxRecurrenceCandidatesPerRequest);
   const found: Array<{ event: ListedEvent; start: number }> = [];
+  let resources = 0;
   let recurrenceTruncation: ExpansionTruncation | null = null;
   let unsupportedRange = false;
 
-  for (const entry of entries) {
-    const resourceId = resourceIdFromHref(entry.href, collection.id);
-    const ics = calendarData(entry);
-    if (ics === null) continue;
-    if (resourceId === null) {
-      // A calendar-query is scoped to one collection. An href outside it (or
-      // one that is not a resource filename) is not something to skip quietly.
-      throw new CalDavError("malformed", 0, "the calendar-query returned an href outside the selected collection");
-    }
-    const rawBytes = byteLength(ics);
-    if (rawBytes > limits.maxResourceBytes) {
+  for (const collection of collections) {
+    const response = await caldav.report(collectionPath(collection.id), query, 1);
+    const entries = parseMultistatus(response.body);
+    resources += entries.length;
+    if (resources > limits.maxResourcesPerQuery) {
       throw new ApiError(
         422,
-        "resource_too_large",
-        `resource ${JSON.stringify(resourceId)} is ${rawBytes} bytes; MAX_RESOURCE_BYTES is ` +
-          `${limits.maxResourceBytes}.`,
+        "too_many_resources",
+        merged
+          ? `the query matched ${resources} resources across calendars when reading ` +
+              `${JSON.stringify(collection.name)}; MAX_RESOURCES_PER_QUERY is ` +
+              `${limits.maxResourcesPerQuery} for the whole request. Narrow the date range or name one calendar.`
+          : `the query matched ${resources} resources; MAX_RESOURCES_PER_QUERY is ` +
+              `${limits.maxResourcesPerQuery}. Narrow the date range.`,
       );
     }
 
-    const parsed = parseResource(ics, caps);
-    if (parsed.kind !== "VEVENT") continue;
-    const expansion = expandResource(parsed, {
-      from: window.from,
-      to: window.to,
-      timeZone: DEFAULT_TIME_ZONE,
-      budget,
-      ...caps,
-    });
-    recurrenceTruncation ??= expansion.truncated ? expansion.truncatedReason : null;
-    unsupportedRange = unsupportedRange || expansion.unsupportedRange;
+    for (const entry of entries) {
+      const resourceId = resourceIdFromHref(entry.href, collection.id);
+      const ics = calendarData(entry);
+      if (ics === null) continue;
+      if (resourceId === null) {
+        // A calendar-query is scoped to one collection. An href outside it (or
+        // one that is not a resource filename) is not something to skip quietly.
+        throw new CalDavError("malformed", 0, "the calendar-query returned an href outside the selected collection");
+      }
+      const rawBytes = byteLength(ics);
+      if (rawBytes > limits.maxResourceBytes) {
+        throw new ApiError(
+          422,
+          "resource_too_large",
+          `resource ${JSON.stringify(resourceId)} is ${rawBytes} bytes; MAX_RESOURCE_BYTES is ` +
+            `${limits.maxResourceBytes}.`,
+        );
+      }
 
-    for (const occurrence of expansion.occurrences) {
-      // No instant means no honest overlap answer. The resource is still
-      // visible through get_event, which does not claim to place it in time.
-      if (occurrence.floating || occurrence.timeZoneUnresolved) continue;
-      const event = listedEvent(collection, resourceId, parsed, occurrence);
-      if (!matchesText(event, input.text)) continue;
-      found.push({ event, start: sortKey(occurrence) });
+      const parsed = parseResource(ics, caps);
+      if (parsed.kind !== "VEVENT") continue;
+      let expansion: ReturnType<typeof expandResource>;
+      try {
+        expansion = expandResource(parsed, {
+        from: window.from,
+        to: window.to,
+        timeZone: DEFAULT_TIME_ZONE,
+        budget,
+        ...caps,
+        });
+      } catch (error) {
+        if (merged && error instanceof CalDavError && error.code === "recurrence_too_complex") {
+          throw new CalDavError(error.code, error.status, `${error.message} Calendar: ${JSON.stringify(collection.name)}.`);
+        }
+        throw error;
+      }
+      if (merged && expansion.truncatedReason === "recurrence_budget") {
+        throw new ApiError(
+          422,
+          "recurrence_too_complex",
+          `the request-wide recurrence budget ran out while reading ${JSON.stringify(collection.name)}; ` +
+            "narrow the date range or name one calendar.",
+        );
+      }
+      recurrenceTruncation ??= expansion.truncated ? expansion.truncatedReason : null;
+      unsupportedRange = unsupportedRange || expansion.unsupportedRange;
+
+      for (const occurrence of expansion.occurrences) {
+        // No instant means no honest overlap answer. The resource is still
+        // visible through get_event, which does not claim to place it in time.
+        if (occurrence.floating || occurrence.timeZoneUnresolved) continue;
+        const matchedIn = matchText(occurrence.component, input.text);
+        if (matchedIn === null) continue;
+        const event = listedEvent(collection, resourceId, parsed, occurrence, matchedIn);
+        found.push({ event, start: sortKey(occurrence) });
+      }
     }
   }
 
@@ -392,7 +474,8 @@ export async function listEvents(
   const truncatedReason: EventTruncation | null =
     recurrenceTruncation ?? (total > limit ? "limit" : null);
   return {
-    calendar: collection.name,
+    calendar: merged ? null : collections[0]!.name,
+    calendars: collections.map((collection) => collection.name),
     from: window.fromIso,
     to: window.toIso,
     events,
@@ -471,6 +554,7 @@ export async function getEvent(
     scheduling: parsed.scheduling,
     readOnlyReason: readOnlyReasonOf(parsed),
     recurrenceRule: parsed.master.rruleText,
+    alarms: eventAlarms(parsed.master),
     status: parsed.master.status,
     allDay: start.dateOnly,
     start: formatAbsolute(start),

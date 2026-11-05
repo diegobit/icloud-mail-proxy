@@ -18,6 +18,7 @@ import {
   hidden,
   JSON_HEADERS,
   mcpRequest,
+  mcpToolCall,
   pkce,
   registerClient,
   startWorker,
@@ -55,7 +56,15 @@ describe("OAuth on /mcp, end to end", () => {
 
     const authorization = await fetch(`${current.base}/.well-known/oauth-authorization-server`);
     expect(authorization.status).toBe(200);
-    expect(await authorization.json()).toMatchObject({
+    const authorizationBody = await authorization.json();
+    expect(authorizationBody.scopes_supported).toEqual([
+      "mail:read",
+      "mail:modify",
+      "mail:trash",
+      "mail:send",
+      "offline_access",
+    ]);
+    expect(authorizationBody).toMatchObject({
       issuer: current.base,
       authorization_endpoint: `${current.base}/authorize`,
       token_endpoint: `${current.base}/oauth/token`,
@@ -201,6 +210,34 @@ describe("OAuth on /mcp, end to end", () => {
     expect((await mcpRequest(current.base, next.access_token)).status).toBe(200);
 
     flow = { clientId, refreshToken: next.refresh_token, accessToken: next.access_token };
+  }, 60_000);
+
+  it("keeps a mail:read-only grant reading and refuses it every mail write tool", async () => {
+    const token = flow.accessToken;
+    const listed = await mcpToolCall(current.base, token, "list_mailboxes", {});
+    expect(listed.isError, listed.text).toBe(false);
+    expect(listed.json.mailboxes).toContain("INBOX");
+
+    // Each id names a mailbox outside the allowlist: if the scope check did
+    // not come first, the call would fail with mailbox_not_allowed instead.
+    const id = { mailbox: "Not Allowed", uidValidity: 1, uid: 42 };
+    const compose = { to: ["marco@example.org"], text: "Ciao" };
+    const refusals = [
+      ["read_mail", id, "mail:modify"],
+      ["set_mail_flag", { ...id, flag: "seen", value: false }, "mail:modify"],
+      ["archive_mail", id, "mail:modify"],
+      ["restore_mail", id, "mail:modify"],
+      ["save_draft", compose, "mail:modify"],
+      ["delete_mail", id, "mail:trash"],
+      ["send_mail", compose, "mail:send"],
+    ];
+    for (const [tool, args, scope] of refusals) {
+      const result = await mcpToolCall(current.base, token, tool, args);
+      expect(result.isError, tool).toBe(true);
+      expect(result.text, tool).toBe(
+        `insufficient_scope: this operation requires the ${scope} scope; reconnect and approve it`,
+      );
+    }
   }, 60_000);
 
   it("requires an S256 PKCE challenge for public and confidential clients", async () => {

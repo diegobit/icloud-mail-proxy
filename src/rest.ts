@@ -5,6 +5,7 @@
 import { z } from "zod";
 import { CalDavError } from "./caldav";
 import { calendarWritesEnabled, calendarsEnabled } from "./calendar-config";
+import { contactsEnabled, getContact, searchContacts } from "./contacts-core";
 import { listCalendars } from "./calendar-core";
 import { getEvent, listEvents } from "./calendar-events";
 import { createEvent, deleteEvent, updateEvent } from "./calendar-write";
@@ -38,12 +39,27 @@ const searchSchema = z
     mailbox: z.string().min(1),
     after: z.string().optional(),
     before: z.string().optional(),
-    from: z.string().optional(),
-    subject: z.string().optional(),
-    text: z.string().optional(),
+    from: z.union([z.string(), z.array(z.string())]).optional(),
+    to: z.string().optional(),
+    cc: z.string().optional(),
+    subject: z.union([z.string(), z.array(z.string())]).optional(),
+    text: z.union([z.string(), z.array(z.string())]).optional(),
+    not: z.object({ from: z.union([z.string(), z.array(z.string())]).optional(), subject: z.union([z.string(), z.array(z.string())]).optional(), text: z.union([z.string(), z.array(z.string())]).optional() }).strict().optional(),
+    flagged: z.boolean().optional(),
+    hasAttachment: z.boolean().optional(),
     limit: z.number().int().positive().optional(),
     unseen: z.boolean().optional(),
     beforeUid: z.number().int().positive().optional(),
+  })
+  .strict();
+
+const recurrenceBodySchema = z
+  .object({
+    freq: z.enum(["DAILY", "WEEKLY", "MONTHLY"]),
+    interval: z.number().int().min(1).max(12).optional(),
+    byDay: z.array(z.enum(["MO", "TU", "WE", "TH", "FR", "SA", "SU"])).min(1).max(7).optional(),
+    count: z.number().int().min(1).optional(),
+    until: z.string().min(1).optional(),
   })
   .strict();
 
@@ -57,6 +73,8 @@ const createEventBodySchema = z
     allDay: z.boolean().optional(),
     location: z.string().nullable().optional(),
     description: z.string().nullable().optional(),
+    alarms: z.array(z.object({ minutesBefore: z.number().int().min(0).max(10080) }).strict()).max(2).optional(),
+    recurrence: recurrenceBodySchema.optional(),
   })
   .strict();
 
@@ -70,6 +88,7 @@ const updateEventBodySchema = z
     allDay: z.boolean().optional(),
     location: z.string().nullable().optional(),
     description: z.string().nullable().optional(),
+    alarms: z.array(z.object({ minutesBefore: z.number().int().min(0).max(10080) }).strict()).max(2).optional(),
   })
   .strict();
 
@@ -82,6 +101,8 @@ const CREATE_EVENT_FIELDS = new Set([
   "allDay",
   "location",
   "description",
+  "alarms",
+  "recurrence",
 ]);
 const UPDATE_EVENT_FIELDS = new Set([
   "etag",
@@ -92,6 +113,7 @@ const UPDATE_EVENT_FIELDS = new Set([
   "allDay",
   "location",
   "description",
+  "alarms",
 ]);
 
 /** Translate any thrown value into a JSON error Response. */
@@ -305,11 +327,12 @@ function decodeSegment(value: string, label: string): string {
 }
 
 /** GET /v1/calendars/:calendar/events?from=&to=&limit=&text= */
-async function handleListEvents(url: URL, calendarSegment: string, env: Env): Promise<Response> {
+/** GET /v1/events?... reads every allowed calendar; the calendar route reads one. */
+async function handleListEvents(url: URL, calendarSegment: string | undefined, env: Env): Promise<Response> {
   if (!calendarsEnabled(env)) {
     return errorBody("not_supported", "calendars are disabled: ALLOWED_CALENDARS is empty", 404);
   }
-  const calendar = decodeSegment(calendarSegment, "calendar");
+  const calendar = calendarSegment === undefined ? undefined : decodeSegment(calendarSegment, "calendar");
   return json(
     await listEvents(env, {
       calendar,
@@ -435,9 +458,13 @@ async function handleDeleteEvent(
       400,
     );
   }
+  const seriesValues = new URL(request.url).searchParams.getAll("series");
+  if (seriesValues.length > 1 || (seriesValues.length === 1 && !["true", "false"].includes(seriesValues[0]!))) {
+    throw new ApiError(400, "invalid_request", "series must be true or false");
+  }
   const result = await deleteEvent(
     env,
-    { calendar, id, etag },
+    { calendar, id, etag, series: seriesValues[0] === "true" },
     {
       principal: "bearer",
       rateLimitKey: request.headers.get("CF-Connecting-IP") ?? "unknown",
@@ -453,6 +480,33 @@ async function handleDeleteEvent(
  * gets its own 503 body instead of the generic 502/504 mapError would give;
  * anything else (ApiError, unexpected errors) still goes through mapError.
  */
+function contactsDisabled(env: Env): Response | null {
+  if (contactsEnabled(env)) return null;
+  return errorBody("not_supported", "contacts are disabled: CONTACTS_ENABLED is not 1", 404);
+}
+
+async function handleSearchContacts(request: Request, url: URL, env: Env): Promise<Response> {
+  const off = contactsDisabled(env);
+  if (off) return off;
+  const result = await searchContacts(
+    env,
+    { query: url.searchParams.get("q") ?? "", limit: queryLimit(url) },
+    { principal: "bearer", rateLimitKey: request.headers.get("CF-Connecting-IP") ?? "unknown" },
+  );
+  return json(result);
+}
+
+async function handleGetContact(request: Request, idSegment: string, env: Env): Promise<Response> {
+  const off = contactsDisabled(env);
+  if (off) return off;
+  const contact = await getContact(
+    env,
+    { id: decodeSegment(idSegment, "contact id") },
+    { principal: "bearer", rateLimitKey: request.headers.get("CF-Connecting-IP") ?? "unknown" },
+  );
+  return json(contact);
+}
+
 async function handleHealthz(env: Env): Promise<Response> {
   try {
     const result = await healthCheck(env);
@@ -493,6 +547,16 @@ export async function handleRest(request: Request, env: Env): Promise<Response> 
       segments[1] === "calendars"
     ) {
       return await handleCollections(url, env);
+    }
+
+    // GET /v1/events (every allowed calendar)
+    if (
+      request.method === "GET" &&
+      segments.length === 2 &&
+      segments[0] === "v1" &&
+      segments[1] === "events"
+    ) {
+      return await handleListEvents(url, undefined, env);
     }
 
     // GET /v1/calendars/:calendar/events/:id
@@ -548,6 +612,26 @@ export async function handleRest(request: Request, env: Env): Promise<Response> 
       segments[3] === "events"
     ) {
       return await handleDeleteEvent(request, segments[2], segments[4], env);
+    }
+
+    // GET /v1/contacts?q=
+    if (
+      request.method === "GET" &&
+      segments.length === 2 &&
+      segments[0] === "v1" &&
+      segments[1] === "contacts"
+    ) {
+      return await handleSearchContacts(request, url, env);
+    }
+
+    // GET /v1/contacts/:id
+    if (
+      request.method === "GET" &&
+      segments.length === 3 &&
+      segments[0] === "v1" &&
+      segments[1] === "contacts"
+    ) {
+      return await handleGetContact(request, segments[2], env);
     }
 
     // POST /v1/search

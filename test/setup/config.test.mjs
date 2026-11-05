@@ -76,8 +76,27 @@ describe("composing a deployable config", () => {
         { name: "OAUTH_REGISTER_LIMITER", namespace_id: "1001", simple: { limit: 5, period: 60 } },
         { name: "OAUTH_TOKEN_LIMITER", namespace_id: "1002", simple: { limit: 30, period: 60 } },
         { name: "CALENDAR_WRITE_LIMITER", namespace_id: "1003", simple: { limit: 30, period: 60 } },
+        { name: "CONTACTS_LIMITER", namespace_id: "1004", simple: { limit: 30, period: 60 } },
       ]);
     }
+  });
+
+  it("carries a recorded contacts choice, and inherits the default when none is recorded", () => {
+    const on = composeConfig(
+      base,
+      stateFragment({ accountId: "acc-9", workerName: "my-mail", contactsEnabled: true }),
+      path.join(repoRoot, ".deploy"),
+    );
+    expect(on.vars.CONTACTS_ENABLED).toBe("1");
+    const off = composeConfig(
+      base,
+      stateFragment({ accountId: "acc-9", workerName: "my-mail", contactsEnabled: false }),
+      path.join(repoRoot, ".deploy"),
+    );
+    expect(off.vars.CONTACTS_ENABLED).toBe("0");
+    const inherited = composeConfig(base, stateFragment({ accountId: "acc-9", workerName: "my-mail" }), path.join(repoRoot, ".deploy"));
+    expect(inherited.vars.CONTACTS_ENABLED).toBe(base.vars.CONTACTS_ENABLED);
+    expect(base.vars.CONTACTS_ENABLED).toBe("0");
   });
 
   it("rewrites relative paths for the generated config's directory", () => {

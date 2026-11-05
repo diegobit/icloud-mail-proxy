@@ -1,20 +1,4 @@
-// Write side of CalDAV events: create, update or delete one non-recurring
-// event.
-//
-// Product rules for the calendar surface:
-// - inputs are structured fields, never raw iCalendar;
-// - a create generates a UUIDv4 resource (or accepts a caller id so a retry is
-//   idempotent) and uses If-None-Match: *;
-// - an update or delete requires the exact strong ETag from get_event,
-//   re-reads the resource, refuses recurring/scheduling resources, then uses
-//   If-Match; deletion is immediate and has no trash;
-// - the serialized payload is UTC or DATE only: no TZID, RRULE, RDATE,
-//   EXDATE, ATTENDEE, ORGANIZER or VALARM is ever written;
-// - every attempted write is logged with the principal, action, collection,
-//   resource and outcome, but never with the summary or the description.
-//
-// The read-modify-write is deliberate: an iCloud event can carry a VTIMEZONE,
-// VALARMs and Apple X- properties that a naive overwrite would destroy.
+// CalDAV event writes preserve existing resource properties and use conditional requests.
 
 import { CalDavError, createCalDav, resourcePath } from "./caldav";
 import {
@@ -30,16 +14,23 @@ import {
   byteLength,
   icalCaps,
   isResourceId,
+  isSimpleSeries,
   readResource,
 } from "./calendar-resource";
 import {
   assertZone,
   formatAbsolute,
   icsDate,
+  icsLocalDateTime,
   icsUtc,
   parseDateOnly,
   parseWallDateTime,
 } from "./calendar-time";
+import {
+  resolveRecurrence,
+  type RecurrenceInput,
+  type ResolvedRecurrence,
+} from "./calendar-recurrence";
 import {
   FORBIDDEN_WRITE_PROPERTIES,
   auditWrite,
@@ -59,7 +50,7 @@ import {
   parseResource,
   type ParsedResource,
 } from "./ical";
-import { compareDates, dateOf, isoDate, isoInZone, wallClockToUtc, type DateParts } from "./tz";
+import { compareDates, dateOf, isoDate, isoInZone, wallClockToUtc, type DateParts, type WallClock } from "./tz";
 import type { Env } from "./types";
 
 const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/;
@@ -80,6 +71,9 @@ export interface CreateEventInput {
   allDay?: boolean;
   location?: string | null;
   description?: string | null;
+  alarms?: { minutesBefore: number }[];
+  /** A single simple repeat; see calendar-recurrence.ts for the accepted shape. */
+  recurrence?: RecurrenceInput;
 }
 
 export interface UpdateEventInput {
@@ -96,9 +90,11 @@ export interface UpdateEventInput {
   location?: string | null;
   /** null removes the property. */
   description?: string | null;
+  alarms?: { minutesBefore: number }[];
 }
 
 export interface DeleteEventInput {
+  series?: boolean;
   calendar: string;
   id: string;
   /** The strong ETag returned by get_event. */
@@ -121,6 +117,8 @@ export interface EventWriteResult {
   end: string | null;
   timeZone: string | null;
   allDay: boolean;
+  /** The master RRULE value, or null for a one-off event. */
+  recurrenceRule: string | null;
 }
 
 export interface DeleteEventResult {
@@ -137,6 +135,9 @@ interface ResolvedEventTime {
   zone: string | null;
   startDate: DateParts | null;
   endDate: DateParts | null;
+  /** Local clock readings, kept for a recurring event's TZID values. */
+  startWall: WallClock | null;
+  endWall: WallClock | null;
   startInstant: number | null;
   endInstant: number | null;
   startIso: string;
@@ -196,6 +197,8 @@ function resolveEventTime(
       zone: null,
       startDate,
       endDate,
+      startWall: null,
+      endWall: null,
       startInstant: null,
       endInstant: null,
       startIso: isoDate(startDate),
@@ -216,6 +219,8 @@ function resolveEventTime(
     zone,
     startDate: null,
     endDate: null,
+    startWall,
+    endWall,
     startInstant,
     endInstant,
     startIso: isoInZone(startInstant, zone),
@@ -230,6 +235,8 @@ function buildEventIcs(input: {
   description: string | null;
   time: ResolvedEventTime;
   now: number;
+  alarms: { minutesBefore: number }[];
+  recurrence: ResolvedRecurrence | null;
 }): string {
   const lines = [
     "BEGIN:VCALENDAR",
@@ -243,26 +250,45 @@ function buildEventIcs(input: {
   if (input.time.allDay) {
     lines.push(`DTSTART;VALUE=DATE:${icsDate(input.time.startDate!)}`);
     lines.push(`DTEND;VALUE=DATE:${icsDate(input.time.endDate!)}`);
+  } else if (input.recurrence !== null) {
+    // A series is anchored to a local wall clock: a UTC anchor would drift by
+    // an hour at each DST change. The probe on 2026-10-28 showed iCloud accepts
+    // an IANA TZID without VTIMEZONE and adds the block itself.
+    const zone = input.time.zone!;
+    lines.push(`DTSTART;TZID=${zone}:${icsLocalDateTime(input.time.startWall!)}`);
+    lines.push(`DTEND;TZID=${zone}:${icsLocalDateTime(input.time.endWall!)}`);
   } else {
     lines.push(`DTSTART:${icsUtc(input.time.startInstant!)}`);
     lines.push(`DTEND:${icsUtc(input.time.endInstant!)}`);
   }
+  if (input.recurrence !== null) lines.push(`RRULE:${input.recurrence.text}`);
   lines.push(`SUMMARY:${escapeIcalText(input.summary)}`);
   if (input.location !== null) lines.push(`LOCATION:${escapeIcalText(input.location)}`);
   if (input.description !== null) lines.push(`DESCRIPTION:${escapeIcalText(input.description)}`);
+  for (const alarm of input.alarms) lines.push("BEGIN:VALARM", "ACTION:DISPLAY", "DESCRIPTION:Reminder", `TRIGGER:${alarm.minutesBefore === 0 ? "PT0S" : `-PT${alarm.minutesBefore}M`}`, "END:VALARM");
   lines.push("END:VEVENT", "END:VCALENDAR");
   return serializeIcal(lines);
 }
 
+/** Recurrence properties this writer must never emit beyond the validated RRULE. */
+const SERIES_FORBIDDEN_PROPERTIES = new Set(
+  ["rdate", "exdate", "recurrence-id", "attendee", "organizer"],
+);
+
 /**
  * Re-parse a freshly built event and assert the fields that matter. This is
  * the second line of defence: even if the builder were changed, a scheduling
- * or recurrence property cannot reach iCloud.
+ * property or a recurrence the caller did not ask for cannot reach iCloud.
  */
 function validateCreatedEvent(
   ics: string,
   limits: CalendarLimits,
-  expected: { uid: string; summary: string; time: ResolvedEventTime },
+  expected: {
+    uid: string;
+    summary: string;
+    time: ResolvedEventTime;
+    recurrence: ResolvedRecurrence | null;
+  },
 ): ParsedResource {
   const parsed = parseResource(ics, icalCaps(limits));
   if (parsed.kind !== "VEVENT" || parsed.components.length !== 1) {
@@ -271,19 +297,22 @@ function validateCreatedEvent(
   if (parsed.uid !== expected.uid) {
     throw new ApiError(500, "internal_error", "the serialized event changed the UID");
   }
+  const forbidden = expected.recurrence === null
+    ? FORBIDDEN_WRITE_PROPERTIES
+    : SERIES_FORBIDDEN_PROPERTIES;
   if (
-    parsed.recurring ||
     parsed.scheduling ||
-    parsed.master.jcal[1].some(([name]) => FORBIDDEN_WRITE_PROPERTIES.has(name))
+    parsed.recurring !== (expected.recurrence !== null) ||
+    parsed.master.jcal[1].some(([name]) => forbidden.has(name))
   ) {
     throw new ApiError(
       400,
       "unsupported_field",
-      "the event would carry a recurrence or scheduling property, which v1 never writes",
+      "the event would carry a recurrence or scheduling property this call did not request",
     );
   }
-  if (parsed.master.alarms > 0) {
-    throw new ApiError(400, "unsupported_field", "the event would carry a VALARM, which is not supported");
+  if (expected.recurrence !== null && parsed.master.rrule?.text !== expected.recurrence.text) {
+    throw new ApiError(500, "internal_error", "the serialized recurrence did not round-trip");
   }
   if (parsed.master.summary !== expected.summary) {
     throw new ApiError(500, "internal_error", "the serialized summary did not round-trip");
@@ -310,7 +339,15 @@ function validateCreatedEvent(
   ) {
     throw new ApiError(500, "internal_error", "the serialized timed start/end did not round-trip");
   }
+  if (expected.recurrence !== null && !expected.time.allDay && start?.timeZone !== expected.time.zone) {
+    throw new ApiError(500, "internal_error", "the serialized series lost its TZID");
+  }
   return parsed;
+}
+
+function validateAlarms(alarms: { minutesBefore: number }[] | undefined): void {
+  if (alarms === undefined) return;
+  if (!Array.isArray(alarms) || alarms.length > 2 || alarms.some((a) => !a || Object.keys(a).some((k) => k !== "minutesBefore") || !Number.isInteger(a.minutesBefore) || a.minutesBefore < 0 || a.minutesBefore > 10080)) throw new ApiError(400, "invalid_request", "alarms must contain at most two minutesBefore values between 0 and 10080");
 }
 
 function assertCalendarWriteEnabled(env: Env): void {
@@ -331,10 +368,20 @@ export async function createEvent(
 ): Promise<EventWriteResult> {
   assertCalendarWriteEnabled(env);
   const limits = calendarLimits(env);
+  validateAlarms(input.alarms);
   const summary = normalizeSummary(input.summary);
   const location = normalizeText(input.location, "location") ?? null;
   const description = normalizeText(input.description, "description") ?? null;
   const time = resolveEventTime(input.start, input.end, input.allDay, input.timeZone);
+  const recurrence = input.recurrence === undefined
+    ? null
+    : resolveRecurrence(input.recurrence, {
+        allDay: time.allDay,
+        zone: time.zone,
+        startDate: time.allDay ? time.startDate! : dateOf(time.startWall!),
+        startInstant: time.startInstant,
+        maxCount: limits.maxRecurrenceCount,
+      });
   const id = input.id ?? crypto.randomUUID();
   if (!isResourceId(id)) {
     throw new ApiError(
@@ -351,6 +398,8 @@ export async function createEvent(
     description,
     time,
     now: options.now ?? Date.now(),
+    alarms: input.alarms ?? [],
+    recurrence,
   });
   const bytes = byteLength(ics);
   if (bytes > limits.maxResourceBytes) {
@@ -360,7 +409,7 @@ export async function createEvent(
       `the event is ${bytes} bytes; MAX_RESOURCE_BYTES is ${limits.maxResourceBytes}`,
     );
   }
-  validateCreatedEvent(ics, limits, { uid: id, summary, time });
+  validateCreatedEvent(ics, limits, { uid: id, summary, time, recurrence });
 
   return withWriteLimit(env, options.rateLimitKey, async () => {
     const collection = await resolveCalendar(env, input.calendar, {
@@ -397,6 +446,7 @@ export async function createEvent(
         end: time.endIso,
         timeZone: time.zone,
         allDay: time.allDay,
+        recurrenceRule: recurrence?.text ?? null,
       };
     });
   });
@@ -417,6 +467,7 @@ export async function updateEvent(
     );
   }
   assertStrongEtag(input.etag);
+  validateAlarms(input.alarms);
   const etag = input.etag;
 
   const summary = input.summary === undefined ? undefined : normalizeSummary(input.summary);
@@ -433,7 +484,7 @@ export async function updateEvent(
   if (hasTime && (input.start === undefined || input.end === undefined)) {
     throw new ApiError(400, "invalid_request", "start and end must be provided together");
   }
-  if (summary === undefined && location === undefined && description === undefined && !hasTime) {
+  if (summary === undefined && location === undefined && description === undefined && !hasTime && input.alarms === undefined) {
     throw new ApiError(400, "invalid_request", "update_event needs at least one field to change");
   }
   const time = hasTime
@@ -466,13 +517,6 @@ export async function updateEvent(
           "this resource is not a VEVENT; update_event only updates calendar events",
         );
       }
-      if (parsed.recurring) {
-        throw new ApiError(
-          422,
-          "recurring_not_supported",
-          "this event is recurring; v1 only writes one-off events, so it was not changed",
-        );
-      }
       if (parsed.scheduling) {
         throw new ApiError(
           422,
@@ -480,8 +524,16 @@ export async function updateEvent(
           "this event has an organizer or attendees; v1 does not change scheduling resources",
         );
       }
+      if (parsed.recurring && (!isSimpleSeries(parsed) || time !== null)) {
+        throw new ApiError(
+          422,
+          "recurring_not_supported",
+          "only simple series can be updated, and their times cannot be changed",
+        );
+      }
 
       const output = mutateResource(current.ics, parsed.uid, (editor) => {
+        if (input.alarms !== undefined) editor.setAlarms(input.alarms);
         if (summary !== undefined) editor.setText("summary", summary);
         if (location !== undefined) {
           if (location === null) editor.remove("location");
@@ -505,7 +557,7 @@ export async function updateEvent(
             editor.setDateTimeUtc("dtend", isoInZone(time.endInstant!, "UTC"));
           }
         }
-      });
+      }, { allowRecurring: parsed.recurring });
 
       const bytes = byteLength(output);
       if (bytes > limits.maxResourceBytes) {
@@ -519,8 +571,16 @@ export async function updateEvent(
         uid: parsed.uid,
         summary,
         time,
+        recurring: parsed.recurring,
       });
 
+      if (parsed.recurring) {
+        const protectedProperties = (resource: ParsedResource) => resource.master.jcal[1]
+          .filter((property) => ["rrule", "dtstart", "dtend", "duration"].includes(property[0]));
+        if (JSON.stringify(protectedProperties(parsed)) !== JSON.stringify(protectedProperties(updated))) {
+          throw new ApiError(500, "internal_error", "the updated series changed its recurrence or times");
+        }
+      }
       const caldav = createCalDav(env, { fetchImpl: options.fetchImpl });
       const { homeUrl } = await caldav.discover();
       const href = new URL(resourcePath(collection.id, input.id), homeUrl).pathname;
@@ -556,14 +616,15 @@ export async function updateEvent(
         end: time !== null ? time.endIso : end === null ? null : formatAbsolute(end),
         timeZone: time !== null ? time.zone : start?.timeZone ?? null,
         allDay: time !== null ? time.allDay : updated.master.allDay,
+        recurrenceRule: updated.master.rruleText,
       };
     });
   });
 }
 
 /**
- * Delete one non-recurring, non-scheduling event. The read-before-delete is
- * deliberate: it checks the caller's ETag, refuses a VTODO or a recurring /
+ * Delete one event or an explicitly selected simple series. The read-before-delete is
+ * deliberate: it checks the caller's ETag, refuses a VTODO or a complex recurring /
  * scheduling resource, and gives the audit line a definite outcome before the
  * DELETE is sent. CalDAV deletion is immediate; there is no trash.
  */
@@ -610,18 +671,18 @@ export async function deleteEvent(
           "this resource is not a VEVENT; delete_event only deletes calendar events",
         );
       }
-      if (parsed.recurring) {
-        throw new ApiError(
-          422,
-          "recurring_not_supported",
-          "this event is recurring; delete_event only deletes one-off events, so nothing was deleted",
-        );
-      }
       if (parsed.scheduling) {
         throw new ApiError(
           422,
           "scheduling_not_supported",
           "this event has an organizer or attendees; delete_event does not delete scheduling resources",
+        );
+      }
+      if (parsed.recurring && (!isSimpleSeries(parsed) || input.series !== true)) {
+        throw new ApiError(
+          422,
+          "recurring_not_supported",
+          "deleting a simple series requires series: true; complex series cannot be deleted",
         );
       }
 
@@ -662,7 +723,7 @@ export async function deleteEvent(
 function validateUpdatedEvent(
   ics: string,
   limits: CalendarLimits,
-  expected: { uid: string; summary: string | undefined; time: ResolvedEventTime | null },
+  expected: { uid: string; summary: string | undefined; time: ResolvedEventTime | null; recurring: boolean },
 ): ParsedResource {
   const parsed = parseResource(ics, icalCaps(limits));
   if (parsed.kind !== "VEVENT" || parsed.components.length !== 1) {
@@ -671,7 +732,7 @@ function validateUpdatedEvent(
   if (parsed.uid !== expected.uid) {
     throw new ApiError(500, "internal_error", "the updated resource changed the UID");
   }
-  if (parsed.recurring || parsed.scheduling) {
+  if (parsed.scheduling || parsed.recurring !== expected.recurring || (parsed.recurring && !isSimpleSeries(parsed))) {
     throw new ApiError(500, "internal_error", "the updated resource became recurring or scheduled");
   }
   if (expected.summary !== undefined && parsed.master.summary !== expected.summary) {

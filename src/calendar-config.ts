@@ -6,6 +6,7 @@
 // pattern. An empty value disables the domain: no tools, no routes, no scopes.
 // `*` must be alone: `*,Work` is a configuration error, not a superset.
 
+import { contactsEnabled } from "./contacts-core";
 import type { Env } from "./types";
 import type { ResourceScope, Scope } from "./scopes";
 
@@ -25,6 +26,8 @@ export interface CalendarLimits {
   maxRdateExdate: number;
   maxRecurrenceCandidatesPerRule: number;
   maxRecurrenceCandidatesPerRequest: number;
+  /** Largest COUNT a created series may carry. */
+  maxRecurrenceCount: number;
 }
 
 /** The zone used when a tool argument omits `timeZone`. */
@@ -62,14 +65,18 @@ export function calendarWritesEnabled(env: Env): boolean {
   return calendarsEnabled(env) && calendarConfig(env).calendarWrite;
 }
 
+/** The mail scopes, offered by every deployment. */
+export const MAIL_SCOPES: readonly ResourceScope[] = ["mail:read", "mail:modify", "mail:trash", "mail:send"];
+
 /** The resource scopes this deployment can actually offer. */
 export function enabledResourceScopes(env: Env): ResourceScope[] {
   const config = calendarConfig(env);
-  const scopes: ResourceScope[] = ["mail:read"];
+  const scopes: ResourceScope[] = [...MAIL_SCOPES];
   if (calendarsEnabled(env)) {
     scopes.push("calendar:read");
     if (config.calendarWrite) scopes.push("calendar:write", "calendar:delete");
   }
+  if (contactsEnabled(env)) scopes.push("contacts:read");
   return scopes;
 }
 
@@ -85,6 +92,7 @@ export function supportedScopes(env: Env): Scope[] {
 export function requiredScopes(env: Env): ResourceScope[] {
   const scopes: ResourceScope[] = ["mail:read"];
   if (calendarsEnabled(env)) scopes.push("calendar:read");
+  if (contactsEnabled(env)) scopes.push("contacts:read");
   return scopes;
 }
 
@@ -108,6 +116,7 @@ export function calendarLimits(env: Env): CalendarLimits {
       1,
       2_000_000,
     ),
+    maxRecurrenceCount: positiveInt(env.MAX_RECURRENCE_COUNT, 100, 1, 1000),
   };
 }
 
